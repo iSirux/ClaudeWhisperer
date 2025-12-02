@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import Terminal from '$lib/components/Terminal.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
+  import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Transcript from '$lib/components/Transcript.svelte';
   import Settings from './settings/+page.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
@@ -156,6 +157,7 @@
       {#if currentView === 'settings'}
         <Settings />
       {:else if $activeSession}
+        <SessionHeader session={$activeSession} />
         <div class="terminal-wrapper flex-1 overflow-hidden">
           <Terminal sessionId={$activeSession.id} />
         </div>

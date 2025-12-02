@@ -120,6 +120,13 @@ pub struct RepoConfig {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum TerminalMode {
+    #[default]
+    Interactive,
+    Prompt,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub whisper: WhisperConfig,
@@ -131,6 +138,10 @@ pub struct AppConfig {
     pub repos: Vec<RepoConfig>,
     pub active_repo_index: usize,
     pub default_model: String,
+    #[serde(default)]
+    pub terminal_mode: TerminalMode,
+    #[serde(default)]
+    pub skip_permissions: bool,
 }
 
 impl Default for AppConfig {
@@ -145,6 +156,8 @@ impl Default for AppConfig {
             repos: vec![],
             active_repo_index: 0,
             default_model: "claude-sonnet-4-20250514".to_string(),
+            terminal_mode: TerminalMode::default(),
+            skip_permissions: false,
         }
     }
 }

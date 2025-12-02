@@ -47,6 +47,8 @@ export interface RepoConfig {
   name: string;
 }
 
+export type TerminalMode = 'Interactive' | 'Prompt';
+
 export interface AppConfig {
   whisper: WhisperConfig;
   haiku: HaikuConfig;
@@ -57,6 +59,8 @@ export interface AppConfig {
   repos: RepoConfig[];
   active_repo_index: number;
   default_model: string;
+  terminal_mode: TerminalMode;
+  skip_permissions: boolean;
 }
 
 const defaultConfig: AppConfig = {
@@ -97,7 +101,9 @@ const defaultConfig: AppConfig = {
   },
   repos: [],
   active_repo_index: 0,
-  default_model: 'claude-sonnet-4-20250514',
+  default_model: 'claude-opus-4-5',
+  terminal_mode: 'Interactive',
+  skip_permissions: false,
 };
 
 function createSettingsStore() {

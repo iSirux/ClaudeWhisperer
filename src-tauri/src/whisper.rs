@@ -6,11 +6,6 @@ pub struct TranscriptionResponse {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TranscriptionError {
-    pub error: String,
-}
-
 pub struct WhisperClient {
     client: reqwest::Client,
     endpoint: String,

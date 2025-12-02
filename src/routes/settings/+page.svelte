@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { settings, type AppConfig } from '$lib/stores/settings';
+  import { settings } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
 
-  let config: AppConfig = structuredClone($settings);
   let activeTab = 'general';
   let testingWhisper = false;
   let whisperStatus: 'idle' | 'success' | 'error' = 'idle';
@@ -11,9 +10,47 @@
   let newRepoName = '';
   let audioDevices: MediaDeviceInfo[] = [];
   let loadingDevices = false;
+  let saveStatus: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
+  let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+  let statusTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Debounced auto-save
+  async function autoSave() {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    if (statusTimeout) clearTimeout(statusTimeout);
+
+    saveTimeout = setTimeout(async () => {
+      saveStatus = 'saving';
+      try {
+        await invoke('save_config', { newConfig: $settings });
+        saveStatus = 'saved';
+        statusTimeout = setTimeout(() => saveStatus = 'idle', 2000);
+      } catch (error) {
+        console.error('Failed to save settings:', error);
+        saveStatus = 'error';
+        statusTimeout = setTimeout(() => saveStatus = 'idle', 3000);
+      }
+    }, 500);
+  }
+
+  // Subscribe to settings changes for auto-save
+  let isInitialLoad = true;
+  const unsubscribe = settings.subscribe(() => {
+    if (isInitialLoad) {
+      isInitialLoad = false;
+      return;
+    }
+    autoSave();
+  });
 
   onMount(() => {
     loadAudioDevices();
+  });
+
+  onDestroy(() => {
+    unsubscribe();
+    if (saveTimeout) clearTimeout(saveTimeout);
+    if (statusTimeout) clearTimeout(statusTimeout);
   });
 
   async function loadAudioDevices() {
@@ -42,20 +79,6 @@
     { id: 'repos', label: 'Repositories' },
   ];
 
-  let saveStatus: 'idle' | 'saving' | 'saved' = 'idle';
-
-  async function saveSettings() {
-    saveStatus = 'saving';
-    try {
-      await settings.save(config);
-      saveStatus = 'saved';
-      setTimeout(() => saveStatus = 'idle', 2000);
-    } catch (error) {
-      console.error('Failed to save settings:', error);
-      saveStatus = 'idle';
-    }
-  }
-
   async function testWhisperConnection() {
     testingWhisper = true;
     whisperStatus = 'idle';
@@ -70,16 +93,23 @@
 
   async function addRepo() {
     if (!newRepoPath || !newRepoName) return;
-    config.repos = [...config.repos, { path: newRepoPath, name: newRepoName }];
+    settings.update(s => ({
+      ...s,
+      repos: [...s.repos, { path: newRepoPath, name: newRepoName }]
+    }));
     newRepoPath = '';
     newRepoName = '';
   }
 
   function removeRepo(index: number) {
-    config.repos = config.repos.filter((_, i) => i !== index);
-    if (config.active_repo_index >= config.repos.length && config.repos.length > 0) {
-      config.active_repo_index = config.repos.length - 1;
-    }
+    settings.update(s => {
+      const newRepos = s.repos.filter((_, i) => i !== index);
+      let newActiveIndex = s.active_repo_index;
+      if (newActiveIndex >= newRepos.length && newRepos.length > 0) {
+        newActiveIndex = newRepos.length - 1;
+      }
+      return { ...s, repos: newRepos, active_repo_index: newActiveIndex };
+    });
   }
 
   async function browseFolder() {
@@ -127,7 +157,26 @@
         <div class="space-y-4">
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Default Model</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.default_model} placeholder="claude-sonnet-4-20250514" />
+            <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.default_model}>
+              <option value="claude-opus-4-5">Opus 4.5</option>
+              <option value="claude-sonnet-4-5-20250929">Sonnet 4.5</option>
+              <option value="claude-haiku-4-5">Haiku 4.5</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-text-secondary mb-1">Terminal Mode</label>
+            <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.terminal_mode}>
+              <option value="Interactive">Interactive</option>
+              <option value="Prompt">Prompt (-p flag)</option>
+            </select>
+            <p class="text-xs text-text-muted mt-1">Interactive: Full terminal control. Prompt: Runs single prompt and exits.</p>
+          </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Skip Permissions</label>
+              <p class="text-xs text-text-muted">Use --dangerously-skip-permissions flag</p>
+            </div>
+            <input type="checkbox" class="toggle" bind:checked={$settings.skip_permissions} />
           </div>
         </div>
 
@@ -138,7 +187,7 @@
             <div class="flex gap-2">
               <select
                 class="flex-1 px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-                bind:value={config.audio.device_id}
+                bind:value={$settings.audio.device_id}
                 disabled={loadingDevices}
               >
                 <option value={null}>System Default</option>
@@ -161,21 +210,21 @@
           </div>
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Open Mic Mode</label>
-            <input type="checkbox" class="toggle" bind:checked={config.audio.open_mic} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.audio.open_mic} />
           </div>
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Use Voice Command</label>
-            <input type="checkbox" class="toggle" bind:checked={config.audio.use_voice_command} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.audio.use_voice_command} />
           </div>
-          {#if config.audio.use_voice_command}
+          {#if $settings.audio.use_voice_command}
             <div>
               <label class="block text-sm font-medium text-text-secondary mb-1">Voice Command</label>
-              <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.audio.voice_command} placeholder="go go" />
+              <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.audio.voice_command} placeholder="go go" />
             </div>
           {/if}
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Use Hotkey</label>
-            <input type="checkbox" class="toggle" bind:checked={config.audio.use_hotkey} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.audio.use_hotkey} />
           </div>
         </div>
 
@@ -183,18 +232,18 @@
         <div class="space-y-4">
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Whisper Endpoint</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.whisper.endpoint} placeholder="http://localhost:8000/v1/audio/transcriptions" />
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.whisper.endpoint} placeholder="http://localhost:8000/v1/audio/transcriptions" />
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Model</label>
-            <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.whisper.model}>
+            <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.whisper.model}>
               <option value="Systran/faster-whisper-base">Systran/faster-whisper-base</option>
               <option value="Systran/faster-whisper-large-v3">Systran/faster-whisper-large-v3</option>
             </select>
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Language</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.whisper.language} placeholder="en" />
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.whisper.language} placeholder="en" />
           </div>
           <button class="px-4 py-2 bg-surface-elevated hover:bg-border rounded text-sm transition-colors flex items-center gap-2" onclick={testWhisperConnection} disabled={testingWhisper}>
             {#if testingWhisper}
@@ -215,16 +264,16 @@
         <div class="space-y-4">
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Enable Prompt Interpretation</label>
-            <input type="checkbox" class="toggle" bind:checked={config.haiku.enabled} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.haiku.enabled} />
           </div>
-          {#if config.haiku.enabled}
+          {#if $settings.haiku.enabled}
             <div>
               <label class="block text-sm font-medium text-text-secondary mb-1">API Key</label>
-              <input type="password" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.haiku.api_key} placeholder="sk-ant-..." />
+              <input type="password" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.haiku.api_key} placeholder="sk-ant-..." />
             </div>
             <div>
               <label class="block text-sm font-medium text-text-secondary mb-1">Model</label>
-              <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.haiku.model} placeholder="claude-3-haiku-20240307" />
+              <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.haiku.model} placeholder="claude-3-haiku-20240307" />
             </div>
           {/if}
         </div>
@@ -233,20 +282,20 @@
         <div class="space-y-4">
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Create New Branch</label>
-            <input type="checkbox" class="toggle" bind:checked={config.git.create_branch} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.git.create_branch} />
           </div>
-          {#if config.git.create_branch}
+          {#if $settings.git.create_branch}
             <div class="flex items-center justify-between">
               <label class="text-sm font-medium text-text-secondary">Use Git Worktrees</label>
-              <input type="checkbox" class="toggle" bind:checked={config.git.use_worktrees} />
+              <input type="checkbox" class="toggle" bind:checked={$settings.git.use_worktrees} />
             </div>
             <div class="flex items-center justify-between">
               <label class="text-sm font-medium text-text-secondary">Auto-merge to Main</label>
-              <input type="checkbox" class="toggle" bind:checked={config.git.auto_merge} />
+              <input type="checkbox" class="toggle" bind:checked={$settings.git.auto_merge} />
             </div>
             <div class="flex items-center justify-between">
               <label class="text-sm font-medium text-text-secondary">Create Pull Request</label>
-              <input type="checkbox" class="toggle" bind:checked={config.git.create_pr} />
+              <input type="checkbox" class="toggle" bind:checked={$settings.git.create_pr} />
             </div>
           {/if}
         </div>
@@ -255,19 +304,19 @@
         <div class="space-y-4">
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Toggle Recording</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={config.hotkeys.toggle_recording} />
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.toggle_recording} />
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Send Prompt</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={config.hotkeys.send_prompt} />
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.send_prompt} />
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Switch Repository</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={config.hotkeys.switch_repo} />
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.switch_repo} />
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Toggle Open Mic</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={config.hotkeys.toggle_open_mic} />
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.toggle_open_mic} />
           </div>
         </div>
 
@@ -275,28 +324,28 @@
         <div class="space-y-4">
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Show Transcript</label>
-            <input type="checkbox" class="toggle" bind:checked={config.overlay.show_transcript} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_transcript} />
           </div>
-          {#if config.overlay.show_transcript}
+          {#if $settings.overlay.show_transcript}
             <div>
               <label class="block text-sm font-medium text-text-secondary mb-1">Transcript Lines</label>
-              <input type="number" min="1" max="10" class="w-20 px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.overlay.transcript_lines} />
+              <input type="number" min="1" max="10" class="w-20 px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.overlay.transcript_lines} />
             </div>
           {/if}
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Show Settings Info</label>
-            <input type="checkbox" class="toggle" bind:checked={config.overlay.show_settings} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_settings} />
           </div>
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Show Active Terminals</label>
-            <input type="checkbox" class="toggle" bind:checked={config.overlay.show_terminals} />
+            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_terminals} />
           </div>
         </div>
 
       {:else if activeTab === 'repos'}
         <div class="space-y-4">
           <div class="space-y-2">
-            {#each config.repos as repo, index}
+            {#each $settings.repos as repo, index}
               <div class="flex items-center gap-2 p-2 bg-surface-elevated rounded">
                 <div class="flex-1">
                   <div class="font-medium text-sm text-text-primary">{repo.name}</div>
@@ -327,25 +376,24 @@
     </div>
   </div>
 
-  <footer class="flex justify-end gap-2 px-4 py-3 border-t border-border">
-    <button
-      class="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded text-sm transition-colors flex items-center gap-2"
-      onclick={saveSettings}
-      disabled={saveStatus === 'saving'}
-    >
+  {#if saveStatus !== 'idle'}
+    <footer class="flex justify-end items-center gap-2 px-4 py-2 border-t border-border">
       {#if saveStatus === 'saving'}
-        <div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-        Saving...
+        <div class="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+        <span class="text-xs text-text-muted">Saving...</span>
       {:else if saveStatus === 'saved'}
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-3 h-3 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
         </svg>
-        Saved
-      {:else}
-        Save Changes
+        <span class="text-xs text-text-muted">Saved</span>
+      {:else if saveStatus === 'error'}
+        <svg class="w-3 h-3 text-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+        <span class="text-xs text-error">Failed to save</span>
       {/if}
-    </button>
-  </footer>
+    </footer>
+  {/if}
 </div>
 
 <style>

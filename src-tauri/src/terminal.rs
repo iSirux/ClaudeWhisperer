@@ -1,3 +1,4 @@
+use crate::config::TerminalMode;
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,8 @@ impl TerminalManager {
         repo_path: String,
         prompt: String,
         model: Option<String>,
+        terminal_mode: TerminalMode,
+        skip_permissions: bool,
     ) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
         let session = TerminalSession {
@@ -81,16 +84,31 @@ impl TerminalManager {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         let mut cmd = CommandBuilder::new("claude");
-        cmd.arg("--dangerously-skip-permissions");
+
+        // Add skip permissions flag if enabled
+        if skip_permissions {
+            cmd.arg("--dangerously-skip-permissions");
+        }
+
         if let Some(m) = model {
             cmd.arg("--model");
             cmd.arg(&m);
         }
-        cmd.arg("-p");
-        cmd.arg(&prompt);
+
+        // In Prompt mode, pass the prompt directly via -p flag
+        let is_prompt_mode = terminal_mode == TerminalMode::Prompt;
+        if is_prompt_mode {
+            cmd.arg("-p");
+            cmd.arg(&prompt);
+        }
+
         cmd.cwd(&repo_path);
 
-        let child = pair
+        // Set environment for proper PTY behavior
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+
+        let _child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn claude: {}", e))?;
@@ -124,8 +142,29 @@ impl TerminalManager {
         let session_id = id.clone();
         let app_clone = app.clone();
 
+        // In Interactive mode, spawn a thread to send the prompt after Claude initializes
+        if !is_prompt_mode {
+            let pty_sessions_ref = Arc::clone(&self.pty_sessions);
+            let session_id_for_prompt = id.clone();
+            let initial_prompt = prompt.clone();
+
+            thread::spawn(move || {
+                // Wait for Claude to initialize and show its prompt
+                thread::sleep(std::time::Duration::from_millis(1000));
+                let mut pty_sessions = pty_sessions_ref.lock();
+                if let Some(session) = pty_sessions.get_mut(&session_id_for_prompt) {
+                    // Send the prompt followed by Enter
+                    let prompt_with_newline = format!("{}\n", initial_prompt);
+                    let _ = session.writer.write_all(prompt_with_newline.as_bytes());
+                    let _ = session.writer.flush();
+                }
+            });
+        }
+
+        // Spawn a thread to read output immediately
         thread::spawn(move || {
-            let mut buffer = [0u8; 1024];
+            let mut buffer = [0u8; 4096];
+
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => break,

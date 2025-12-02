@@ -3,7 +3,11 @@
     "allow": [
       "Bash(cat:*)",
       "WebSearch",
-      "Bash(npm run check:*)"
+      "Bash(npm run check:*)",
+      "Bash(cargo check:*)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:platform.claude.com)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

@@ -78,7 +78,20 @@
     await recording.stopRecording(false);
   }
 
-  async function stopAndSend() {
+  async function transcribeOnly() {
+    stopAudio();
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
+    try {
+      await recording.transcribeAndSend();
+    } catch (error) {
+      console.error('Failed to transcribe:', error);
+    }
+  }
+
+  async function transcribeAndSend() {
     stopAudio();
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
@@ -207,13 +220,27 @@
           {/if}
         </button>
         <button
+          class="px-3 py-1.5 text-sm bg-surface-elevated hover:bg-border text-text-primary rounded transition-colors"
+          onclick={transcribeOnly}
+        >
+          Transcribe
+        </button>
+        <button
           class="px-3 py-1.5 text-sm bg-accent hover:bg-accent-hover text-white rounded transition-colors"
-          onclick={stopAndSend}
+          onclick={transcribeAndSend}
         >
           Transcribe & Send
         </button>
       {/if}
 
+      {#if $recording.transcript || isEditing}
+        <button
+          class="px-2 py-1 text-xs bg-surface-elevated hover:bg-border rounded transition-colors"
+          onclick={() => { cancelEditing(); recording.clearTranscript(); }}
+        >
+          Clear
+        </button>
+      {/if}
       {#if $recording.transcript && !isEditing}
         <button
           class="px-2 py-1 text-xs bg-surface-elevated hover:bg-border rounded transition-colors"
@@ -257,7 +284,7 @@
       {#if $isRecording}
         Listening...
       {:else if $hasRecorded}
-        Audio recorded. Click "Transcribe & Send" to process or "Clear" to discard.
+        Audio recorded. Click "Transcribe" to preview, "Transcribe & Send" to send immediately, or "Clear" to discard.
       {:else}
         Press hotkey, click Record button, or use open mic to start recording
       {/if}

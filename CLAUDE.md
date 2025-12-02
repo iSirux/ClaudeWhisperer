@@ -11,6 +11,8 @@ Claude Whisperer is a Tauri v2 desktop application that provides a voice-control
 ```bash
 # Development - runs both frontend and Tauri
 npm run tauri dev
+# or
+pnpm tauri dev
 
 # Build production app
 npm run tauri build
@@ -25,6 +27,7 @@ npm run dev
 ## Architecture
 
 ### Frontend (SvelteKit + Svelte 5)
+
 - `src/routes/+page.svelte` - Main application view with session list, terminal, and transcript
 - `src/routes/overlay/+page.svelte` - Floating overlay window for recording status
 - `src/routes/settings/+page.svelte` - Settings modal
@@ -35,6 +38,7 @@ npm run dev
 - `src/lib/components/Terminal.svelte` - xterm.js terminal with WebGL rendering
 
 ### Backend (Rust/Tauri)
+
 - `src-tauri/src/lib.rs` - Tauri app initialization and plugin registration
 - `src-tauri/src/terminal.rs` - PTY management via `portable-pty`, spawns `claude` CLI with prompts
 - `src-tauri/src/whisper.rs` - HTTP client for Whisper transcription API
@@ -42,6 +46,7 @@ npm run dev
 - `src-tauri/src/commands/` - Tauri command handlers exposed to frontend
 
 ### Key Data Flow
+
 1. User presses hotkey → `recording.startRecording()` captures audio via WebRTC
 2. Stop recording → audio sent to backend via `transcribe_audio` command
 3. Backend posts to Whisper API endpoint → returns transcript
@@ -49,13 +54,16 @@ npm run dev
 5. PTY output streamed to frontend via Tauri events → rendered in xterm.js
 
 ### Windows Configuration
+
 The app has two windows defined in `tauri.conf.json`:
+
 - `main` - Primary application window (1200x800, decorated)
 - `overlay` - Floating recording indicator (400x120, transparent, always-on-top, initially hidden)
 
 ## Configuration
 
 App config stored in system config directory (`claude-whisperer/config.json`). Key sections:
+
 - `whisper` - Transcription endpoint, model, language
 - `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo)
 - `repos` - List of git repositories to work with

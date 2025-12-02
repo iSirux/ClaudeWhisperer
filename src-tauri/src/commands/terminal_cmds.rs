@@ -36,9 +36,11 @@ pub fn create_terminal_session(
     };
 
     let model = Some(cfg.default_model.clone());
+    let terminal_mode = cfg.terminal_mode.clone();
+    let skip_permissions = cfg.skip_permissions;
     drop(cfg);
 
-    terminal_manager.create_session(app, working_path, prompt, model)
+    terminal_manager.create_session(app, working_path, prompt, model, terminal_mode, skip_permissions)
 }
 
 #[tauri::command]

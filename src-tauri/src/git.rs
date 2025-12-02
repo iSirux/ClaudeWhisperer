@@ -1,8 +1,10 @@
 use std::path::Path;
 use std::process::Command;
 
+#[allow(dead_code)]
 pub struct GitManager;
 
+#[allow(dead_code)]
 impl GitManager {
     pub fn is_git_repo(path: &str) -> bool {
         Path::new(path).join(".git").exists()
