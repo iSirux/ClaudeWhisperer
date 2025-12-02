@@ -7,7 +7,8 @@
       "Bash(cargo check:*)",
       "WebFetch(domain:www.anthropic.com)",
       "WebFetch(domain:platform.claude.com)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []

@@ -47,7 +47,9 @@ export interface RepoConfig {
   name: string;
 }
 
-export type TerminalMode = 'Interactive' | 'Prompt';
+export type TerminalMode = 'Interactive' | 'Prompt' | 'Sdk';
+
+export type Theme = 'Midnight' | 'Slate' | 'Snow' | 'Sand';
 
 export interface AppConfig {
   whisper: WhisperConfig;
@@ -61,6 +63,7 @@ export interface AppConfig {
   default_model: string;
   terminal_mode: TerminalMode;
   skip_permissions: boolean;
+  theme: Theme;
 }
 
 const defaultConfig: AppConfig = {
@@ -104,6 +107,7 @@ const defaultConfig: AppConfig = {
   default_model: 'claude-opus-4-5',
   terminal_mode: 'Interactive',
   skip_permissions: false,
+  theme: 'Midnight',
 };
 
 function createSettingsStore() {

@@ -6,6 +6,10 @@
 
   onMount(async () => {
     await settings.load();
+
+    // Apply saved theme
+    document.documentElement.setAttribute('data-theme', $settings.theme);
+
     await overlay.centerTop();
   });
 </script>

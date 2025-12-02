@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @theme {
+  /* Default theme variables (Midnight) */
   --color-background: #0f0f0f;
   --color-surface: #1a1a1a;
   --color-surface-elevated: #252525;
@@ -14,8 +15,60 @@
   --color-warning: #eab308;
   --color-error: #ef4444;
   --color-recording: #ef4444;
-  
+
   --font-family-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Theme: Midnight (default dark) */
+[data-theme="Midnight"] {
+  --color-background: #0f0f0f;
+  --color-surface: #1a1a1a;
+  --color-surface-elevated: #252525;
+  --color-border: #333333;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #a0a0a0;
+  --color-text-muted: #666666;
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+}
+
+/* Theme: Slate (lighter dark with blue-gray) */
+[data-theme="Slate"] {
+  --color-background: #1e293b;
+  --color-surface: #334155;
+  --color-surface-elevated: #475569;
+  --color-border: #64748b;
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted: #94a3b8;
+  --color-accent: #3b82f6;
+  --color-accent-hover: #60a5fa;
+}
+
+/* Theme: Snow (clean white light) */
+[data-theme="Snow"] {
+  --color-background: #ffffff;
+  --color-surface: #f8fafc;
+  --color-surface-elevated: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94a3b8;
+  --color-accent: #6366f1;
+  --color-accent-hover: #4f46e5;
+}
+
+/* Theme: Sand (warm cream light) */
+[data-theme="Sand"] {
+  --color-background: #fefdfb;
+  --color-surface: #faf8f5;
+  --color-surface-elevated: #f5f0e8;
+  --color-border: #e7e0d5;
+  --color-text-primary: #1c1917;
+  --color-text-secondary: #57534e;
+  --color-text-muted: #a8a29e;
+  --color-accent: #d97706;
+  --color-accent-hover: #b45309;
 }
 
 html, body {

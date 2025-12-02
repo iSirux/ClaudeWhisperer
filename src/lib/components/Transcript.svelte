@@ -2,7 +2,8 @@
   import { onDestroy } from 'svelte';
   import { recording, isRecording, isProcessing, hasRecorded } from '$lib/stores/recording';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
-  import { settings } from '$lib/stores/settings';
+  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
+  import { settings, activeRepo } from '$lib/stores/settings';
 
   onDestroy(() => {
     if (audioElement) {
@@ -100,8 +101,22 @@
     try {
       const transcript = await recording.transcribeAndSend();
       if (transcript) {
-        const sessionId = await sessions.createSession(transcript);
-        activeSessionId.set(sessionId);
+        if ($settings.terminal_mode === 'Sdk') {
+          // SDK mode: create or reuse SDK session
+          const repoPath = $activeRepo?.path || '.';
+          let sessionId = $activeSdkSessionId;
+          if (!sessionId) {
+            sessionId = await sdkSessions.createSession(repoPath);
+            activeSdkSessionId.set(sessionId);
+          }
+          await sdkSessions.sendPrompt(sessionId, transcript);
+          activeSessionId.set(null);
+        } else {
+          // PTY mode
+          const sessionId = await sessions.createSession(transcript);
+          activeSessionId.set(sessionId);
+          activeSdkSessionId.set(null);
+        }
         recording.clearTranscript();
       }
     } catch (error) {
@@ -119,19 +134,26 @@
   }
 
   async function sendPrompt() {
-    console.log('sendPrompt called');
     const prompt = isEditing ? editedTranscript : $recording.transcript;
-    console.log('Prompt:', prompt);
-    if (!prompt.trim()) {
-      console.log('Prompt is empty, returning');
-      return;
-    }
+    if (!prompt.trim()) return;
 
     try {
-      console.log('Creating session...');
-      const sessionId = await sessions.createSession(prompt);
-      console.log('Session created with ID:', sessionId);
-      activeSessionId.set(sessionId);
+      if ($settings.terminal_mode === 'Sdk') {
+        // SDK mode: create or reuse SDK session
+        const repoPath = $activeRepo?.path || '.';
+        let sessionId = $activeSdkSessionId;
+        if (!sessionId) {
+          sessionId = await sdkSessions.createSession(repoPath);
+          activeSdkSessionId.set(sessionId);
+        }
+        await sdkSessions.sendPrompt(sessionId, prompt);
+        activeSessionId.set(null);
+      } else {
+        // PTY mode
+        const sessionId = await sessions.createSession(prompt);
+        activeSessionId.set(sessionId);
+        activeSdkSessionId.set(null);
+      }
       recording.clearTranscript();
       cancelEditing();
     } catch (error) {
@@ -150,9 +172,26 @@
       .slice(0, -$settings.audio.voice_command.length)
       .trim();
     if (cleanedTranscript) {
-      sessions.createSession(cleanedTranscript).then((sessionId) => {
-        activeSessionId.set(sessionId);
-      });
+      if ($settings.terminal_mode === 'Sdk') {
+        // SDK mode
+        const repoPath = $activeRepo?.path || '.';
+        const existingId = $activeSdkSessionId;
+        if (existingId) {
+          sdkSessions.sendPrompt(existingId, cleanedTranscript);
+        } else {
+          sdkSessions.createSession(repoPath).then((sessionId) => {
+            activeSdkSessionId.set(sessionId);
+            sdkSessions.sendPrompt(sessionId, cleanedTranscript);
+          });
+        }
+        activeSessionId.set(null);
+      } else {
+        // PTY mode
+        sessions.createSession(cleanedTranscript).then((sessionId) => {
+          activeSessionId.set(sessionId);
+          activeSdkSessionId.set(null);
+        });
+      }
       recording.clearTranscript();
     }
   }

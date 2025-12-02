@@ -1,20 +1,29 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Terminal from '$lib/components/Terminal.svelte';
+  import SdkView from '$lib/components/SdkView.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Transcript from '$lib/components/Transcript.svelte';
   import Settings from './settings/+page.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
+  import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { recording, isRecording } from '$lib/stores/recording';
   import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
+
+  // Track whether we're in SDK mode for the active session
+  $: isSdkMode = $settings.terminal_mode === 'Sdk';
 
   let currentView: 'sessions' | 'settings' = 'sessions';
   let showRepoSelector = false;
 
   onMount(async () => {
     await settings.load();
+
+    // Apply saved theme
+    document.documentElement.setAttribute('data-theme', $settings.theme);
+
     await sessions.load();
     sessions.setupListeners();
 
@@ -35,8 +44,26 @@
 
       await register($settings.hotkeys.send_prompt, async () => {
         if ($recording.transcript) {
-          const sessionId = await sessions.createSession($recording.transcript);
-          activeSessionId.set(sessionId);
+          if ($settings.terminal_mode === 'Sdk') {
+            // SDK mode: create SDK session and send prompt
+            const repoPath = $activeRepo?.path || '.';
+            let sessionId = $activeSdkSessionId;
+
+            if (!sessionId) {
+              // Create a new SDK session if none exists
+              sessionId = await sdkSessions.createSession(repoPath);
+              activeSdkSessionId.set(sessionId);
+            }
+
+            // Send the prompt to the SDK session
+            await sdkSessions.sendPrompt(sessionId, $recording.transcript);
+            activeSessionId.set(null); // Clear PTY session selection
+          } else {
+            // PTY mode: create terminal session as before
+            const sessionId = await sessions.createSession($recording.transcript);
+            activeSessionId.set(sessionId);
+            activeSdkSessionId.set(null); // Clear SDK session selection
+          }
           recording.clearTranscript();
         }
       });
@@ -156,7 +183,39 @@
     <main class="flex-1 flex flex-col overflow-hidden">
       {#if currentView === 'settings'}
         <Settings />
+      {:else if $activeSdkSession}
+        <!-- SDK Mode Session -->
+        <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 text-xs font-medium bg-accent text-white rounded">SDK</span>
+            <span class="text-sm text-text-primary truncate">Session</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-text-muted">{$activeSdkSession.status}</span>
+            <button
+              class="p-1 hover:bg-border rounded transition-colors text-text-muted hover:text-error"
+              onclick={() => {
+                if ($activeSdkSessionId) {
+                  sdkSessions.closeSession($activeSdkSessionId);
+                  activeSdkSessionId.set(null);
+                }
+              }}
+              title="Close session"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="terminal-wrapper flex-1 overflow-hidden">
+          {#key $activeSdkSession.id}
+            <SdkView sessionId={$activeSdkSession.id} />
+          {/key}
+        </div>
+        <Transcript />
       {:else if $activeSession}
+        <!-- PTY Mode Session -->
         <SessionHeader session={$activeSession} />
         <div class="terminal-wrapper flex-1 overflow-hidden">
           {#key $activeSession.id}

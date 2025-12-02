@@ -125,6 +125,16 @@ pub enum TerminalMode {
     #[default]
     Interactive,
     Prompt,
+    Sdk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum Theme {
+    #[default]
+    Midnight,
+    Slate,
+    Snow,
+    Sand,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +152,8 @@ pub struct AppConfig {
     pub terminal_mode: TerminalMode,
     #[serde(default)]
     pub skip_permissions: bool,
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 impl Default for AppConfig {
@@ -158,6 +170,7 @@ impl Default for AppConfig {
             default_model: "claude-sonnet-4-20250514".to_string(),
             terminal_mode: TerminalMode::default(),
             skip_permissions: false,
+            theme: Theme::default(),
         }
     }
 }

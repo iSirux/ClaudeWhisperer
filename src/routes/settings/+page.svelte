@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings } from '$lib/stores/settings';
+  import { settings, type Theme } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
 
@@ -156,6 +156,37 @@
       {#if activeTab === 'general'}
         <div class="space-y-4">
           <div>
+            <label class="block text-sm font-medium text-text-secondary mb-2">Theme</label>
+            <div class="grid grid-cols-2 gap-2">
+              {#each [
+                { id: 'Midnight' as Theme, label: 'Midnight', desc: 'Deep dark', colors: ['#0f0f0f', '#1a1a1a', '#6366f1'] },
+                { id: 'Slate' as Theme, label: 'Slate', desc: 'Blue-gray dark', colors: ['#1e293b', '#334155', '#3b82f6'] },
+                { id: 'Snow' as Theme, label: 'Snow', desc: 'Clean light', colors: ['#ffffff', '#f1f5f9', '#6366f1'] },
+                { id: 'Sand' as Theme, label: 'Sand', desc: 'Warm light', colors: ['#fefdfb', '#f5f0e8', '#d97706'] },
+              ] as theme}
+                <button
+                  class="flex items-center gap-3 p-3 rounded border-2 transition-all"
+                  class:border-accent={$settings.theme === theme.id}
+                  class:border-border={$settings.theme !== theme.id}
+                  onclick={() => {
+                    settings.update(s => ({ ...s, theme: theme.id }));
+                    document.documentElement.setAttribute('data-theme', theme.id);
+                  }}
+                >
+                  <div class="flex gap-0.5">
+                    {#each theme.colors as color}
+                      <div class="w-4 h-4 rounded-sm" style="background-color: {color}"></div>
+                    {/each}
+                  </div>
+                  <div class="text-left">
+                    <div class="text-sm font-medium text-text-primary">{theme.label}</div>
+                    <div class="text-xs text-text-muted">{theme.desc}</div>
+                  </div>
+                </button>
+              {/each}
+            </div>
+          </div>
+          <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Default Model</label>
             <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.default_model}>
               <option value="claude-opus-4-5">Opus 4.5</option>
@@ -168,8 +199,17 @@
             <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.terminal_mode}>
               <option value="Interactive">Interactive</option>
               <option value="Prompt">Prompt (-p flag)</option>
+              <option value="Sdk">SDK (Agent SDK)</option>
             </select>
-            <p class="text-xs text-text-muted mt-1">Interactive: Full terminal control. Prompt: Runs single prompt and exits.</p>
+            <p class="text-xs text-text-muted mt-1">
+              {#if $settings.terminal_mode === 'Interactive'}
+                Full terminal control with multi-turn conversations.
+              {:else if $settings.terminal_mode === 'Prompt'}
+                Runs single prompt and exits. Good for one-shot tasks.
+              {:else if $settings.terminal_mode === 'Sdk'}
+                Uses Claude Agent SDK for structured messages and tool visibility.
+              {/if}
+            </p>
           </div>
           <div class="flex items-center justify-between">
             <div>
