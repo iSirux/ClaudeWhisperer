@@ -1,0 +1,28 @@
+[package]
+name = "claude-whisperer"
+version = "0.1.0"
+description = "Voice-controlled interface for Claude Code"
+authors = ["iSirux"]
+edition = "2021"
+
+[lib]
+name = "claude_whisperer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+portable-pty = "0.8"
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+parking_lot = "0.12"

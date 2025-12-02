@@ -1,0 +1,82 @@
+use crate::config::AppConfig;
+use crate::git::GitManager;
+use crate::terminal::{TerminalManager, TerminalSession};
+use parking_lot::Mutex;
+use std::sync::Arc;
+use tauri::{AppHandle, State};
+
+pub type TerminalState = Arc<TerminalManager>;
+pub type ConfigState = Mutex<AppConfig>;
+
+#[tauri::command]
+pub fn create_terminal_session(
+    app: AppHandle,
+    terminal_manager: State<TerminalState>,
+    config: State<ConfigState>,
+    prompt: String,
+) -> Result<String, String> {
+    let cfg = config.lock();
+
+    let repo = cfg
+        .get_active_repo()
+        .ok_or("No active repository configured")?;
+
+    let working_path = if cfg.git.create_branch && cfg.git.use_worktrees {
+        let branch_name = GitManager::generate_branch_name(&prompt);
+        let worktree_path = GitManager::get_worktree_path(&repo.path, &branch_name);
+
+        GitManager::create_worktree(&repo.path, &branch_name, &worktree_path)?;
+        worktree_path
+    } else if cfg.git.create_branch {
+        let branch_name = GitManager::generate_branch_name(&prompt);
+        GitManager::create_branch(&repo.path, &branch_name)?;
+        repo.path.clone()
+    } else {
+        repo.path.clone()
+    };
+
+    let model = Some(cfg.default_model.clone());
+    drop(cfg);
+
+    terminal_manager.create_session(app, working_path, prompt, model)
+}
+
+#[tauri::command]
+pub fn write_to_terminal(
+    terminal_manager: State<TerminalState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    terminal_manager.write_to_session(&session_id, &data)
+}
+
+#[tauri::command]
+pub fn resize_terminal(
+    terminal_manager: State<TerminalState>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    terminal_manager.resize_session(&session_id, rows, cols)
+}
+
+#[tauri::command]
+pub fn close_terminal(
+    terminal_manager: State<TerminalState>,
+    session_id: String,
+) -> Result<(), String> {
+    terminal_manager.close_session(&session_id)
+}
+
+#[tauri::command]
+pub fn get_terminal_sessions(terminal_manager: State<TerminalState>) -> Vec<TerminalSession> {
+    terminal_manager.get_sessions()
+}
+
+#[tauri::command]
+pub fn get_terminal_session(
+    terminal_manager: State<TerminalState>,
+    session_id: String,
+) -> Option<TerminalSession> {
+    terminal_manager.get_session(&session_id)
+}
