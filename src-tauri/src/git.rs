@@ -1,6 +1,12 @@
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[allow(dead_code)]
 pub struct GitManager;
 
@@ -11,9 +17,14 @@ impl GitManager {
     }
 
     pub fn get_current_branch(repo_path: &str) -> Result<String, String> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -25,9 +36,14 @@ impl GitManager {
     }
 
     pub fn create_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let output = Command::new("git")
-            .args(["checkout", "-b", branch_name])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["checkout", "-b", branch_name])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -43,9 +59,14 @@ impl GitManager {
         branch_name: &str,
         worktree_path: &str,
     ) -> Result<(), String> {
-        let output = Command::new("git")
-            .args(["worktree", "add", "-b", branch_name, worktree_path])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "add", "-b", branch_name, worktree_path])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -57,9 +78,14 @@ impl GitManager {
     }
 
     pub fn remove_worktree(repo_path: &str, worktree_path: &str) -> Result<(), String> {
-        let output = Command::new("git")
-            .args(["worktree", "remove", worktree_path, "--force"])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "remove", worktree_path, "--force"])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -71,9 +97,14 @@ impl GitManager {
     }
 
     pub fn merge_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let output = Command::new("git")
-            .args(["merge", branch_name, "--no-edit"])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["merge", branch_name, "--no-edit"])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -85,9 +116,14 @@ impl GitManager {
     }
 
     pub fn checkout_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let output = Command::new("git")
-            .args(["checkout", branch_name])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["checkout", branch_name])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -99,9 +135,14 @@ impl GitManager {
     }
 
     pub fn delete_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
-        let output = Command::new("git")
-            .args(["branch", "-D", branch_name])
-            .current_dir(repo_path)
+        let mut cmd = Command::new("git");
+        cmd.args(["branch", "-D", branch_name])
+            .current_dir(repo_path);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| format!("Failed to run git: {}", e))?;
 

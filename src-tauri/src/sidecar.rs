@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutboundMessage {
@@ -163,12 +166,21 @@ impl SidecarManager {
 
         println!("[sidecar] Sidecar base directory: {}", sidecar_base);
 
-        let mut child = Command::new("node")
-            .arg(&path_str)
+        let mut cmd = Command::new("node");
+        cmd.arg(&path_str)
             .current_dir(&sidecar_base)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // On Windows, prevent the CMD window from appearing
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 

@@ -1,6 +1,15 @@
-import { derived } from 'svelte/store';
+import { derived, writable } from 'svelte/store';
 import { sessions } from './sessions';
 import { sdkSessions, type SdkSession } from './sdkSessions';
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+// Session stats that get broadcast across windows
+export interface SessionStatsData {
+  active: number;
+  done: number;
+  error: number;
+  total: number;
+}
 
 // Helper to determine if SDK session is in active state
 function isSdkSessionActive(session: SdkSession): boolean {
@@ -81,3 +90,59 @@ export const totalSessions = derived(
     return $sessions.length + $sdkSessions.length;
   }
 );
+
+// Combined stats for broadcasting
+export const sessionStats = derived(
+  [activeSessions, doneSessions, errorSessions, totalSessions],
+  ([$active, $done, $error, $total]) => ({
+    active: $active,
+    done: $done,
+    error: $error,
+    total: $total,
+  })
+);
+
+// Broadcast session stats to other windows
+let lastBroadcast: SessionStatsData = { active: 0, done: 0, error: 0, total: 0 };
+
+export function setupSessionStatsBroadcast() {
+  sessionStats.subscribe((stats) => {
+    // Only broadcast if changed
+    if (
+      stats.active !== lastBroadcast.active ||
+      stats.done !== lastBroadcast.done ||
+      stats.error !== lastBroadcast.error ||
+      stats.total !== lastBroadcast.total
+    ) {
+      lastBroadcast = stats;
+      emit('session-stats-update', stats).catch(console.error);
+    }
+  });
+}
+
+// Store for receiving session stats (used by overlay windows)
+function createRemoteSessionStats() {
+  const { subscribe, set } = writable<SessionStatsData>({
+    active: 0,
+    done: 0,
+    error: 0,
+    total: 0,
+  });
+
+  let unlisten: UnlistenFn | null = null;
+
+  return {
+    subscribe,
+    async init() {
+      unlisten = await listen<SessionStatsData>('session-stats-update', (event) => {
+        set(event.payload);
+      });
+    },
+    cleanup() {
+      unlisten?.();
+      unlisten = null;
+    },
+  };
+}
+
+export const remoteSessionStats = createRemoteSessionStats();

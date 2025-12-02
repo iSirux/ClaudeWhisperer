@@ -76,9 +76,9 @@ function createSessionsOverlayStore() {
       try {
         const monitor = await primaryMonitor();
         if (monitor) {
-          // Position at bottom right with some margin
-          const x = monitor.size.width - 300 - 20; // width + margin
-          const y = monitor.size.height - 200 - 60; // height + margin for taskbar
+          // Position at bottom right with some margin (window is 180x32)
+          const x = monitor.size.width - 180 - 20; // width + margin
+          const y = monitor.size.height - 32 - 60; // height + margin for taskbar
           await this.setPosition(x, y);
         }
       } catch (error) {

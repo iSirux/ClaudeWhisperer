@@ -13,6 +13,7 @@
   import { recording, isRecording } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { sessionsOverlay } from '$lib/stores/sessionsOverlay';
+  import { setupSessionStatsBroadcast } from '$lib/stores/sessionStats';
   import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
@@ -34,6 +35,9 @@
 
     await sessions.load();
     sessions.setupListeners();
+
+    // Start broadcasting session stats to other windows (like sessions-overlay)
+    setupSessionStatsBroadcast();
 
     await setupHotkeys();
 
