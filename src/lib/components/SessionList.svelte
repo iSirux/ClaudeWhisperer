@@ -9,7 +9,8 @@
       if ($settings.terminal_mode === 'Sdk') {
         // SDK mode: create SDK session
         const repoPath = $activeRepo?.path || '.';
-        const sessionId = await sdkSessions.createSession(repoPath);
+        const model = $settings.default_model;
+        const sessionId = await sdkSessions.createSession(repoPath, model);
         activeSdkSessionId.set(sessionId);
         activeSessionId.set(null); // Clear PTY selection
       } else {
@@ -37,8 +38,9 @@
   });
 
   // Reactive elapsed time formatter that depends on `now`
-  function getElapsedTime(createdAt: number): string {
-    const elapsed = Math.max(0, now - createdAt);
+  function getElapsedTime(createdAt: number, endedAt?: number): string {
+    const endTime = endedAt ?? now;
+    const elapsed = Math.max(0, endTime - createdAt);
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
 
@@ -58,9 +60,51 @@
     id: string;
     type: 'pty' | 'sdk';
     status: string;
+    statusDetail?: string; // e.g., tool name being run
     prompt: string;
     repoPath: string;
+    model?: string; // model name for SDK sessions
     createdAt: number;
+    endedAt?: number; // timestamp when session finished (for SDK sessions)
+  }
+
+  // Get smart status for SDK sessions based on messages
+  function getSdkSmartStatus(session: typeof $sdkSessions[0]): { status: string; detail?: string } {
+    const messages = session.messages;
+    const lastMsg = messages.at(-1);
+
+    if (session.status === 'error') {
+      return { status: 'error' };
+    }
+
+    if (session.status === 'querying') {
+      // Find the last tool_start that doesn't have a matching tool_result after it
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.type === 'tool_start') {
+          return { status: 'tool', detail: msg.tool };
+        }
+        if (msg.type === 'tool_result') {
+          // Tool finished, Claude is thinking
+          return { status: 'thinking' };
+        }
+        if (msg.type === 'text') {
+          return { status: 'responding' };
+        }
+      }
+      return { status: 'thinking' };
+    }
+
+    // Idle states
+    if (messages.length === 0) {
+      return { status: 'new' };
+    }
+
+    if (lastMsg?.type === 'done') {
+      return { status: 'done' };
+    }
+
+    return { status: 'idle' };
   }
 
   function selectPtySession(id: string) {
@@ -92,8 +136,9 @@
   function getStatusColor(status: string): string {
     switch (status) {
       case 'Starting': return 'text-yellow-400';
-      case 'Running': case 'querying': return 'text-emerald-400';
+      case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': return 'text-emerald-400';
       case 'Completed': case 'idle': case 'done': return 'text-blue-400';
+      case 'new': return 'text-text-muted';
       case 'Failed': case 'error': return 'text-red-400';
       default: return 'text-text-muted';
     }
@@ -102,18 +147,23 @@
   function getStatusBg(status: string): string {
     switch (status) {
       case 'Starting': return 'bg-yellow-400';
-      case 'Running': case 'querying': return 'bg-emerald-400';
+      case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': return 'bg-emerald-400';
       case 'Completed': case 'idle': case 'done': return 'bg-blue-400';
+      case 'new': return 'bg-slate-400';
       case 'Failed': case 'error': return 'bg-red-400';
       default: return 'bg-text-muted';
     }
   }
 
-  function getStatusLabel(status: string): string {
+  function getStatusLabel(status: string, detail?: string): string {
     switch (status) {
       case 'Running': case 'querying': return 'Active';
+      case 'tool': return detail || 'Tool';
+      case 'thinking': return 'Thinking';
+      case 'responding': return 'Responding';
       case 'idle': return 'Ready';
       case 'done': return 'Done';
+      case 'new': return 'New';
       default: return status;
     }
   }
@@ -128,6 +178,16 @@
     return parts[parts.length - 1] || path;
   }
 
+  function getShortModelName(model: string): string {
+    // Convert model IDs to shorter display names
+    if (model.includes('opus')) return 'Opus';
+    if (model.includes('sonnet')) return 'Sonnet';
+    if (model.includes('haiku')) return 'Haiku';
+    // Return last part of model ID if no match
+    const parts = model.split('-');
+    return parts[parts.length - 1] || model;
+  }
+
   // Combine PTY and SDK sessions into unified list
   let allSessions = $derived((): DisplaySession[] => {
     const ptySessions: DisplaySession[] = $sessions.map(s => ({
@@ -139,19 +199,31 @@
       createdAt: s.created_at,
     }));
 
-    const sdkSessionsList: DisplaySession[] = $sdkSessions.map(s => ({
-      id: s.id,
-      type: 'sdk' as const,
-      status: s.status,
-      prompt: s.messages.find(m => m.type === 'text')?.content?.slice(0, 100) || 'SDK Session',
-      repoPath: s.cwd,
-      createdAt: Math.floor(s.createdAt / 1000),
-    }));
+    const sdkSessionsList: DisplaySession[] = $sdkSessions.map(s => {
+      const smartStatus = getSdkSmartStatus(s);
+      // Find the timestamp when the session ended (done, idle, or error)
+      const doneMessage = s.messages.find(m => m.type === 'done');
+      const endedAt = (smartStatus.status === 'done' || smartStatus.status === 'idle' || smartStatus.status === 'error') && doneMessage
+        ? Math.floor(doneMessage.timestamp / 1000)
+        : undefined;
+
+      return {
+        id: s.id,
+        type: 'sdk' as const,
+        status: smartStatus.status,
+        statusDetail: smartStatus.detail,
+        prompt: s.messages.find(m => m.type === 'user')?.content || 'SDK Session',
+        repoPath: s.cwd,
+        model: s.model,
+        createdAt: Math.floor(s.createdAt / 1000),
+        endedAt,
+      };
+    });
 
     return [...ptySessions, ...sdkSessionsList].sort((a, b) => {
       const statusOrder: Record<string, number> = {
-        Starting: 0, Running: 0, querying: 0,
-        idle: 1, Completed: 2, done: 2,
+        Starting: 0, Running: 0, querying: 0, tool: 0, thinking: 0, responding: 0,
+        idle: 1, new: 1, Completed: 2, done: 2,
         Failed: 3, error: 3
       };
       const statusDiff = (statusOrder[a.status] ?? 4) - (statusOrder[b.status] ?? 4);
@@ -207,14 +279,14 @@
             {/if}
             <div class="relative">
               <div class="w-2 h-2 rounded-full {getStatusBg(session.status)}"></div>
-              {#if session.status === 'Running' || session.status === 'Starting' || session.status === 'querying'}
+              {#if ['Running', 'Starting', 'querying', 'tool', 'thinking', 'responding'].includes(session.status)}
                 <div class="absolute inset-0 w-2 h-2 rounded-full {getStatusBg(session.status)} animate-ping opacity-75"></div>
               {/if}
             </div>
-            <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status)}</span>
+            <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status, session.statusDetail)}</span>
           </div>
           <div class="flex items-center gap-2">
-            <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.createdAt)}</span>
+            <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.createdAt, session.endedAt)}</span>
             <button
               class="text-text-muted hover:text-red-400 hover:bg-red-400/10 rounded p-0.5 transition-colors"
               onclick={(e) => session.type === 'pty' ? closePtySession(session.id, e) : closeSdkSession(session.id, e)}
@@ -236,12 +308,16 @@
           {/if}
         </p>
 
-        <!-- Repo name -->
+        <!-- Repo name and model -->
         <div class="flex items-center gap-1.5 text-text-muted">
           <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
           </svg>
           <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
+          {#if session.model}
+            <span class="text-xs text-text-muted">·</span>
+            <span class="text-xs text-accent/70">{getShortModelName(session.model)}</span>
+          {/if}
         </div>
       </div>
     {/each}

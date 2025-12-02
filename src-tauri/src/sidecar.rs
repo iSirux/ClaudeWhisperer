@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -12,10 +12,15 @@ pub enum OutboundMessage {
     Create {
         id: String,
         cwd: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     Query {
         id: String,
         prompt: String,
+    },
+    Stop {
+        id: String,
     },
     Close {
         id: String,
@@ -99,21 +104,30 @@ impl SidecarManager {
         let cwd = std::env::current_dir()
             .map_err(|e| format!("Failed to get cwd: {}", e))?;
 
+        // Get resource directory for bundled release
+        let resource_dir = app.path().resource_dir()
+            .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+
         // Possible paths (in order of priority):
-        // 1. <cwd>/sidecar/dist/index.js (when cwd is src-tauri during dev)
-        // 2. <cwd>/src-tauri/sidecar/dist/index.js (when cwd is project root)
-        // 3. <exe_dir>/../sidecar/dist/index.js (relative to exe in target/debug)
-        // 4. <exe_dir>/sidecar/dist/index.js (for bundled release)
+        // 1. <resource_dir>/dist/index.js (bundled release - "sidecar/dist/" becomes "dist/")
+        // 2. <resource_dir>/sidecar/dist/index.js (bundled release alternate)
+        // 3. <cwd>/sidecar/dist/index.js (when cwd is src-tauri during dev)
+        // 4. <cwd>/src-tauri/sidecar/dist/index.js (when cwd is project root)
+        // 5. <exe_dir>/sidecar/dist/index.js (fallback)
         let possible_paths = [
+            resource_dir.join("dist").join("index.js"),
+            resource_dir.join("sidecar").join("dist").join("index.js"),
             cwd.join("sidecar").join("dist").join("index.js"),
             cwd.join("src-tauri").join("sidecar").join("dist").join("index.js"),
-            exe_dir.parent().map(|p| p.join("..").join("..").join("sidecar").join("dist").join("index.js")).unwrap_or_default(),
             exe_dir.join("sidecar").join("dist").join("index.js"),
         ];
 
         let path = possible_paths
             .iter()
-            .find(|p| p.exists())
+            .find(|p| {
+                println!("[sidecar] Checking path: {:?} exists={}", p, p.exists());
+                p.exists()
+            })
             .cloned()
             .ok_or_else(|| {
                 format!(
@@ -126,8 +140,24 @@ impl SidecarManager {
                 )
             })?;
 
+        // Convert to string and strip Windows extended path prefix if present
+        let path_str = path.to_string_lossy().to_string();
+        let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
+
+        println!("[sidecar] Using sidecar at: {}", path_str);
+
+        // Get the sidecar base directory (contains dist/ and node_modules/)
+        let sidecar_base = std::path::Path::new(&path_str)
+            .parent() // dist/
+            .and_then(|p| p.parent()) // sidecar/
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+
+        println!("[sidecar] Sidecar base directory: {}", sidecar_base);
+
         let mut child = Command::new("node")
-            .arg(&path)
+            .arg(&path_str)
+            .current_dir(&sidecar_base)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

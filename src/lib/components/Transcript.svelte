@@ -104,9 +104,10 @@
         if ($settings.terminal_mode === 'Sdk') {
           // SDK mode: create or reuse SDK session
           const repoPath = $activeRepo?.path || '.';
+          const model = $settings.default_model;
           let sessionId = $activeSdkSessionId;
           if (!sessionId) {
-            sessionId = await sdkSessions.createSession(repoPath);
+            sessionId = await sdkSessions.createSession(repoPath, model);
             activeSdkSessionId.set(sessionId);
           }
           await sdkSessions.sendPrompt(sessionId, transcript);
@@ -141,9 +142,10 @@
       if ($settings.terminal_mode === 'Sdk') {
         // SDK mode: create or reuse SDK session
         const repoPath = $activeRepo?.path || '.';
+        const model = $settings.default_model;
         let sessionId = $activeSdkSessionId;
         if (!sessionId) {
-          sessionId = await sdkSessions.createSession(repoPath);
+          sessionId = await sdkSessions.createSession(repoPath, model);
           activeSdkSessionId.set(sessionId);
         }
         await sdkSessions.sendPrompt(sessionId, prompt);
@@ -175,11 +177,12 @@
       if ($settings.terminal_mode === 'Sdk') {
         // SDK mode
         const repoPath = $activeRepo?.path || '.';
+        const model = $settings.default_model;
         const existingId = $activeSdkSessionId;
         if (existingId) {
           sdkSessions.sendPrompt(existingId, cleanedTranscript);
         } else {
-          sdkSessions.createSession(repoPath).then((sessionId) => {
+          sdkSessions.createSession(repoPath, model).then((sessionId) => {
             activeSdkSessionId.set(sessionId);
             sdkSessions.sendPrompt(sessionId, cleanedTranscript);
           });

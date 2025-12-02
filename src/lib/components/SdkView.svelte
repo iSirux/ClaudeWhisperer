@@ -10,8 +10,16 @@
   let unsubscribe: (() => void) | undefined;
 
   let messages = $derived(session?.messages ?? []);
+  let firstUserPrompt = $derived(session?.messages.filter(m => m.type === 'user').at(0)?.content ?? '');
   let status = $derived(session?.status ?? 'idle');
   let isQuerying = $derived(status === 'querying');
+
+  const PROMPT_PREVIEW_LENGTH = 120;
+  let truncatedPrompt = $derived(
+    firstUserPrompt.length > PROMPT_PREVIEW_LENGTH
+      ? firstUserPrompt.slice(0, PROMPT_PREVIEW_LENGTH) + '...'
+      : firstUserPrompt
+  );
 
   onMount(() => {
     console.log('[SdkView] Setting up subscription for session:', sessionId);
@@ -79,12 +87,17 @@
 </script>
 
 <div class="sdk-view">
+  {#if truncatedPrompt}
+    <div class="prompt-header">
+      <span class="prompt-label">Prompt:</span>
+      <span class="prompt-text">{truncatedPrompt}</span>
+    </div>
+  {/if}
   <div class="messages" bind:this={messagesEl}>
     {#each messages as msg (msg.timestamp)}
       <div class="message message-{msg.type}">
         {#if msg.type === 'user'}
           <div class="user-message">
-            <span class="user-icon">👤</span>
             <pre class="user-content">{msg.content}</pre>
           </div>
         {:else if msg.type === 'text'}
@@ -121,11 +134,6 @@
           <div class="error">
             <span class="error-icon">❌</span>
             <span class="error-text">{msg.content}</span>
-          </div>
-        {:else if msg.type === 'done'}
-          <div class="done">
-            <span class="done-icon">✓</span>
-            <span class="done-text">Task completed</span>
           </div>
         {/if}
       </div>
@@ -195,19 +203,37 @@
     }
   }
 
-  .user-message {
+  .prompt-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    padding: 0.5rem 1rem;
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
     display: flex;
-    align-items: flex-start;
-    gap: 0.75rem;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  .prompt-label {
+    color: #64748b;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .prompt-text {
+    color: #e2e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .user-message {
     padding: 0.75rem 1rem;
     background: #1e293b;
     border-radius: 8px;
     border-left: 3px solid #3b82f6;
-  }
-
-  .user-icon {
-    flex-shrink: 0;
-    font-size: 1rem;
   }
 
   .user-content {
@@ -311,17 +337,6 @@
   .error-text {
     color: #ef4444;
     font-size: 0.9rem;
-  }
-
-  .done {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    color: #22c55e;
-    font-size: 0.85rem;
-    opacity: 0.8;
   }
 
   .message-loading {

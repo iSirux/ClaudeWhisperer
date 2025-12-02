@@ -6,6 +6,7 @@ interface CreateMessage {
   type: 'create';
   id: string;
   cwd: string;
+  model?: string;
   options?: Partial<Options>;
 }
 
@@ -20,7 +21,18 @@ interface CloseMessage {
   id: string;
 }
 
-type InboundMessage = CreateMessage | QueryMessage | CloseMessage;
+interface StopMessage {
+  type: 'stop';
+  id: string;
+}
+
+interface UpdateModelMessage {
+  type: 'update_model';
+  id: string;
+  model: string;
+}
+
+type InboundMessage = CreateMessage | QueryMessage | CloseMessage | StopMessage | UpdateModelMessage;
 
 interface Session {
   cwd: string;
@@ -60,6 +72,7 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
     permissionMode: 'acceptEdits',
+    ...(msg.model && { model: msg.model }),
     ...msg.options,
   };
 
@@ -82,21 +95,29 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     session.abortController = abortController;
 
     send({ type: 'debug', id: msg.id, message: `Calling SDK query()... resume=${session.sdkSessionId || 'none'}` });
+    send({ type: 'debug', id: msg.id, message: `Options: cwd=${session.options.cwd}, pathToClaudeCodeExecutable=${session.options.pathToClaudeCodeExecutable}` });
 
     // Use the query function from the SDK
-    const queryIterator = query({
-      prompt: msg.prompt,
-      options: {
-        ...session.options,
-        abortController,
-        // Resume from previous session if we have one
-        resume: session.sdkSessionId,
-        // Capture stderr for debugging
-        stderr: (data: string) => {
-          send({ type: 'debug', id: msg.id, message: `[stderr] ${data}` });
+    let queryIterator;
+    try {
+      queryIterator = query({
+        prompt: msg.prompt,
+        options: {
+          ...session.options,
+          abortController,
+          // Resume from previous session if we have one
+          resume: session.sdkSessionId,
+          // Capture stderr for debugging
+          stderr: (data: string) => {
+            send({ type: 'debug', id: msg.id, message: `[stderr] ${data}` });
+          },
         },
-      },
-    });
+      });
+    } catch (spawnError) {
+      send({ type: 'debug', id: msg.id, message: `Failed to create query: ${spawnError}` });
+      sendError(msg.id, `Failed to spawn query: ${spawnError}`);
+      return;
+    }
 
     send({ type: 'debug', id: msg.id, message: `Query iterator created, starting iteration...` });
 
@@ -185,6 +206,22 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
   }
 }
 
+async function handleStop(msg: StopMessage): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, 'Session not found');
+    return;
+  }
+
+  if (session.abortController) {
+    send({ type: 'debug', id: msg.id, message: 'Aborting query...' });
+    session.abortController.abort();
+    session.abortController = undefined;
+  } else {
+    send({ type: 'debug', id: msg.id, message: 'No active query to stop' });
+  }
+}
+
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session?.abortController) {
@@ -201,6 +238,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case 'query':
       await handleQuery(msg);
+      break;
+    case 'stop':
+      await handleStop(msg);
       break;
     case 'close':
       await handleClose(msg);
@@ -225,13 +265,25 @@ rl.on('line', async (line: string) => {
   }
 });
 
-// Handle process errors
+// Handle process errors - log but don't crash
 process.on('uncaughtException', (err) => {
+  send({ type: 'debug', id: 'process', message: `Uncaught exception: ${err.message}\n${err.stack}` });
   sendError('process', `Uncaught exception: ${err.message}`);
 });
 
 process.on('unhandledRejection', (reason) => {
+  send({ type: 'debug', id: 'process', message: `Unhandled rejection: ${reason}` });
   sendError('process', `Unhandled rejection: ${reason}`);
+});
+
+// Handle stdin close gracefully
+process.stdin.on('close', () => {
+  send({ type: 'debug', id: 'process', message: 'stdin closed, exiting' });
+  process.exit(0);
+});
+
+process.stdin.on('error', (err) => {
+  send({ type: 'debug', id: 'process', message: `stdin error: ${err.message}` });
 });
 
 // Keep process alive
@@ -239,3 +291,4 @@ process.stdin.resume();
 
 // Log startup
 send({ type: 'ready' });
+send({ type: 'debug', id: 'process', message: 'Sidecar started successfully' });

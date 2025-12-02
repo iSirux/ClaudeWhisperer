@@ -47,11 +47,12 @@
           if ($settings.terminal_mode === 'Sdk') {
             // SDK mode: create SDK session and send prompt
             const repoPath = $activeRepo?.path || '.';
+            const model = $settings.default_model;
             let sessionId = $activeSdkSessionId;
 
             if (!sessionId) {
               // Create a new SDK session if none exists
-              sessionId = await sdkSessions.createSession(repoPath);
+              sessionId = await sdkSessions.createSession(repoPath, model);
               activeSdkSessionId.set(sessionId);
             }
 
@@ -87,6 +88,16 @@
   async function selectRepo(index: number) {
     await settings.setActiveRepo(index);
     showRepoSelector = false;
+  }
+
+  async function changeModel(newModel: string) {
+    // Update the default model
+    settings.update(s => ({ ...s, default_model: newModel }));
+
+    // If there's an active SDK session, update its model in the session store
+    if ($activeSdkSessionId) {
+      sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
+    }
   }
 </script>
 
@@ -137,6 +148,43 @@
             </div>
           </div>
         {/if}
+      </div>
+
+      <!-- Model Selector -->
+      <div class="flex items-center gap-1 px-2 py-1 bg-surface-elevated rounded">
+        <button
+          class="px-3 py-1 rounded text-xs font-medium transition-colors"
+          class:bg-accent={$settings.default_model === 'claude-opus-4-5'}
+          class:text-white={$settings.default_model === 'claude-opus-4-5'}
+          class:text-text-secondary={$settings.default_model !== 'claude-opus-4-5'}
+          class:hover:bg-border={$settings.default_model !== 'claude-opus-4-5'}
+          onclick={() => changeModel('claude-opus-4-5')}
+          title="Claude Opus 4.5 - Most capable model"
+        >
+          Opus
+        </button>
+        <button
+          class="px-3 py-1 rounded text-xs font-medium transition-colors"
+          class:bg-accent={$settings.default_model === 'claude-sonnet-4-5-20250929'}
+          class:text-white={$settings.default_model === 'claude-sonnet-4-5-20250929'}
+          class:text-text-secondary={$settings.default_model !== 'claude-sonnet-4-5-20250929'}
+          class:hover:bg-border={$settings.default_model !== 'claude-sonnet-4-5-20250929'}
+          onclick={() => changeModel('claude-sonnet-4-5-20250929')}
+          title="Claude Sonnet 4.5 - Balanced performance"
+        >
+          Sonnet
+        </button>
+        <button
+          class="px-3 py-1 rounded text-xs font-medium transition-colors"
+          class:bg-accent={$settings.default_model === 'claude-haiku-4-5'}
+          class:text-white={$settings.default_model === 'claude-haiku-4-5'}
+          class:text-text-secondary={$settings.default_model !== 'claude-haiku-4-5'}
+          class:hover:bg-border={$settings.default_model !== 'claude-haiku-4-5'}
+          onclick={() => changeModel('claude-haiku-4-5')}
+          title="Claude Haiku 4.5 - Fastest model"
+        >
+          Haiku
+        </button>
       </div>
     </div>
 

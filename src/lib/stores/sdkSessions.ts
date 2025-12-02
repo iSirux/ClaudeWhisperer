@@ -14,6 +14,7 @@ export interface SdkMessage {
 export interface SdkSession {
   id: string;
   cwd: string;
+  model: string;
   messages: SdkMessage[];
   status: 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
@@ -39,19 +40,15 @@ function createSdkSessionsStore() {
       }
     },
 
-    async createSession(cwd: string): Promise<string> {
+    async createSession(cwd: string, model: string): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
 
-      // Debug: listen for all events to see what's coming through
-      listen('*', (event) => {
-        console.log('[sdkSessions] Global event received:', event.event, event.payload);
-      }).catch(e => console.log('[sdkSessions] Failed to set up global listener:', e));
-
       const session: SdkSession = {
         id,
         cwd,
+        model,
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
@@ -178,8 +175,8 @@ function createSdkSessionsStore() {
       listeners.set(id, unlisteners);
 
       // Create the session on the backend
-      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd);
-      await invoke('create_sdk_session', { id, cwd });
+      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', model);
+      await invoke('create_sdk_session', { id, cwd, model });
       console.log('[sdkSessions] Session created');
 
       return id;
@@ -254,6 +251,16 @@ function createSdkSessionsStore() {
         result = sessions.find(s => s.id === id);
       })();
       return result;
+    },
+
+    updateSessionModel(id: string, model: string): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, model }
+            : s
+        )
+      );
     },
   };
 }
