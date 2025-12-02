@@ -15,12 +15,12 @@ pub fn create_sdk_session(
     sidecar: State<Arc<SidecarManager>>,
     id: String,
     cwd: String,
-    model: Option<String>,
+    model: String, // Per-session model (required)
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, model })
+    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model) })
 }
 
 #[tauri::command]
@@ -44,6 +44,18 @@ pub fn stop_sdk_query(
         return Err("Sidecar not started".to_string());
     }
     sidecar.send(OutboundMessage::Stop { id })
+}
+
+#[tauri::command]
+pub fn update_sdk_model(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    model: String,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        return Err("Sidecar not started".to_string());
+    }
+    sidecar.send(OutboundMessage::UpdateModel { id, model })
 }
 
 #[tauri::command]

@@ -14,10 +14,11 @@ export interface SdkMessage {
 export interface SdkSession {
   id: string;
   cwd: string;
-  model: string;
+  model: string; // Per-session model (can differ from global default_model)
   messages: SdkMessage[];
   status: 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
+  startedAt?: number; // Timestamp when first prompt was sent
 }
 
 function createSdkSessionsStore() {
@@ -190,6 +191,7 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 status: 'querying' as const,
+                startedAt: s.startedAt || Date.now(), // Set startedAt on first prompt
                 messages: [
                   ...s.messages,
                   { type: 'user' as const, content: prompt, timestamp: Date.now() },
@@ -226,6 +228,26 @@ function createSdkSessionsStore() {
       }
     },
 
+    async stopQuery(id: string): Promise<void> {
+      console.log('[sdkSessions] stopQuery called for session:', id);
+      try {
+        await invoke('stop_sdk_query', { id });
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  status: 'idle' as const,
+                }
+              : s
+          )
+        );
+      } catch (error) {
+        console.error('Failed to stop SDK query:', error);
+        throw error;
+      }
+    },
+
     async closeSession(id: string): Promise<void> {
       try {
         await invoke('close_sdk_session', { id });
@@ -253,7 +275,8 @@ function createSdkSessionsStore() {
       return result;
     },
 
-    updateSessionModel(id: string, model: string): void {
+    async updateSessionModel(id: string, model: string): Promise<void> {
+      // Update the model in the local state immediately for responsive UI
       update(sessions =>
         sessions.map(s =>
           s.id === id
@@ -261,6 +284,15 @@ function createSdkSessionsStore() {
             : s
         )
       );
+
+      // Send the model update to the backend
+      try {
+        await invoke('update_sdk_model', { id, model });
+        console.log('[sdkSessions] Model updated to:', model);
+      } catch (error) {
+        console.error('Failed to update SDK model:', error);
+        // Optionally revert the change or show an error
+      }
     },
   };
 }

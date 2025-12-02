@@ -46,6 +46,8 @@ pub fn run() {
             sdk_cmds::start_sidecar,
             sdk_cmds::create_sdk_session,
             sdk_cmds::send_sdk_prompt,
+            sdk_cmds::stop_sdk_query,
+            sdk_cmds::update_sdk_model,
             sdk_cmds::close_sdk_session,
         ])
         .run(tauri::generate_context!())

@@ -6,17 +6,22 @@
   import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Transcript from '$lib/components/Transcript.svelte';
   import Settings from './settings/+page.svelte';
+  import ModelSelector from '$lib/components/ModelSelector.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { recording, isRecording } from '$lib/stores/recording';
+  import { overlay } from '$lib/stores/overlay';
   import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   // Track whether we're in SDK mode for the active session
   $: isSdkMode = $settings.terminal_mode === 'Sdk';
 
   let currentView: 'sessions' | 'settings' = 'sessions';
   let showRepoSelector = false;
+  let isTogglingRecording = false;
+  let wasAppFocusedOnRecordStart = true;
 
   onMount(async () => {
     await settings.load();
@@ -28,45 +33,91 @@
     sessions.setupListeners();
 
     await setupHotkeys();
+
+    // Listen for session selection from SessionList
+    window.addEventListener('switch-to-sessions', showSessionsView);
+
+    return () => {
+      window.removeEventListener('switch-to-sessions', showSessionsView);
+    };
   });
+
+  async function sendTranscript() {
+    if (!$recording.transcript) return;
+
+    if ($settings.terminal_mode === 'Sdk') {
+      // SDK mode: create SDK session and send prompt
+      const repoPath = $activeRepo?.path || '.';
+      const model = $settings.default_model;
+      let sessionId = $activeSdkSessionId;
+
+      if (!sessionId) {
+        // Create a new SDK session if none exists
+        sessionId = await sdkSessions.createSession(repoPath, model);
+        activeSdkSessionId.set(sessionId);
+      }
+
+      // Send the prompt to the SDK session
+      await sdkSessions.sendPrompt(sessionId, $recording.transcript);
+      activeSessionId.set(null); // Clear PTY session selection
+    } else {
+      // PTY mode: create terminal session as before
+      const sessionId = await sessions.createSession($recording.transcript);
+      activeSessionId.set(sessionId);
+      activeSdkSessionId.set(null); // Clear SDK session selection
+    }
+    recording.clearTranscript();
+  }
 
   async function setupHotkeys() {
     try {
       await unregisterAll();
 
       await register($settings.hotkeys.toggle_recording, async () => {
-        if ($isRecording) {
-          await recording.stopRecording();
-        } else {
-          await recording.startRecording($settings.audio.device_id || undefined);
+        // Prevent multiple rapid fires
+        if (isTogglingRecording) return;
+        isTogglingRecording = true;
+
+        try {
+          if ($isRecording) {
+            await recording.stopRecording();
+            await overlay.hide();
+
+            // Auto-send transcript if app wasn't focused when recording started
+            if (!wasAppFocusedOnRecordStart && $recording.transcript) {
+              await sendTranscript();
+            }
+          } else {
+            // Check if main window is focused before starting
+            const mainWindow = getCurrentWindow();
+            wasAppFocusedOnRecordStart = await mainWindow.isFocused();
+
+            // If app not focused and in SDK mode, start a new SDK session
+            if (!wasAppFocusedOnRecordStart && $settings.terminal_mode === 'Sdk') {
+              const repoPath = $activeRepo?.path || '.';
+              const model = $settings.default_model;
+              const sessionId = await sdkSessions.createSession(repoPath, model);
+              activeSdkSessionId.set(sessionId);
+              activeSessionId.set(null); // Clear PTY session selection
+            }
+
+            await recording.startRecording($settings.audio.device_id || undefined);
+
+            // Only show overlay if app is not focused
+            if (!wasAppFocusedOnRecordStart) {
+              await overlay.show();
+            }
+          }
+        } finally {
+          // Small delay to prevent key repeat issues
+          setTimeout(() => {
+            isTogglingRecording = false;
+          }, 200);
         }
       });
 
       await register($settings.hotkeys.send_prompt, async () => {
-        if ($recording.transcript) {
-          if ($settings.terminal_mode === 'Sdk') {
-            // SDK mode: create SDK session and send prompt
-            const repoPath = $activeRepo?.path || '.';
-            const model = $settings.default_model;
-            let sessionId = $activeSdkSessionId;
-
-            if (!sessionId) {
-              // Create a new SDK session if none exists
-              sessionId = await sdkSessions.createSession(repoPath, model);
-              activeSdkSessionId.set(sessionId);
-            }
-
-            // Send the prompt to the SDK session
-            await sdkSessions.sendPrompt(sessionId, $recording.transcript);
-            activeSessionId.set(null); // Clear PTY session selection
-          } else {
-            // PTY mode: create terminal session as before
-            const sessionId = await sessions.createSession($recording.transcript);
-            activeSessionId.set(sessionId);
-            activeSdkSessionId.set(null); // Clear SDK session selection
-          }
-          recording.clearTranscript();
-        }
+        await sendTranscript();
       });
 
       await register($settings.hotkeys.switch_repo, () => {
@@ -150,42 +201,12 @@
         {/if}
       </div>
 
-      <!-- Model Selector -->
-      <div class="flex items-center gap-1 px-2 py-1 bg-surface-elevated rounded">
-        <button
-          class="px-3 py-1 rounded text-xs font-medium transition-colors"
-          class:bg-accent={$settings.default_model === 'claude-opus-4-5'}
-          class:text-white={$settings.default_model === 'claude-opus-4-5'}
-          class:text-text-secondary={$settings.default_model !== 'claude-opus-4-5'}
-          class:hover:bg-border={$settings.default_model !== 'claude-opus-4-5'}
-          onclick={() => changeModel('claude-opus-4-5')}
-          title="Claude Opus 4.5 - Most capable model"
-        >
-          Opus
-        </button>
-        <button
-          class="px-3 py-1 rounded text-xs font-medium transition-colors"
-          class:bg-accent={$settings.default_model === 'claude-sonnet-4-5-20250929'}
-          class:text-white={$settings.default_model === 'claude-sonnet-4-5-20250929'}
-          class:text-text-secondary={$settings.default_model !== 'claude-sonnet-4-5-20250929'}
-          class:hover:bg-border={$settings.default_model !== 'claude-sonnet-4-5-20250929'}
-          onclick={() => changeModel('claude-sonnet-4-5-20250929')}
-          title="Claude Sonnet 4.5 - Balanced performance"
-        >
-          Sonnet
-        </button>
-        <button
-          class="px-3 py-1 rounded text-xs font-medium transition-colors"
-          class:bg-accent={$settings.default_model === 'claude-haiku-4-5'}
-          class:text-white={$settings.default_model === 'claude-haiku-4-5'}
-          class:text-text-secondary={$settings.default_model !== 'claude-haiku-4-5'}
-          class:hover:bg-border={$settings.default_model !== 'claude-haiku-4-5'}
-          onclick={() => changeModel('claude-haiku-4-5')}
-          title="Claude Haiku 4.5 - Fastest model"
-        >
-          Haiku
-        </button>
-      </div>
+      <!-- Global Model Selector -->
+      <ModelSelector
+        model={$settings.default_model}
+        onchange={changeModel}
+        size="sm"
+      />
     </div>
 
     <div class="flex items-center gap-2">
@@ -234,9 +255,18 @@
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
         <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-3">
             <span class="px-2 py-0.5 text-xs font-medium bg-accent text-white rounded">SDK</span>
             <span class="text-sm text-text-primary truncate">Session</span>
+            <ModelSelector
+              model={$activeSdkSession.model}
+              onchange={(newModel) => {
+                if ($activeSdkSessionId) {
+                  sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
+                }
+              }}
+              size="sm"
+            />
           </div>
           <div class="flex items-center gap-2">
             <span class="text-xs text-text-muted">{$activeSdkSession.status}</span>

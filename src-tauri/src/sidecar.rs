@@ -22,6 +22,10 @@ pub enum OutboundMessage {
     Stop {
         id: String,
     },
+    UpdateModel {
+        id: String,
+        model: String,
+    },
     Close {
         id: String,
     },
@@ -50,6 +54,10 @@ pub enum InboundMessage {
     },
     Done {
         id: String,
+    },
+    ModelUpdated {
+        id: String,
+        model: String,
     },
     Closed {
         id: String,
@@ -246,6 +254,10 @@ impl SidecarManager {
                 if let Err(e) = result {
                     eprintln!("[sidecar] Failed to emit done event: {}", e);
                 }
+            }
+            InboundMessage::ModelUpdated { id, model } => {
+                println!("[sidecar] Model updated for {}: {}", id, model);
+                let _ = app.emit(&format!("sdk-model-updated-{}", id), &model);
             }
             InboundMessage::Closed { id } => {
                 let _ = app.emit(&format!("sdk-closed-{}", id), ());

@@ -72,6 +72,8 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
     permissionMode: 'acceptEdits',
+    // Load CLAUDE.md and settings from filesystem like Claude Code does
+    settingSources: ['user', 'project', 'local'],
     ...(msg.model && { model: msg.model }),
     ...msg.options,
   };
@@ -222,6 +224,18 @@ async function handleStop(msg: StopMessage): Promise<void> {
   }
 }
 
+async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, 'Session not found');
+    return;
+  }
+
+  // Update the model in the session options
+  session.options.model = msg.model;
+  send({ type: 'model_updated', id: msg.id, model: msg.model });
+}
+
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session?.abortController) {
@@ -241,6 +255,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case 'stop':
       await handleStop(msg);
+      break;
+    case 'update_model':
+      await handleUpdateModel(msg);
       break;
     case 'close':
       await handleClose(msg);

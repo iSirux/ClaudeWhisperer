@@ -110,11 +110,15 @@
   function selectPtySession(id: string) {
     activeSessionId.set(id);
     activeSdkSessionId.set(null);
+    // Dispatch event to parent to switch view
+    window.dispatchEvent(new CustomEvent('switch-to-sessions'));
   }
 
   function selectSdkSession(id: string) {
     activeSdkSessionId.set(id);
     activeSessionId.set(null);
+    // Dispatch event to parent to switch view
+    window.dispatchEvent(new CustomEvent('switch-to-sessions'));
   }
 
   function closePtySession(id: string, event: MouseEvent) {
@@ -215,7 +219,7 @@
         prompt: s.messages.find(m => m.type === 'user')?.content || 'SDK Session',
         repoPath: s.cwd,
         model: s.model,
-        createdAt: Math.floor(s.createdAt / 1000),
+        createdAt: s.startedAt ? Math.floor(s.startedAt / 1000) : Math.floor(s.createdAt / 1000),
         endedAt,
       };
     });

@@ -1,11 +1,15 @@
 import { writable } from 'svelte/store';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
 
 interface OverlayStore {
   visible: boolean;
   position: { x: number; y: number };
+}
+
+function getOverlayWindow() {
+  return WebviewWindow.getByLabel('overlay');
 }
 
 function createOverlayStore() {
@@ -19,8 +23,8 @@ function createOverlayStore() {
 
     async show() {
       try {
-        const overlayWindow = await getCurrentWindow();
-        if (overlayWindow.label === 'overlay') {
+        const overlayWindow = await getOverlayWindow();
+        if (overlayWindow) {
           await overlayWindow.show();
           await overlayWindow.setFocus();
         }
@@ -32,8 +36,8 @@ function createOverlayStore() {
 
     async hide() {
       try {
-        const overlayWindow = await getCurrentWindow();
-        if (overlayWindow.label === 'overlay') {
+        const overlayWindow = await getOverlayWindow();
+        if (overlayWindow) {
           await overlayWindow.hide();
         }
         update((s) => ({ ...s, visible: false }));
@@ -59,8 +63,8 @@ function createOverlayStore() {
 
     async setPosition(x: number, y: number) {
       try {
-        const overlayWindow = await getCurrentWindow();
-        if (overlayWindow.label === 'overlay') {
+        const overlayWindow = await getOverlayWindow();
+        if (overlayWindow) {
           await overlayWindow.setPosition(new PhysicalPosition(x, y));
         }
         update((s) => ({ ...s, position: { x, y } }));

@@ -55,6 +55,11 @@
     await sdkSessions.sendPrompt(sessionId, currentPrompt);
   }
 
+  async function stopQuery() {
+    if (!isQuerying) return;
+    await sdkSessions.stopQuery(sessionId);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -159,13 +164,20 @@
       disabled={isQuerying}
       rows="3"
     ></textarea>
-    <button on:click={sendPrompt} disabled={isQuerying || !prompt.trim()} class:loading={isQuerying}>
+    <div class="button-group">
       {#if isQuerying}
-        <span class="spinner"></span>
+        <button on:click={stopQuery} class="stop-button">
+          <svg class="stop-icon" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+          Stop
+        </button>
       {:else}
-        Send
+        <button on:click={sendPrompt} disabled={!prompt.trim()}>
+          Send
+        </button>
       {/if}
-    </button>
+    </div>
   </div>
 </div>
 
@@ -420,6 +432,11 @@
     color: #666;
   }
 
+  .button-group {
+    display: flex;
+    align-items: flex-end;
+  }
+
   button {
     background: #6366f1;
     color: #fff;
@@ -434,6 +451,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 0.5rem;
   }
 
   button:hover:not(:disabled) {
@@ -443,6 +461,19 @@
   button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .stop-button {
+    background: #ef4444;
+  }
+
+  .stop-button:hover {
+    background: #dc2626;
+  }
+
+  .stop-icon {
+    width: 16px;
+    height: 16px;
   }
 
   .spinner {

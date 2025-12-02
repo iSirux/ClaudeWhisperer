@@ -8,7 +8,8 @@
       "WebFetch(domain:www.anthropic.com)",
       "WebFetch(domain:platform.claude.com)",
       "WebFetch(domain:github.com)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(npm run sidecar:build:*)"
     ],
     "deny": [],
     "ask": []
