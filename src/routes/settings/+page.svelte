@@ -2,8 +2,6 @@
   import { settings, type AppConfig } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
 
-  export let onClose: () => void = () => {};
-
   let config: AppConfig = structuredClone($settings);
   let activeTab = 'general';
   let testingWhisper = false;
@@ -22,12 +20,17 @@
     { id: 'repos', label: 'Repositories' },
   ];
 
+  let saveStatus: 'idle' | 'saving' | 'saved' = 'idle';
+
   async function saveSettings() {
+    saveStatus = 'saving';
     try {
       await settings.save(config);
-      onClose();
+      saveStatus = 'saved';
+      setTimeout(() => saveStatus = 'idle', 2000);
     } catch (error) {
       console.error('Failed to save settings:', error);
+      saveStatus = 'idle';
     }
   }
 
@@ -76,14 +79,9 @@
   }
 </script>
 
-<div class="settings-panel flex flex-col h-full max-h-[80vh]">
+<div class="settings-panel flex flex-col h-full">
   <header class="flex items-center justify-between px-4 py-3 border-b border-border">
     <h2 class="text-lg font-semibold text-text-primary">Settings</h2>
-    <button class="p-1 hover:bg-surface-elevated rounded transition-colors" onclick={onClose}>
-      <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-      </svg>
-    </button>
   </header>
 
   <div class="flex flex-1 overflow-hidden">
@@ -275,8 +273,23 @@
   </div>
 
   <footer class="flex justify-end gap-2 px-4 py-3 border-t border-border">
-    <button class="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors" onclick={onClose}>Cancel</button>
-    <button class="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded text-sm transition-colors" onclick={saveSettings}>Save Changes</button>
+    <button
+      class="px-4 py-2 bg-accent hover:bg-accent-hover text-white rounded text-sm transition-colors flex items-center gap-2"
+      onclick={saveSettings}
+      disabled={saveStatus === 'saving'}
+    >
+      {#if saveStatus === 'saving'}
+        <div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+        Saving...
+      {:else if saveStatus === 'saved'}
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+        </svg>
+        Saved
+      {:else}
+        Save Changes
+      {/if}
+    </button>
   </footer>
 </div>
 

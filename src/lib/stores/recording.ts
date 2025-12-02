@@ -1,7 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
-export type RecordingState = 'idle' | 'recording' | 'processing' | 'error';
+export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
 
 interface RecordingStore {
   state: RecordingState;
@@ -54,7 +54,7 @@ function createRecordingStore() {
       }
     },
 
-    async stopRecording(): Promise<string | null> {
+    async stopRecording(autoTranscribe: boolean = true): Promise<string | null> {
       return new Promise((resolve, reject) => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
           resolve(null);
@@ -63,28 +63,38 @@ function createRecordingStore() {
 
         mediaRecorder.onstop = async () => {
           try {
-            update((s) => ({ ...s, state: 'processing' }));
-
             const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
             const arrayBuffer = await audioBlob.arrayBuffer();
             const audioData = new Uint8Array(arrayBuffer);
 
-            const transcript = await invoke<string>('transcribe_audio', {
-              audioData: Array.from(audioData),
-            });
+            if (autoTranscribe) {
+              update((s) => ({ ...s, state: 'processing' }));
 
-            update((s) => ({
-              ...s,
-              state: 'idle',
-              transcript,
-              audioData,
-            }));
+              const transcript = await invoke<string>('transcribe_audio', {
+                audioData: Array.from(audioData),
+              });
 
-            mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
-            mediaRecorder = null;
-            audioChunks = [];
+              update((s) => ({
+                ...s,
+                state: 'idle',
+                transcript,
+                audioData,
+              }));
 
-            resolve(transcript);
+              mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+              mediaRecorder = null;
+              audioChunks = [];
+
+              resolve(transcript);
+            } else {
+              update((s) => ({ ...s, state: 'recorded', audioData }));
+
+              mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+              mediaRecorder = null;
+              audioChunks = [];
+
+              resolve(null);
+            }
           } catch (error) {
             console.error('Failed to process recording:', error);
             update((s) => ({
@@ -98,6 +108,41 @@ function createRecordingStore() {
 
         mediaRecorder.stop();
       });
+    },
+
+    async transcribeAndSend() {
+      try {
+        update((s) => ({ ...s, state: 'processing' }));
+
+        let currentAudioData: Uint8Array | null = null;
+        recording.subscribe((s) => {
+          currentAudioData = s.audioData;
+        })();
+
+        if (!currentAudioData) {
+          throw new Error('No audio data available');
+        }
+
+        const transcript = await invoke<string>('transcribe_audio', {
+          audioData: Array.from(currentAudioData),
+        });
+
+        update((s) => ({
+          ...s,
+          state: 'idle',
+          transcript,
+        }));
+
+        return transcript;
+      } catch (error) {
+        console.error('Failed to transcribe:', error);
+        update((s) => ({
+          ...s,
+          state: 'error',
+          error: error instanceof Error ? error.message : 'Failed to transcribe audio',
+        }));
+        throw error;
+      }
     },
 
     cancelRecording() {
@@ -124,4 +169,5 @@ export const recording = createRecordingStore();
 
 export const isRecording = derived(recording, ($recording) => $recording.state === 'recording');
 export const isProcessing = derived(recording, ($recording) => $recording.state === 'processing');
+export const hasRecorded = derived(recording, ($recording) => $recording.state === 'recorded');
 export const hasError = derived(recording, ($recording) => $recording.state === 'error');

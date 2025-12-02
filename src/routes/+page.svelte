@@ -3,12 +3,13 @@
   import Terminal from '$lib/components/Terminal.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import Transcript from '$lib/components/Transcript.svelte';
+  import Settings from './settings/+page.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { recording, isRecording } from '$lib/stores/recording';
   import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
 
-  let showSettings = false;
+  let currentView: 'sessions' | 'settings' = 'sessions';
   let showRepoSelector = false;
 
   onMount(async () => {
@@ -46,8 +47,12 @@
     }
   }
 
-  function toggleSettings() {
-    showSettings = !showSettings;
+  function showSettingsView() {
+    currentView = 'settings';
+  }
+
+  function showSessionsView() {
+    currentView = 'sessions';
   }
 
   async function selectRepo(index: number) {
@@ -96,7 +101,7 @@
             <div class="border-t border-border">
               <button
                 class="w-full px-3 py-2 text-left text-sm text-accent hover:bg-border transition-colors"
-                onclick={toggleSettings}
+                onclick={showSettingsView}
               >
                 + Add repository
               </button>
@@ -109,7 +114,8 @@
     <div class="flex items-center gap-2">
       <button
         class="p-2 hover:bg-surface-elevated rounded transition-colors"
-        onclick={toggleSettings}
+        class:bg-surface-elevated={currentView === 'settings'}
+        onclick={showSettingsView}
         title="Settings"
       >
         <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -122,19 +128,37 @@
 
   <div class="main-content flex-1 flex overflow-hidden">
     <aside class="sidebar w-64 border-r border-border bg-surface flex flex-col">
-      <div class="p-3 border-b border-border">
+      <button
+        class="p-3 border-b border-border text-left hover:bg-surface-elevated transition-colors"
+        class:bg-surface-elevated={currentView === 'sessions'}
+        onclick={showSessionsView}
+      >
         <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
-      </div>
+      </button>
       <div class="flex-1 overflow-hidden">
         <SessionList />
       </div>
+      <button
+        class="sidebar-settings p-3 border-t border-border text-left hover:bg-surface-elevated transition-colors flex items-center gap-2"
+        class:bg-surface-elevated={currentView === 'settings'}
+        onclick={showSettingsView}
+      >
+        <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        <span class="text-sm font-medium text-text-secondary">Settings</span>
+      </button>
     </aside>
 
     <main class="flex-1 flex flex-col overflow-hidden">
-      {#if $activeSession}
+      {#if currentView === 'settings'}
+        <Settings />
+      {:else if $activeSession}
         <div class="terminal-wrapper flex-1 overflow-hidden">
           <Terminal sessionId={$activeSession.id} />
         </div>
+        <Transcript />
       {:else}
         <div class="flex-1 flex items-center justify-center text-text-muted">
           <div class="text-center">
@@ -145,22 +169,11 @@
             <p class="text-sm">Record a voice prompt to start a new Claude session</p>
           </div>
         </div>
+        <Transcript />
       {/if}
-
-      <Transcript />
     </main>
   </div>
 </div>
-
-{#if showSettings}
-  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick={() => showSettings = false}>
-    <div class="bg-surface border border-border rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] overflow-hidden" onclick={(e) => e.stopPropagation()}>
-      {#await import('./settings/+page.svelte') then { default: Settings }}
-        <Settings onClose={() => showSettings = false} />
-      {/await}
-    </div>
-  </div>
-{/if}
 
 <style>
   .app-container {
