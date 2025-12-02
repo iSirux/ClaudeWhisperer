@@ -159,7 +159,9 @@
       {:else if $activeSession}
         <SessionHeader session={$activeSession} />
         <div class="terminal-wrapper flex-1 overflow-hidden">
-          <Terminal sessionId={$activeSession.id} />
+          {#key $activeSession.id}
+            <Terminal sessionId={$activeSession.id} />
+          {/key}
         </div>
         <Transcript />
       {:else}

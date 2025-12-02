@@ -44,6 +44,36 @@ pub fn create_terminal_session(
 }
 
 #[tauri::command]
+pub fn create_interactive_session(
+    app: AppHandle,
+    terminal_manager: State<TerminalState>,
+    config: State<ConfigState>,
+) -> Result<String, String> {
+    use crate::config::TerminalMode;
+
+    let cfg = config.lock();
+
+    let repo = cfg
+        .get_active_repo()
+        .ok_or("No active repository configured")?;
+
+    let working_path = repo.path.clone();
+    let model = Some(cfg.default_model.clone());
+    let skip_permissions = cfg.skip_permissions;
+    drop(cfg);
+
+    // Always use interactive mode with empty prompt - user will type directly
+    terminal_manager.create_session(
+        app,
+        working_path,
+        String::new(), // Empty prompt - user types directly
+        model,
+        TerminalMode::Interactive,
+        skip_permissions,
+    )
+}
+
+#[tauri::command]
 pub fn write_to_terminal(
     terminal_manager: State<TerminalState>,
     session_id: String,

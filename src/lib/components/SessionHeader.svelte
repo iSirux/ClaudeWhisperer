@@ -21,7 +21,7 @@
 
   function updateElapsed() {
     const now = Math.floor(Date.now() / 1000);
-    elapsed = now - session.created_at;
+    elapsed = Math.max(0, now - session.created_at);
   }
 
   function formatTime(seconds: number): string {
@@ -55,6 +55,10 @@
     }
   }
 
+  function getStatusLabel(status: string): string {
+    return status === 'Running' ? 'Active' : status;
+  }
+
   async function closeSession() {
     await sessions.closeSession(session.id);
   }
@@ -72,7 +76,7 @@
         {#if isRunning}
           <span class="status-dot {getStatusColor(session.status)}"></span>
         {/if}
-        <span class="text-xs font-medium {getStatusColor(session.status)}">{session.status}</span>
+        <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status)}</span>
       </div>
 
       <!-- Timer -->
@@ -106,20 +110,22 @@
     </div>
   </div>
 
-  <!-- Prompt/Transcript section -->
-  <div class="px-4 py-3">
-    <div class="flex items-start gap-3">
-      <div class="flex-shrink-0 w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
-        <svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-        </svg>
-      </div>
-      <div class="flex-1 min-w-0">
-        <div class="text-xs text-text-muted mb-1 font-medium uppercase tracking-wide">Voice Prompt</div>
-        <p class="text-sm text-text-primary leading-relaxed">{session.prompt}</p>
+  <!-- Prompt/Transcript section (only if there's a prompt) -->
+  {#if session.prompt}
+    <div class="px-4 py-3">
+      <div class="flex items-start gap-3">
+        <div class="flex-shrink-0 w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+          <svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+          </svg>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs text-text-muted mb-1 font-medium uppercase tracking-wide">Voice Prompt</div>
+          <p class="text-sm text-text-primary leading-relaxed">{session.prompt}</p>
+        </div>
       </div>
     </div>
-  </div>
+  {/if}
 </div>
 
 <style>

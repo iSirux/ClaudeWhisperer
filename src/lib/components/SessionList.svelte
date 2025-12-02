@@ -2,7 +2,16 @@
   import { onMount, onDestroy } from 'svelte';
   import { sessions, activeSessionId, type TerminalSession } from '$lib/stores/sessions';
 
-  let now = Math.floor(Date.now() / 1000);
+  async function createNewTerminal() {
+    try {
+      const sessionId = await sessions.createInteractiveSession();
+      activeSessionId.set(sessionId);
+    } catch (error) {
+      console.error('Failed to create interactive session:', error);
+    }
+  }
+
+  let now = $state(Math.floor(Date.now() / 1000));
   let interval: ReturnType<typeof setInterval> | null = null;
 
   onMount(() => {
@@ -14,6 +23,23 @@
   onDestroy(() => {
     if (interval) clearInterval(interval);
   });
+
+  // Reactive elapsed time formatter that depends on `now`
+  function getElapsedTime(createdAt: number): string {
+    const elapsed = Math.max(0, now - createdAt);
+    const mins = Math.floor(elapsed / 60);
+    const secs = elapsed % 60;
+
+    if (mins >= 60) {
+      const hrs = Math.floor(mins / 60);
+      const remainingMins = mins % 60;
+      return `${hrs}h ${remainingMins}m`;
+    }
+    if (mins > 0) {
+      return `${mins}m ${secs}s`;
+    }
+    return `${secs}s`;
+  }
 
   function selectSession(id: string) {
     activeSessionId.set(id);
@@ -48,21 +74,10 @@
     }
   }
 
-  function formatElapsed(createdAt: number): string {
-    const elapsed = now - createdAt;
-    const mins = Math.floor(elapsed / 60);
-    const secs = elapsed % 60;
-
-    if (mins >= 60) {
-      const hrs = Math.floor(mins / 60);
-      const remainingMins = mins % 60;
-      return `${hrs}h ${remainingMins}m`;
-    }
-    if (mins > 0) {
-      return `${mins}m ${secs}s`;
-    }
-    return `${secs}s`;
+  function getStatusLabel(status: TerminalSession['status']): string {
+    return status === 'Running' ? 'Active' : status;
   }
+
 
   function truncatePrompt(prompt: string, maxLength: number = 60): string {
     if (prompt.length <= maxLength) return prompt;
@@ -75,15 +90,26 @@
   }
 
   // Sort sessions: Running first, then by created_at descending
-  $: sortedSessions = [...$sessions].sort((a, b) => {
-    const statusOrder = { Starting: 0, Running: 1, Completed: 2, Failed: 3 };
+  let sortedSessions = $derived([...$sessions].sort((a, b) => {
+    const statusOrder: Record<string, number> = { Starting: 0, Running: 1, Completed: 2, Failed: 3 };
     const statusDiff = statusOrder[a.status] - statusOrder[b.status];
     if (statusDiff !== 0) return statusDiff;
     return b.created_at - a.created_at;
-  });
+  }));
 </script>
 
 <div class="session-list h-full overflow-y-auto">
+  <!-- New Terminal Button -->
+  <button
+    class="w-full p-3 border-b border-border text-left hover:bg-surface-elevated transition-colors flex items-center gap-2 text-accent"
+    onclick={createNewTerminal}
+  >
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+    </svg>
+    <span class="text-sm font-medium">New Terminal</span>
+  </button>
+
   {#if sortedSessions.length === 0}
     <div class="p-4 text-center text-text-muted text-sm">
       <svg class="w-8 h-8 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -109,10 +135,10 @@
                 <div class="absolute inset-0 w-2 h-2 rounded-full {getStatusBg(session.status)} animate-ping opacity-75"></div>
               {/if}
             </div>
-            <span class="text-xs font-medium {getStatusColor(session.status)}">{session.status}</span>
+            <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status)}</span>
           </div>
           <div class="flex items-center gap-2">
-            <span class="text-xs text-text-muted font-mono tabular-nums">{formatElapsed(session.created_at)}</span>
+            <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.created_at)}</span>
             <button
               class="text-text-muted hover:text-red-400 hover:bg-red-400/10 rounded p-0.5 transition-colors"
               onclick={(e) => closeSession(session.id, e)}
@@ -126,8 +152,12 @@
         </div>
 
         <!-- Prompt text -->
-        <p class="text-sm text-text-primary leading-snug mb-1.5" title={session.prompt}>
-          {truncatePrompt(session.prompt)}
+        <p class="text-sm text-text-primary leading-snug mb-1.5" title={session.prompt || 'Interactive session'}>
+          {#if session.prompt}
+            {truncatePrompt(session.prompt)}
+          {:else}
+            <span class="text-text-muted italic">Interactive session</span>
+          {/if}
         </p>
 
         <!-- Repo name -->

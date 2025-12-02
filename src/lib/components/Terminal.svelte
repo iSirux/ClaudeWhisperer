@@ -13,7 +13,6 @@
   let terminal: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let unlistenOutput: UnlistenFn | null = null;
-  let unlistenClosed: UnlistenFn | null = null;
   let resizeObserver: ResizeObserver | null = null;
 
   onMount(async () => {
@@ -75,9 +74,7 @@
       terminal?.write(event.payload);
     });
 
-    unlistenClosed = await listen(`terminal-closed-${sessionId}`, () => {
-      sessions.updateSession(sessionId, { status: 'Completed' });
-    });
+    // Note: terminal-closed listener is handled globally in sessions store
 
     resizeObserver = new ResizeObserver(() => {
       if (fitAddon && terminal) {
@@ -91,7 +88,6 @@
 
   onDestroy(() => {
     unlistenOutput?.();
-    unlistenClosed?.();
     resizeObserver?.disconnect();
     terminal?.dispose();
   });

@@ -31,6 +31,7 @@ pub fn run() {
             settings_cmds::set_active_repo,
             settings_cmds::get_active_repo,
             terminal_cmds::create_terminal_session,
+            terminal_cmds::create_interactive_session,
             terminal_cmds::write_to_terminal,
             terminal_cmds::resize_terminal,
             terminal_cmds::close_terminal,

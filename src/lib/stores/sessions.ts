@@ -43,6 +43,19 @@ function createSessionsStore() {
       }
     },
 
+    async createInteractiveSession(): Promise<string> {
+      try {
+        console.log('sessions.createInteractiveSession called');
+        const sessionId = await invoke<string>('create_interactive_session');
+        console.log('Backend returned interactive session ID:', sessionId);
+        await this.load();
+        return sessionId;
+      } catch (error) {
+        console.error('Failed to create interactive session:', error);
+        throw error;
+      }
+    },
+
     async closeSession(sessionId: string) {
       try {
         await invoke('close_terminal', { sessionId });
@@ -80,6 +93,16 @@ function createSessionsStore() {
     setupListeners() {
       listen<TerminalSession>('session-created', (event) => {
         update((sessions) => [...sessions, event.payload]);
+
+        // Set up listener for this session's completion
+        const sessionId = event.payload.id;
+        listen(`terminal-closed-${sessionId}`, () => {
+          update((sessions) =>
+            sessions.map((s) =>
+              s.id === sessionId ? { ...s, status: 'Completed' as SessionStatus } : s
+            )
+          );
+        });
       });
     },
   };

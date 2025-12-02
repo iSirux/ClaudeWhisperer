@@ -143,7 +143,8 @@ impl TerminalManager {
         let app_clone = app.clone();
 
         // In Interactive mode, spawn a thread to send the prompt after Claude initializes
-        if !is_prompt_mode {
+        // (only if there's actually a prompt to send)
+        if !is_prompt_mode && !prompt.is_empty() {
             let pty_sessions_ref = Arc::clone(&self.pty_sessions);
             let session_id_for_prompt = id.clone();
             let initial_prompt = prompt.clone();
