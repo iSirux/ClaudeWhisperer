@@ -14,14 +14,16 @@ pub struct TranscriptionError {
 pub struct WhisperClient {
     client: reqwest::Client,
     endpoint: String,
+    model: String,
     language: String,
 }
 
 impl WhisperClient {
-    pub fn new(endpoint: String, language: String) -> Self {
+    pub fn new(endpoint: String, model: String, language: String) -> Self {
         Self {
             client: reqwest::Client::new(),
             endpoint,
+            model,
             language,
         }
     }
@@ -34,6 +36,7 @@ impl WhisperClient {
 
         let form = Form::new()
             .part("file", part)
+            .text("model", self.model.clone())
             .text("language", self.language.clone());
 
         let response = self

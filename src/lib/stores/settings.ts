@@ -62,7 +62,7 @@ export interface AppConfig {
 const defaultConfig: AppConfig = {
   whisper: {
     endpoint: 'http://localhost:8000/v1/audio/transcriptions',
-    model: 'base',
+    model: 'Systran/faster-whisper-base',
     language: 'en',
   },
   haiku: {

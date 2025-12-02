@@ -1,10 +1,64 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { recording, isRecording, isProcessing, hasRecorded } from '$lib/stores/recording';
-  import { sessions } from '$lib/stores/sessions';
+  import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { settings } from '$lib/stores/settings';
+
+  onDestroy(() => {
+    if (audioElement) {
+      audioElement.pause();
+      audioElement = null;
+    }
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
+  });
 
   let isEditing = false;
   let editedTranscript = '';
+  let isPlaying = false;
+  let audioElement: HTMLAudioElement | null = null;
+  let audioUrl: string | null = null;
+
+  function playAudio() {
+    if (!$recording.audioData) return;
+
+    if (isPlaying && audioElement) {
+      audioElement.pause();
+      audioElement.currentTime = 0;
+      isPlaying = false;
+      return;
+    }
+
+    // Clean up previous audio URL
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+
+    const blob = new Blob([$recording.audioData], { type: 'audio/webm' });
+    audioUrl = URL.createObjectURL(blob);
+
+    audioElement = new Audio(audioUrl);
+    audioElement.onended = () => {
+      isPlaying = false;
+    };
+    audioElement.onerror = () => {
+      isPlaying = false;
+      console.error('Failed to play audio');
+    };
+
+    audioElement.play();
+    isPlaying = true;
+  }
+
+  function stopAudio() {
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.currentTime = 0;
+      isPlaying = false;
+    }
+  }
 
   function startEditing() {
     editedTranscript = $recording.transcript;
@@ -25,10 +79,16 @@
   }
 
   async function stopAndSend() {
+    stopAudio();
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
     try {
       const transcript = await recording.transcribeAndSend();
       if (transcript) {
-        await sessions.createSession(transcript);
+        const sessionId = await sessions.createSession(transcript);
+        activeSessionId.set(sessionId);
         recording.clearTranscript();
       }
     } catch (error) {
@@ -37,15 +97,28 @@
   }
 
   function stopAndClear() {
+    stopAudio();
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
     recording.cancelRecording();
   }
 
   async function sendPrompt() {
+    console.log('sendPrompt called');
     const prompt = isEditing ? editedTranscript : $recording.transcript;
-    if (!prompt.trim()) return;
+    console.log('Prompt:', prompt);
+    if (!prompt.trim()) {
+      console.log('Prompt is empty, returning');
+      return;
+    }
 
     try {
-      await sessions.createSession(prompt);
+      console.log('Creating session...');
+      const sessionId = await sessions.createSession(prompt);
+      console.log('Session created with ID:', sessionId);
+      activeSessionId.set(sessionId);
       recording.clearTranscript();
       cancelEditing();
     } catch (error) {
@@ -64,7 +137,9 @@
       .slice(0, -$settings.audio.voice_command.length)
       .trim();
     if (cleanedTranscript) {
-      sessions.createSession(cleanedTranscript);
+      sessions.createSession(cleanedTranscript).then((sessionId) => {
+        activeSessionId.set(sessionId);
+      });
       recording.clearTranscript();
     }
   }
@@ -114,6 +189,22 @@
           onclick={stopAndClear}
         >
           Clear
+        </button>
+        <button
+          class="px-3 py-1.5 text-sm bg-surface-elevated hover:bg-border text-text-primary rounded transition-colors flex items-center gap-1.5"
+          onclick={playAudio}
+        >
+          {#if isPlaying}
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd" />
+            </svg>
+            Stop
+          {:else}
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+            </svg>
+            Play
+          {/if}
         </button>
         <button
           class="px-3 py-1.5 text-sm bg-accent hover:bg-accent-hover text-white rounded transition-colors"

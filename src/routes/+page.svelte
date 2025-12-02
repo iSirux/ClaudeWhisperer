@@ -34,7 +34,8 @@
 
       await register($settings.hotkeys.send_prompt, async () => {
         if ($recording.transcript) {
-          await sessions.createSession($recording.transcript);
+          const sessionId = await sessions.createSession($recording.transcript);
+          activeSessionId.set(sessionId);
           recording.clearTranscript();
         }
       });

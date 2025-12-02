@@ -31,8 +31,11 @@ function createSessionsStore() {
 
     async createSession(prompt: string): Promise<string> {
       try {
+        console.log('sessions.createSession called with prompt:', prompt);
         const sessionId = await invoke<string>('create_terminal_session', { prompt });
+        console.log('Backend returned session ID:', sessionId);
         await this.load();
+        console.log('Sessions reloaded');
         return sessionId;
       } catch (error) {
         console.error('Failed to create session:', error);

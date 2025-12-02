@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settings, type AppConfig } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
+  import { onMount } from 'svelte';
 
   let config: AppConfig = structuredClone($settings);
   let activeTab = 'general';
@@ -8,6 +9,27 @@
   let whisperStatus: 'idle' | 'success' | 'error' = 'idle';
   let newRepoPath = '';
   let newRepoName = '';
+  let audioDevices: MediaDeviceInfo[] = [];
+  let loadingDevices = false;
+
+  onMount(() => {
+    loadAudioDevices();
+  });
+
+  async function loadAudioDevices() {
+    loadingDevices = true;
+    try {
+      // Request permission first to get device labels
+      await navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        stream.getTracks().forEach(track => track.stop());
+      });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      audioDevices = devices.filter(d => d.kind === 'audioinput');
+    } catch (error) {
+      console.error('Failed to enumerate audio devices:', error);
+    }
+    loadingDevices = false;
+  }
 
   const tabs = [
     { id: 'general', label: 'General' },
@@ -111,6 +133,32 @@
 
       {:else if activeTab === 'audio'}
         <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-text-secondary mb-1">Microphone</label>
+            <div class="flex gap-2">
+              <select
+                class="flex-1 px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
+                bind:value={config.audio.device_id}
+                disabled={loadingDevices}
+              >
+                <option value={null}>System Default</option>
+                {#each audioDevices as device}
+                  <option value={device.deviceId}>{device.label || `Microphone ${device.deviceId.slice(0, 8)}`}</option>
+                {/each}
+              </select>
+              <button
+                class="px-3 py-2 bg-surface-elevated hover:bg-border rounded text-sm transition-colors"
+                onclick={loadAudioDevices}
+                disabled={loadingDevices}
+              >
+                {#if loadingDevices}
+                  <div class="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+                {:else}
+                  Refresh
+                {/if}
+              </button>
+            </div>
+          </div>
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Open Mic Mode</label>
             <input type="checkbox" class="toggle" bind:checked={config.audio.open_mic} />
@@ -136,6 +184,13 @@
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Whisper Endpoint</label>
             <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.whisper.endpoint} placeholder="http://localhost:8000/v1/audio/transcriptions" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-text-secondary mb-1">Model</label>
+            <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={config.whisper.model}>
+              <option value="Systran/faster-whisper-base">Systran/faster-whisper-base</option>
+              <option value="Systran/faster-whisper-large-v3">Systran/faster-whisper-large-v3</option>
+            </select>
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Language</label>
