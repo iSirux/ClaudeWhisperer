@@ -16,13 +16,13 @@
     activeTab = initialTab;
   });
 
-  let testingWhisper = false;
-  let whisperStatus: 'idle' | 'success' | 'error' = 'idle';
-  let newRepoPath = '';
-  let newRepoName = '';
-  let audioDevices: MediaDeviceInfo[] = [];
-  let loadingDevices = false;
-  let saveStatus: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
+  let testingWhisper = $state(false);
+  let whisperStatus: 'idle' | 'success' | 'error' = $state('idle');
+  let newRepoPath = $state('');
+  let newRepoName = $state('');
+  let audioDevices: MediaDeviceInfo[] = $state([]);
+  let loadingDevices = $state(false);
+  let saveStatus: 'idle' | 'saving' | 'saved' | 'error' = $state('idle');
   let saveTimeout: ReturnType<typeof setTimeout> | null = null;
   let statusTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -105,41 +105,54 @@
   }
 
   async function addRepo() {
-    if (!newRepoPath || !newRepoName) return;
-    settings.update(s => ({
-      ...s,
-      repos: [...s.repos, { path: newRepoPath, name: newRepoName }]
-    }));
-    newRepoPath = '';
-    newRepoName = '';
+    console.log('[addRepo] Called with path:', newRepoPath, 'name:', newRepoName);
+    if (!newRepoPath || !newRepoName) {
+      console.log('[addRepo] Missing path or name, returning');
+      return;
+    }
+    console.log('[addRepo] Calling settings.addRepo...');
+    try {
+      await settings.addRepo(newRepoPath, newRepoName);
+      console.log('[addRepo] Successfully added repo');
+      newRepoPath = '';
+      newRepoName = '';
+    } catch (error) {
+      console.error('[addRepo] Failed to add repo:', error);
+    }
   }
 
-  function removeRepo(index: number) {
-    settings.update(s => {
-      const newRepos = s.repos.filter((_, i) => i !== index);
-      let newActiveIndex = s.active_repo_index;
-      if (newActiveIndex >= newRepos.length && newRepos.length > 0) {
-        newActiveIndex = newRepos.length - 1;
-      }
-      return { ...s, repos: newRepos, active_repo_index: newActiveIndex };
-    });
+  async function removeRepo(index: number) {
+    console.log('[removeRepo] Removing repo at index:', index);
+    try {
+      await settings.removeRepo(index);
+      console.log('[removeRepo] Successfully removed repo');
+    } catch (error) {
+      console.error('[removeRepo] Failed to remove repo:', error);
+    }
   }
 
   async function browseFolder() {
+    console.log('[browseFolder] Opening folder dialog...');
     try {
       const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+      console.log('[browseFolder] Dialog plugin imported, calling openDialog...');
       const selected = await openDialog({
         directory: true,
         multiple: false,
       });
+      console.log('[browseFolder] Dialog result:', selected);
       if (selected) {
         newRepoPath = selected as string;
+        console.log('[browseFolder] Set newRepoPath to:', newRepoPath);
         if (!newRepoName) {
           newRepoName = newRepoPath.split(/[/\\]/).pop() || '';
+          console.log('[browseFolder] Auto-set newRepoName to:', newRepoName);
         }
+      } else {
+        console.log('[browseFolder] No folder selected (user cancelled)');
       }
     } catch (error) {
-      console.error('Failed to open folder dialog:', error);
+      console.error('[browseFolder] Failed to open folder dialog:', error);
     }
   }
 </script>

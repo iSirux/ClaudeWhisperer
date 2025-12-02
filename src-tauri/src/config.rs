@@ -227,13 +227,18 @@ impl AppConfig {
 
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::config_dir();
+        println!("[config.save] Saving to dir: {:?}", dir);
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
 
         let path = Self::config_path();
+        println!("[config.save] Config path: {:?}", path);
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-        fs::write(&path, content).map_err(|e| format!("Failed to write config: {}", e))
+        println!("[config.save] Writing {} bytes, repos count: {}", content.len(), self.repos.len());
+        fs::write(&path, &content).map_err(|e| format!("Failed to write config: {}", e))?;
+        println!("[config.save] Write successful");
+        Ok(())
     }
 
     pub fn get_active_repo(&self) -> Option<&RepoConfig> {

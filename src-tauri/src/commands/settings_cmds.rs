@@ -19,9 +19,16 @@ pub fn save_config(config: State<ConfigState>, new_config: AppConfig) -> Result<
 
 #[tauri::command]
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
+    println!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { path, name });
-    cfg.save()
+    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone() });
+    println!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
+    let result = cfg.save();
+    match &result {
+        Ok(()) => println!("[add_repo] Config saved successfully"),
+        Err(e) => println!("[add_repo] Failed to save config: {}", e),
+    }
+    result
 }
 
 #[tauri::command]

@@ -39,9 +39,13 @@
   });
 
   // Reactive elapsed time formatter that depends on `now`
-  function getElapsedTime(createdAt: number, endedAt?: number): string {
+  // Returns null if startedAt is undefined (timer not started yet)
+  function getElapsedTime(startedAt: number | undefined, endedAt?: number): string | null {
+    if (startedAt === undefined) {
+      return null; // Timer not started yet
+    }
     const endTime = endedAt ?? now;
-    const elapsed = Math.max(0, endTime - createdAt);
+    const elapsed = Math.max(0, endTime - startedAt);
     const mins = Math.floor(elapsed / 60);
     const secs = elapsed % 60;
 
@@ -65,7 +69,8 @@
     prompt: string;
     repoPath: string;
     model?: string; // model name for SDK sessions
-    createdAt: number;
+    createdAt: number; // When the session was created (for sorting)
+    startedAt?: number; // When the timer should start (when prompt was sent/SDK started working)
     endedAt?: number; // timestamp when session finished (for SDK sessions)
     branch?: string; // git branch name
   }
@@ -261,6 +266,7 @@
         prompt: s.prompt,
         repoPath: s.repo_path,
         createdAt: s.created_at,
+        startedAt: s.created_at, // PTY sessions start timing immediately
       })),
       ...sdkSessionsList.map(s => {
         const smartStatus = getSdkSmartStatus(s);
@@ -277,7 +283,8 @@
           prompt: s.messages.find(m => m.type === 'user')?.content || 'SDK Session',
           repoPath: s.cwd,
           model: s.model,
-          createdAt: s.startedAt ? Math.floor(s.startedAt / 1000) : Math.floor(s.createdAt / 1000),
+          createdAt: Math.floor(s.createdAt / 1000), // For sorting
+          startedAt: s.startedAt ? Math.floor(s.startedAt / 1000) : undefined, // For timer display
           endedAt,
         };
       })
@@ -360,6 +367,12 @@
         class="session-item p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all cursor-pointer"
         class:active={isSessionActive(session)}
         onclick={() => session.type === 'pty' ? selectPtySession(session.id) : selectSdkSession(session.id)}
+        onauxclick={(e) => {
+          if (e.button === 1) {
+            e.preventDefault();
+            session.type === 'pty' ? closePtySession(session.id, e) : closeSdkSession(session.id, e);
+          }
+        }}
       >
         <!-- Header row: type badge, status dot, time, close button -->
         <div class="flex items-center justify-between mb-2">
@@ -376,7 +389,9 @@
             <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status, session.statusDetail)}</span>
           </div>
           <div class="flex items-center gap-2">
-            <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.createdAt, session.endedAt)}</span>
+            {#if getElapsedTime(session.startedAt, session.endedAt) !== null}
+              <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.startedAt, session.endedAt)}</span>
+            {/if}
             <button
               class="text-text-muted hover:text-red-400 hover:bg-red-400/10 rounded p-0.5 transition-colors"
               onclick={(e) => session.type === 'pty' ? closePtySession(session.id, e) : closeSdkSession(session.id, e)}

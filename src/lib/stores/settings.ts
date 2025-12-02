@@ -154,21 +154,27 @@ function createSettingsStore() {
     },
 
     async addRepo(path: string, name: string) {
+      console.log("[settings.addRepo] Invoking backend add_repo with path:", path, "name:", name);
       try {
         await invoke("add_repo", { path, name });
+        console.log("[settings.addRepo] Backend add_repo succeeded, reloading config...");
         await this.load();
+        console.log("[settings.addRepo] Config reloaded successfully");
       } catch (error) {
-        console.error("Failed to add repo:", error);
+        console.error("[settings.addRepo] Failed to add repo:", error);
         throw error;
       }
     },
 
     async removeRepo(index: number) {
+      console.log("[settings.removeRepo] Invoking backend remove_repo with index:", index);
       try {
         await invoke("remove_repo", { index });
+        console.log("[settings.removeRepo] Backend remove_repo succeeded, reloading config...");
         await this.load();
+        console.log("[settings.removeRepo] Config reloaded successfully");
       } catch (error) {
-        console.error("Failed to remove repo:", error);
+        console.error("[settings.removeRepo] Failed to remove repo:", error);
         throw error;
       }
     },
