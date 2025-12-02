@@ -287,4 +287,22 @@ impl SidecarManager {
     pub fn is_started(&self) -> bool {
         *self.started.lock()
     }
+
+    pub fn shutdown(&self) {
+        let mut process = self.process.lock();
+        if let Some(ref mut child) = *process {
+            println!("[sidecar] Shutting down sidecar process");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        *process = None;
+        *self.stdin.lock() = None;
+        *self.started.lock() = false;
+    }
+}
+
+impl Drop for SidecarManager {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }

@@ -9,7 +9,8 @@
       "WebFetch(domain:platform.claude.com)",
       "WebFetch(domain:github.com)",
       "Bash(npm run build:*)",
-      "Bash(npm run sidecar:build:*)"
+      "Bash(npm run sidecar:build:*)",
+      "Bash(npm ls:*)"
     ],
     "deny": [],
     "ask": []

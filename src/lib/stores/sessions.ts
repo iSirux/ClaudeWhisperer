@@ -105,6 +105,11 @@ function createSessionsStore() {
         });
       });
     },
+
+    async init() {
+      await this.load();
+      this.setupListeners();
+    },
   };
 }
 

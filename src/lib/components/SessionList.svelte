@@ -3,6 +3,7 @@
   import { sessions, activeSessionId, type TerminalSession } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
+  import { invoke } from '@tauri-apps/api/core';
 
   async function createNewSession() {
     try {
@@ -66,6 +67,33 @@
     model?: string; // model name for SDK sessions
     createdAt: number;
     endedAt?: number; // timestamp when session finished (for SDK sessions)
+    branch?: string; // git branch name
+  }
+
+  // Cache for git branches to avoid repeated calls
+  let branchCache = new Map<string, string>();
+
+  async function getGitBranch(repoPath: string): Promise<string | undefined> {
+    if (!$settings.show_branch_in_sessions) {
+      return undefined;
+    }
+
+    if (branchCache.has(repoPath)) {
+      return branchCache.get(repoPath);
+    }
+
+    try {
+      const branch = await invoke<string>('get_git_branch', { repoPath });
+      // Only show branch if it's not main or master
+      if (branch && branch !== 'main' && branch !== 'master') {
+        branchCache.set(repoPath, branch);
+        return branch;
+      }
+    } catch (error) {
+      // Not a git repo or error getting branch, silently ignore
+    }
+
+    return undefined;
   }
 
   // Get smart status for SDK sessions based on messages
@@ -82,7 +110,28 @@
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
         if (msg.type === 'tool_start') {
-          return { status: 'tool', detail: msg.tool };
+          // Count consecutive calls to this same tool
+          let count = 1;
+          const currentTool = msg.tool;
+
+          // Look backwards through completed tool pairs
+          for (let j = i - 1; j >= 0; j--) {
+            const prevMsg = messages[j];
+
+            // Skip to the previous tool_start
+            if (prevMsg.type === 'tool_start') {
+              // Check if it's the same tool
+              if (prevMsg.tool === currentTool) {
+                count++;
+              } else {
+                // Different tool found, stop counting
+                break;
+              }
+            }
+          }
+
+          const detail = count > 1 ? `${msg.tool} ×${count}` : msg.tool;
+          return { status: 'tool', detail };
         }
         if (msg.type === 'tool_result') {
           // Tool finished, Claude is thinking
@@ -193,38 +242,49 @@
   }
 
   // Combine PTY and SDK sessions into unified list
-  let allSessions = $derived((): DisplaySession[] => {
-    const ptySessions: DisplaySession[] = $sessions.map(s => ({
-      id: s.id,
-      type: 'pty' as const,
-      status: s.status,
-      prompt: s.prompt,
-      repoPath: s.repo_path,
-      createdAt: s.created_at,
-    }));
+  let allSessions = $state<DisplaySession[]>([]);
 
-    const sdkSessionsList: DisplaySession[] = $sdkSessions.map(s => {
-      const smartStatus = getSdkSmartStatus(s);
-      // Find the timestamp when the session ended (done, idle, or error)
-      const doneMessage = s.messages.find(m => m.type === 'done');
-      const endedAt = (smartStatus.status === 'done' || smartStatus.status === 'idle' || smartStatus.status === 'error') && doneMessage
-        ? Math.floor(doneMessage.timestamp / 1000)
-        : undefined;
+  // Reactively update sessions when sessions or settings change
+  $effect(() => {
+    // Access reactive dependencies
+    const ptySessions = $sessions;
+    const sdkSessionsList = $sdkSessions;
+    const showBranch = $settings.show_branch_in_sessions;
 
-      return {
+    // Build base sessions without branches
+    const baseSessions: DisplaySession[] = [
+      ...ptySessions.map(s => ({
         id: s.id,
-        type: 'sdk' as const,
-        status: smartStatus.status,
-        statusDetail: smartStatus.detail,
-        prompt: s.messages.find(m => m.type === 'user')?.content || 'SDK Session',
-        repoPath: s.cwd,
-        model: s.model,
-        createdAt: s.startedAt ? Math.floor(s.startedAt / 1000) : Math.floor(s.createdAt / 1000),
-        endedAt,
-      };
-    });
+        type: 'pty' as const,
+        status: s.status,
+        statusDetail: undefined as string | undefined,
+        prompt: s.prompt,
+        repoPath: s.repo_path,
+        createdAt: s.created_at,
+      })),
+      ...sdkSessionsList.map(s => {
+        const smartStatus = getSdkSmartStatus(s);
+        const doneMessage = s.messages.find(m => m.type === 'done');
+        const endedAt = (smartStatus.status === 'done' || smartStatus.status === 'idle' || smartStatus.status === 'error') && doneMessage
+          ? Math.floor(doneMessage.timestamp / 1000)
+          : undefined;
 
-    return [...ptySessions, ...sdkSessionsList].sort((a, b) => {
+        return {
+          id: s.id,
+          type: 'sdk' as const,
+          status: smartStatus.status,
+          statusDetail: smartStatus.detail,
+          prompt: s.messages.find(m => m.type === 'user')?.content || 'SDK Session',
+          repoPath: s.cwd,
+          model: s.model,
+          createdAt: s.startedAt ? Math.floor(s.startedAt / 1000) : Math.floor(s.createdAt / 1000),
+          endedAt,
+        };
+      })
+    ];
+
+    // Sort sessions
+    const sorted = baseSessions.sort((a, b) => {
       const statusOrder: Record<string, number> = {
         Starting: 0, Running: 0, querying: 0, tool: 0, thinking: 0, responding: 0,
         idle: 1, new: 1, Completed: 2, done: 2,
@@ -234,9 +294,35 @@
       if (statusDiff !== 0) return statusDiff;
       return b.createdAt - a.createdAt;
     });
+
+    allSessions = sorted;
+
+    // Fetch branches asynchronously if enabled
+    if (showBranch) {
+      sorted.forEach(async (session) => {
+        const branch = await getGitBranch(session.repoPath);
+        if (branch) {
+          // Update the session in the array
+          allSessions = allSessions.map(s =>
+            s.id === session.id ? { ...s, branch } : s
+          );
+        }
+      });
+    }
   });
 
+  interface Props {
+    currentView?: 'sessions' | 'settings';
+  }
+
+  let { currentView = 'sessions' }: Props = $props();
+
   function isSessionActive(session: DisplaySession): boolean {
+    // Only show as active if we're in the sessions view
+    if (currentView !== 'sessions') {
+      return false;
+    }
+
     if (session.type === 'pty') {
       return $activeSessionId === session.id;
     } else {
@@ -259,7 +345,7 @@
     </span>
   </button>
 
-  {#if allSessions().length === 0}
+  {#if allSessions.length === 0}
     <div class="p-4 text-center text-text-muted text-sm">
       <svg class="w-8 h-8 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -267,7 +353,7 @@
       No sessions yet
     </div>
   {:else}
-    {#each allSessions() as session (session.id)}
+    {#each allSessions as session (session.id)}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -312,12 +398,16 @@
           {/if}
         </p>
 
-        <!-- Repo name and model -->
+        <!-- Repo name, branch, and model -->
         <div class="flex items-center gap-1.5 text-text-muted">
           <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
           </svg>
           <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
+          {#if session.branch}
+            <span class="text-xs text-text-muted">·</span>
+            <span class="text-xs text-blue-400/70" title="Git branch: {session.branch}">{session.branch}</span>
+          {/if}
           {#if session.model}
             <span class="text-xs text-text-muted">·</span>
             <span class="text-xs text-accent/70">{getShortModelName(session.model)}</span>

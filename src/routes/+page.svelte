@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import Terminal from '$lib/components/Terminal.svelte';
   import SdkView from '$lib/components/SdkView.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
@@ -12,8 +12,10 @@
   import { settings, activeRepo } from '$lib/stores/settings';
   import { recording, isRecording } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
+  import { sessionsOverlay } from '$lib/stores/sessionsOverlay';
   import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { invoke } from '@tauri-apps/api/core';
 
   // Track whether we're in SDK mode for the active session
   $: isSdkMode = $settings.terminal_mode === 'Sdk';
@@ -22,6 +24,7 @@
   let showRepoSelector = false;
   let isTogglingRecording = false;
   let wasAppFocusedOnRecordStart = true;
+  let settingsInitialTab = 'general';
 
   onMount(async () => {
     await settings.load();
@@ -36,11 +39,28 @@
 
     // Listen for session selection from SessionList
     window.addEventListener('switch-to-sessions', showSessionsView);
-
-    return () => {
-      window.removeEventListener('switch-to-sessions', showSessionsView);
-    };
   });
+
+  onDestroy(() => {
+    window.removeEventListener('switch-to-sessions', showSessionsView);
+  });
+
+  // Reactive logic to show/hide sessions overlay based on active sessions
+  $: {
+    if ($settings.overlay.sessions_overlay_enabled) {
+      const hasActiveSessions =
+        $sessions.some(s => s.status === 'Running' || s.status === 'Starting') ||
+        $sdkSessions.some(s => s.status === 'querying');
+
+      if (hasActiveSessions) {
+        sessionsOverlay.show();
+      } else {
+        sessionsOverlay.hide();
+      }
+    } else {
+      sessionsOverlay.hide();
+    }
+  }
 
   async function sendTranscript() {
     if (!$recording.transcript) return;
@@ -82,6 +102,7 @@
           if ($isRecording) {
             await recording.stopRecording();
             await overlay.hide();
+            overlay.clearSessionInfo();
 
             // Auto-send transcript if app wasn't focused when recording started
             if (!wasAppFocusedOnRecordStart && $recording.transcript) {
@@ -96,9 +117,24 @@
             if (!wasAppFocusedOnRecordStart && $settings.terminal_mode === 'Sdk') {
               const repoPath = $activeRepo?.path || '.';
               const model = $settings.default_model;
+
+              // Get current git branch
+              let branch: string | null = null;
+              try {
+                branch = await invoke<string>('get_git_branch', { repoPath });
+              } catch (e) {
+                console.error('Failed to get git branch:', e);
+              }
+
+              // Set overlay to show we're creating a session
+              overlay.setSessionInfo(branch, model, true);
+
               const sessionId = await sdkSessions.createSession(repoPath, model);
               activeSdkSessionId.set(sessionId);
               activeSessionId.set(null); // Clear PTY session selection
+
+              // Update overlay to show session is created
+              overlay.setSessionInfo(branch, model, false);
             }
 
             await recording.startRecording($settings.audio.device_id || undefined);
@@ -142,13 +178,8 @@
   }
 
   async function changeModel(newModel: string) {
-    // Update the default model
+    // Update the default model (only affects new sessions)
     settings.update(s => ({ ...s, default_model: newModel }));
-
-    // If there's an active SDK session, update its model in the session store
-    if ($activeSdkSessionId) {
-      sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
-    }
   }
 </script>
 
@@ -160,7 +191,10 @@
       <div class="relative">
         <button
           class="repo-selector flex items-center gap-2 px-3 py-1.5 bg-surface-elevated hover:bg-border rounded text-sm transition-colors"
+          class:ring-2={$isRecording}
+          class:ring-recording={$isRecording}
           onclick={() => showRepoSelector = !showRepoSelector}
+          title={$isRecording ? "Switch repository (recording in progress)" : "Select repository"}
         >
           {#if $activeRepo}
             <span class="text-text-primary">{$activeRepo.name}</span>
@@ -174,14 +208,36 @@
 
         {#if showRepoSelector}
           <div class="absolute top-full left-0 mt-1 w-64 bg-surface-elevated border border-border rounded shadow-lg z-50">
+            {#if $isRecording}
+              <div class="px-3 py-2 border-b border-border bg-recording/10">
+                <div class="flex items-center gap-2 text-xs text-recording">
+                  <div class="w-1.5 h-1.5 bg-recording rounded-full animate-pulse-recording"></div>
+                  <span>Recording - switch repository for this prompt</span>
+                </div>
+              </div>
+            {/if}
             {#each $settings.repos as repo, index}
               <button
-                class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors"
+                class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
                 class:bg-accent={index === $settings.active_repo_index}
+                class:text-white={index === $settings.active_repo_index}
                 onclick={() => selectRepo(index)}
               >
-                <div class="font-medium text-text-primary">{repo.name}</div>
-                <div class="text-xs text-text-muted truncate">{repo.path}</div>
+                <div class="flex items-center justify-between">
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium flex items-center gap-2">
+                      {repo.name}
+                      {#if index === $settings.active_repo_index}
+                        <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                        </svg>
+                      {/if}
+                    </div>
+                    <div class="text-xs truncate" class:text-text-muted={index !== $settings.active_repo_index} class:opacity-80={index === $settings.active_repo_index}>
+                      {repo.path}
+                    </div>
+                  </div>
+                </div>
               </button>
             {/each}
             {#if $settings.repos.length === 0}
@@ -192,7 +248,11 @@
             <div class="border-t border-border">
               <button
                 class="w-full px-3 py-2 text-left text-sm text-accent hover:bg-border transition-colors"
-                onclick={showSettingsView}
+                onclick={() => {
+                  showRepoSelector = false;
+                  settingsInitialTab = 'repos';
+                  showSettingsView();
+                }}
               >
                 + Add repository
               </button>
@@ -231,10 +291,47 @@
         class:bg-surface-elevated={currentView === 'sessions'}
         onclick={showSessionsView}
       >
-        <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
+          {#if $sessions.length + $sdkSessions.length > 0}
+            {@const activeCount = [...$sessions, ...$sdkSessions].filter(s => {
+              if ('status' in s && typeof s.status === 'string') {
+                return ['Starting', 'Running', 'querying'].includes(s.status);
+              }
+              return false;
+            }).length}
+            {@const doneCount = [...$sessions, ...$sdkSessions].filter(s => {
+              if ('status' in s && typeof s.status === 'string') {
+                return ['Completed', 'idle', 'done'].includes(s.status);
+              }
+              return false;
+            }).length}
+            {@const errorCount = [...$sessions, ...$sdkSessions].filter(s => {
+              if ('status' in s && typeof s.status === 'string') {
+                return ['Failed', 'error'].includes(s.status);
+              }
+              return false;
+            }).length}
+            <div class="flex items-center gap-1.5">
+              <span class="text-xs text-text-muted">{$sessions.length + $sdkSessions.length}</span>
+              {#if activeCount > 0}
+                <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+              {/if}
+              {#if doneCount > 0}
+                <div class="flex items-center gap-1">
+                  <div class="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
+                  <span class="text-xs text-blue-400 font-medium">{doneCount}</span>
+                </div>
+              {/if}
+              {#if errorCount > 0}
+                <div class="w-1.5 h-1.5 rounded-full bg-red-400"></div>
+              {/if}
+            </div>
+          {/if}
+        </div>
       </button>
       <div class="flex-1 overflow-hidden">
-        <SessionList />
+        <SessionList {currentView} />
       </div>
       <button
         class="sidebar-settings p-3 border-t border-border text-left hover:bg-surface-elevated transition-colors flex items-center gap-2"
@@ -251,7 +348,7 @@
 
     <main class="flex-1 flex flex-col overflow-hidden">
       {#if currentView === 'settings'}
-        <Settings />
+        <Settings initialTab={settingsInitialTab} />
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
         <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">

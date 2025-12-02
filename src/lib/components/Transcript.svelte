@@ -4,6 +4,7 @@
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
+  import Waveform from './Waveform.svelte';
 
   onDestroy(() => {
     if (audioElement) {
@@ -156,8 +157,11 @@
         activeSessionId.set(sessionId);
         activeSdkSessionId.set(null);
       }
+      // Keep the transcript editable after sending
+      editedTranscript = prompt;
+      isEditing = true;
+      // Clear the recording state but preserve the edited transcript
       recording.clearTranscript();
-      cancelEditing();
     } catch (error) {
       console.error('Failed to send prompt:', error);
     }
@@ -235,6 +239,40 @@
           onclick={stopRecording}
         >
           Stop
+        </button>
+        <button
+          class="px-3 py-1.5 text-sm bg-surface-elevated hover:bg-border text-text-primary rounded transition-colors"
+          onclick={async () => {
+            await recording.stopAndTranscribe();
+          }}
+        >
+          Transcribe
+        </button>
+        <button
+          class="px-3 py-1.5 text-sm bg-accent hover:bg-accent-hover text-white rounded transition-colors"
+          onclick={async () => {
+            const transcript = await recording.stopAndTranscribe();
+            if (transcript) {
+              if ($settings.terminal_mode === 'Sdk') {
+                const repoPath = $activeRepo?.path || '.';
+                const model = $settings.default_model;
+                let sessionId = $activeSdkSessionId;
+                if (!sessionId) {
+                  sessionId = await sdkSessions.createSession(repoPath, model);
+                  activeSdkSessionId.set(sessionId);
+                }
+                await sdkSessions.sendPrompt(sessionId, transcript);
+                activeSessionId.set(null);
+              } else {
+                const sessionId = await sessions.createSession(transcript);
+                activeSessionId.set(sessionId);
+                activeSdkSessionId.set(null);
+              }
+              recording.clearTranscript();
+            }
+          }}
+        >
+          Transcribe & Send
         </button>
       {/if}
 
@@ -324,7 +362,10 @@
   {:else}
     <div class="p-3 bg-background border border-border rounded text-sm text-text-muted text-center">
       {#if $isRecording}
-        Listening...
+        <div class="mb-3">
+          <Waveform height={60} color="#ef4444" />
+        </div>
+        Recording... Click "Stop" to save without transcribing, "Transcribe" to transcribe only, or "Transcribe & Send" to send immediately.
       {:else if $hasRecorded}
         Audio recorded. Click "Transcribe" to preview, "Transcribe & Send" to send immediately, or "Clear" to discard.
       {:else}

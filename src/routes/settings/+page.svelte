@@ -3,7 +3,19 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
 
-  let activeTab = 'general';
+  // Accept an initial tab from parent component
+  interface Props {
+    initialTab?: string;
+  }
+  let { initialTab = 'general' }: Props = $props();
+
+  let activeTab = $state(initialTab);
+
+  // Update active tab when initialTab prop changes
+  $effect(() => {
+    activeTab = initialTab;
+  });
+
   let testingWhisper = false;
   let whisperStatus: 'idle' | 'success' | 'error' = 'idle';
   let newRepoPath = '';
@@ -70,6 +82,7 @@
 
   const tabs = [
     { id: 'general', label: 'General' },
+    { id: 'system', label: 'System' },
     { id: 'audio', label: 'Audio' },
     { id: 'whisper', label: 'Whisper' },
     { id: 'haiku', label: 'Haiku' },
@@ -217,6 +230,52 @@
               <p class="text-xs text-text-muted">Use --dangerously-skip-permissions flag</p>
             </div>
             <input type="checkbox" class="toggle" bind:checked={$settings.skip_permissions} />
+          </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Show Branch in Sessions</label>
+              <p class="text-xs text-text-muted">Display git branch if not main/master</p>
+            </div>
+            <input type="checkbox" class="toggle" bind:checked={$settings.show_branch_in_sessions} />
+          </div>
+        </div>
+
+      {:else if activeTab === 'system'}
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Minimize to Tray</label>
+              <p class="text-xs text-text-muted">Keep running in system tray when window is closed</p>
+            </div>
+            <input type="checkbox" class="toggle" bind:checked={$settings.system.minimize_to_tray} />
+          </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Start Minimized</label>
+              <p class="text-xs text-text-muted">Start app minimized to system tray</p>
+            </div>
+            <input type="checkbox" class="toggle" bind:checked={$settings.system.start_minimized} />
+          </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Start on Login</label>
+              <p class="text-xs text-text-muted">Automatically start when you log in to your computer</p>
+            </div>
+            <input
+              type="checkbox"
+              class="toggle"
+              checked={$settings.system.autostart}
+              onchange={async (e) => {
+                const enabled = (e.target as HTMLInputElement).checked;
+                try {
+                  await invoke('toggle_autostart', { enabled });
+                  settings.update(s => ({ ...s, system: { ...s.system, autostart: enabled } }));
+                } catch (error) {
+                  console.error('Failed to toggle autostart:', error);
+                  (e.target as HTMLInputElement).checked = !enabled;
+                }
+              }}
+            />
           </div>
         </div>
 
@@ -379,6 +438,15 @@
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Show Active Terminals</label>
             <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_terminals} />
+          </div>
+          <div class="border-t border-border pt-4 mt-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-text-secondary">Sessions Status Overlay</label>
+                <p class="text-xs text-text-muted mt-0.5">Show a small overlay with active sessions status</p>
+              </div>
+              <input type="checkbox" class="toggle" bind:checked={$settings.overlay.sessions_overlay_enabled} />
+            </div>
           </div>
         </div>
 

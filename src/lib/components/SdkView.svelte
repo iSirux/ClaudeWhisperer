@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { sdkSessions, type SdkMessage, type SdkSession } from '$lib/stores/sdkSessions';
+  import { renderMarkdown } from '$lib/utils/markdown';
 
   let { sessionId }: { sessionId: string } = $props();
 
@@ -89,15 +90,88 @@
     };
     return icons[tool] || '🔨';
   }
+
+  // Get smart status based on the last messages
+  function getSmartStatus(): { status: string; detail?: string } {
+    const msgs = messages;
+
+    if (status === 'error') {
+      return { status: 'error' };
+    }
+
+    if (status === 'querying') {
+      // Find the last tool_start that doesn't have a matching tool_result after it
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i];
+        if (msg.type === 'tool_start') {
+          // Count consecutive calls to this same tool
+          let count = 1;
+          const currentTool = msg.tool;
+
+          // Look backwards through completed tool pairs
+          for (let j = i - 1; j >= 0; j--) {
+            const prevMsg = msgs[j];
+            if (prevMsg.type === 'tool_start') {
+              if (prevMsg.tool === currentTool) {
+                count++;
+              } else {
+                break;
+              }
+            }
+          }
+
+          const detail = count > 1 ? `${msg.tool} (x${count})` : msg.tool;
+          return { status: 'tool', detail };
+        }
+        if (msg.type === 'tool_result') {
+          // Tool finished, Claude is thinking
+          return { status: 'thinking' };
+        }
+        if (msg.type === 'text') {
+          return { status: 'responding' };
+        }
+      }
+      return { status: 'thinking' };
+    }
+
+    return { status: 'idle' };
+  }
+
+  function getStatusMessage(smartStatus: { status: string; detail?: string }): string {
+    switch (smartStatus.status) {
+      case 'tool':
+        return `Running ${smartStatus.detail}...`;
+      case 'thinking':
+        return 'Thinking...';
+      case 'responding':
+        return 'Responding...';
+      default:
+        return 'Working...';
+    }
+  }
+
+  let smartStatus = $derived(getSmartStatus());
+  let statusMessage = $derived(getStatusMessage(smartStatus));
+
+  function formatSessionTime(timestamp: number | undefined): string {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  let sessionStartTime = $derived(formatSessionTime(session?.createdAt));
 </script>
 
 <div class="sdk-view">
-  {#if truncatedPrompt}
-    <div class="prompt-header">
+  <div class="session-header">
+    {#if sessionStartTime}
+      <span class="session-time">{sessionStartTime}</span>
+    {/if}
+    {#if truncatedPrompt}
       <span class="prompt-label">Prompt:</span>
       <span class="prompt-text">{truncatedPrompt}</span>
-    </div>
-  {/if}
+    {/if}
+  </div>
   <div class="messages" bind:this={messagesEl}>
     {#each messages as msg (msg.timestamp)}
       <div class="message message-{msg.type}">
@@ -106,7 +180,7 @@
             <pre class="user-content">{msg.content}</pre>
           </div>
         {:else if msg.type === 'text'}
-          <pre class="text-content">{msg.content}</pre>
+          <div class="text-content markdown-body">{@html renderMarkdown(msg.content ?? '')}</div>
         {:else if msg.type === 'tool_start'}
           <div class="tool-call">
             <div class="tool-header">
@@ -151,7 +225,7 @@
           <span class="loading-dot"></span>
           <span class="loading-dot"></span>
         </div>
-        <span class="loading-text">Claude is thinking...</span>
+        <span class="loading-text">{statusMessage}</span>
       </div>
     {/if}
   </div>
@@ -215,7 +289,7 @@
     }
   }
 
-  .prompt-header {
+  .session-header {
     position: sticky;
     top: 0;
     z-index: 10;
@@ -226,6 +300,15 @@
     align-items: baseline;
     gap: 0.5rem;
     font-size: 0.85rem;
+  }
+
+  .session-time {
+    color: #94a3b8;
+    font-weight: 500;
+    flex-shrink: 0;
+    padding-right: 0.5rem;
+    border-right: 1px solid #475569;
+    margin-right: 0.25rem;
   }
 
   .prompt-label {
@@ -259,10 +342,191 @@
 
   .text-content {
     margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
     font-size: 0.9rem;
+    line-height: 1.6;
+  }
+
+  /* Markdown body styles */
+  .markdown-body {
+    color: #e0e0e0;
+  }
+
+  .markdown-body :global(h1),
+  .markdown-body :global(h2),
+  .markdown-body :global(h3),
+  .markdown-body :global(h4),
+  .markdown-body :global(h5),
+  .markdown-body :global(h6) {
+    margin-top: 1.25em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+    line-height: 1.25;
+    color: #f0f0f0;
+  }
+
+  .markdown-body :global(h1:first-child),
+  .markdown-body :global(h2:first-child),
+  .markdown-body :global(h3:first-child),
+  .markdown-body :global(h4:first-child),
+  .markdown-body :global(h5:first-child),
+  .markdown-body :global(h6:first-child) {
+    margin-top: 0;
+  }
+
+  .markdown-body :global(h1) { font-size: 1.5em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
+  .markdown-body :global(h2) { font-size: 1.3em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
+  .markdown-body :global(h3) { font-size: 1.15em; }
+  .markdown-body :global(h4) { font-size: 1em; }
+  .markdown-body :global(h5) { font-size: 0.9em; }
+  .markdown-body :global(h6) { font-size: 0.85em; color: #888; }
+
+  .markdown-body :global(p) {
+    margin-top: 0;
+    margin-bottom: 0.75em;
+  }
+
+  .markdown-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .markdown-body :global(a) {
+    color: #6366f1;
+    text-decoration: none;
+  }
+
+  .markdown-body :global(a:hover) {
+    text-decoration: underline;
+  }
+
+  .markdown-body :global(strong) {
+    font-weight: 600;
+    color: #f0f0f0;
+  }
+
+  .markdown-body :global(em) {
+    font-style: italic;
+  }
+
+  .markdown-body :global(code) {
+    background: #1a1a2e;
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  .markdown-body :global(pre) {
+    background: #1a1a2e;
+    padding: 1em;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.75em 0;
+  }
+
+  .markdown-body :global(pre code) {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: 0.85em;
     line-height: 1.5;
+  }
+
+  .markdown-body :global(ul),
+  .markdown-body :global(ol) {
+    margin-top: 0;
+    margin-bottom: 0.75em;
+    padding-left: 1.5em;
+  }
+
+  .markdown-body :global(li) {
+    margin-bottom: 0.25em;
+  }
+
+  .markdown-body :global(li > ul),
+  .markdown-body :global(li > ol) {
+    margin-bottom: 0;
+  }
+
+  .markdown-body :global(blockquote) {
+    margin: 0.75em 0;
+    padding: 0.5em 1em;
+    border-left: 4px solid #6366f1;
+    background: #1a1a2e;
+    color: #aaa;
+  }
+
+  .markdown-body :global(blockquote p) {
+    margin-bottom: 0;
+  }
+
+  .markdown-body :global(hr) {
+    border: none;
+    border-top: 1px solid #333;
+    margin: 1em 0;
+  }
+
+  .markdown-body :global(table) {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.75em 0;
+  }
+
+  .markdown-body :global(th),
+  .markdown-body :global(td) {
+    border: 1px solid #333;
+    padding: 0.5em 0.75em;
+    text-align: left;
+  }
+
+  .markdown-body :global(th) {
+    background: #1a1a2e;
+    font-weight: 600;
+  }
+
+  .markdown-body :global(tr:nth-child(even)) {
+    background: rgba(26, 26, 46, 0.5);
+  }
+
+  /* Highlight.js theme overrides for dark mode */
+  .markdown-body :global(.hljs) {
+    background: transparent;
+    color: #e0e0e0;
+  }
+
+  .markdown-body :global(.hljs-keyword),
+  .markdown-body :global(.hljs-selector-tag),
+  .markdown-body :global(.hljs-built_in) {
+    color: #c678dd;
+  }
+
+  .markdown-body :global(.hljs-string),
+  .markdown-body :global(.hljs-attr) {
+    color: #98c379;
+  }
+
+  .markdown-body :global(.hljs-number),
+  .markdown-body :global(.hljs-literal) {
+    color: #d19a66;
+  }
+
+  .markdown-body :global(.hljs-comment) {
+    color: #5c6370;
+    font-style: italic;
+  }
+
+  .markdown-body :global(.hljs-function),
+  .markdown-body :global(.hljs-title) {
+    color: #61afef;
+  }
+
+  .markdown-body :global(.hljs-variable),
+  .markdown-body :global(.hljs-params) {
+    color: #e06c75;
+  }
+
+  .markdown-body :global(.hljs-type),
+  .markdown-body :global(.hljs-class) {
+    color: #e5c07b;
   }
 
   .tool-call,
@@ -270,11 +534,6 @@
     background: #1a1a2e;
     padding: 0.75rem;
     border-radius: 6px;
-    border-left: 3px solid #6366f1;
-  }
-
-  .tool-result {
-    border-left-color: #22c55e;
   }
 
   .tool-header {

@@ -73,6 +73,8 @@ function createSdkSessionsStore() {
                 s.id === id
                   ? {
                       ...s,
+                      // Set startedAt on first actual response from SDK
+                      startedAt: s.startedAt || Date.now(),
                       messages: [
                         ...s.messages,
                         { type: 'text' as const, content: e.payload, timestamp: Date.now() },
@@ -97,6 +99,8 @@ function createSdkSessionsStore() {
                 s.id === id
                   ? {
                       ...s,
+                      // Set startedAt on first actual response from SDK
+                      startedAt: s.startedAt || Date.now(),
                       messages: [
                         ...s.messages,
                         {
@@ -191,7 +195,7 @@ function createSdkSessionsStore() {
             ? {
                 ...s,
                 status: 'querying' as const,
-                startedAt: s.startedAt || Date.now(), // Set startedAt on first prompt
+                // Note: startedAt is set when the SDK actually starts working (first text or tool event)
                 messages: [
                   ...s.messages,
                   { type: 'user' as const, content: prompt, timestamp: Date.now() },

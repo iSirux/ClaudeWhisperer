@@ -8,6 +8,7 @@ interface RecordingStore {
   transcript: string;
   error: string | null;
   audioData: Uint8Array | null;
+  stream: MediaStream | null;
 }
 
 function createRecordingStore() {
@@ -16,6 +17,7 @@ function createRecordingStore() {
     transcript: '',
     error: null,
     audioData: null,
+    stream: null,
   });
 
   let mediaRecorder: MediaRecorder | null = null;
@@ -43,13 +45,14 @@ function createRecordingStore() {
         };
 
         mediaRecorder.start(100);
-        update((s) => ({ ...s, state: 'recording', error: null, transcript: '' }));
+        update((s) => ({ ...s, state: 'recording', error: null, transcript: '', stream }));
       } catch (error) {
         console.error('Failed to start recording:', error);
         update((s) => ({
           ...s,
           state: 'error',
           error: error instanceof Error ? error.message : 'Failed to start recording',
+          stream: null,
         }));
       }
     },
@@ -79,6 +82,7 @@ function createRecordingStore() {
                 state: 'idle',
                 transcript,
                 audioData,
+                stream: null,
               }));
 
               mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
@@ -87,7 +91,7 @@ function createRecordingStore() {
 
               resolve(transcript);
             } else {
-              update((s) => ({ ...s, state: 'recorded', audioData }));
+              update((s) => ({ ...s, state: 'recorded', audioData, stream: null }));
 
               mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
               mediaRecorder = null;
@@ -108,6 +112,14 @@ function createRecordingStore() {
 
         mediaRecorder.stop();
       });
+    },
+
+    async stopAndTranscribe(): Promise<string | null> {
+      return this.stopRecording(true);
+    },
+
+    async stopOnly(): Promise<void> {
+      await this.stopRecording(false);
     },
 
     async transcribeAndSend() {
@@ -131,6 +143,7 @@ function createRecordingStore() {
           ...s,
           state: 'idle',
           transcript,
+          stream: null,
         }));
 
         return transcript;
@@ -152,7 +165,7 @@ function createRecordingStore() {
       }
       mediaRecorder = null;
       audioChunks = [];
-      set({ state: 'idle', transcript: '', error: null, audioData: null });
+      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null });
     },
 
     clearTranscript() {

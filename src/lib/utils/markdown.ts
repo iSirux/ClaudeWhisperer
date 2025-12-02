@@ -1,24 +1,35 @@
-import { marked } from 'marked';
+// @ts-ignore - marked types
+import { Marked } from 'marked';
+// @ts-ignore - marked-highlight types
+import { markedHighlight } from 'marked-highlight';
+// @ts-ignore - highlight.js types
 import hljs from 'highlight.js';
 
-// Configure marked to use highlight.js for syntax highlighting
-marked.setOptions({
-  highlight: function (code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(code, { language: lang }).value;
-      } catch (err) {
-        console.error('Error highlighting code:', err);
+// Create a configured marked instance with highlight.js for syntax highlighting
+const marked = new Marked(
+  markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code: string, lang: string) {
+      if (lang && hljs.getLanguage(lang)) {
+        try {
+          return hljs.highlight(code, { language: lang }).value;
+        } catch (err) {
+          console.error('Error highlighting code:', err);
+        }
       }
-    }
-    // Fallback to automatic language detection
-    try {
-      return hljs.highlightAuto(code).value;
-    } catch (err) {
-      console.error('Error auto-highlighting code:', err);
-      return code;
-    }
-  },
+      // Fallback to automatic language detection
+      try {
+        return hljs.highlightAuto(code).value;
+      } catch (err) {
+        console.error('Error auto-highlighting code:', err);
+        return code;
+      }
+    },
+  })
+);
+
+// Configure marked options
+marked.setOptions({
   breaks: true, // Convert \n to <br>
   gfm: true, // GitHub Flavored Markdown
 });

@@ -3,29 +3,19 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
 
-interface OverlayStore {
+interface SessionsOverlayStore {
   visible: boolean;
   position: { x: number; y: number };
-  sessionInfo: {
-    branch: string | null;
-    model: string | null;
-    creatingSession: boolean;
-  };
 }
 
-function getOverlayWindow() {
-  return WebviewWindow.getByLabel('overlay');
+function getSessionsOverlayWindow() {
+  return WebviewWindow.getByLabel('sessions-overlay');
 }
 
-function createOverlayStore() {
-  const { subscribe, set, update } = writable<OverlayStore>({
+function createSessionsOverlayStore() {
+  const { subscribe, set, update } = writable<SessionsOverlayStore>({
     visible: false,
     position: { x: 0, y: 0 },
-    sessionInfo: {
-      branch: null,
-      model: null,
-      creatingSession: false,
-    },
   });
 
   return {
@@ -33,26 +23,25 @@ function createOverlayStore() {
 
     async show() {
       try {
-        const overlayWindow = await getOverlayWindow();
+        const overlayWindow = await getSessionsOverlayWindow();
         if (overlayWindow) {
           await overlayWindow.show();
-          await overlayWindow.setFocus();
         }
         update((s) => ({ ...s, visible: true }));
       } catch (error) {
-        console.error('Failed to show overlay:', error);
+        console.error('Failed to show sessions overlay:', error);
       }
     },
 
     async hide() {
       try {
-        const overlayWindow = await getOverlayWindow();
+        const overlayWindow = await getSessionsOverlayWindow();
         if (overlayWindow) {
           await overlayWindow.hide();
         }
         update((s) => ({ ...s, visible: false }));
       } catch (error) {
-        console.error('Failed to hide overlay:', error);
+        console.error('Failed to hide sessions overlay:', error);
       }
     },
 
@@ -73,43 +62,30 @@ function createOverlayStore() {
 
     async setPosition(x: number, y: number) {
       try {
-        const overlayWindow = await getOverlayWindow();
+        const overlayWindow = await getSessionsOverlayWindow();
         if (overlayWindow) {
           await overlayWindow.setPosition(new PhysicalPosition(x, y));
         }
         update((s) => ({ ...s, position: { x, y } }));
       } catch (error) {
-        console.error('Failed to set overlay position:', error);
+        console.error('Failed to set sessions overlay position:', error);
       }
     },
 
-    async centerTop() {
+    async positionBottomRight() {
       try {
         const monitor = await primaryMonitor();
         if (monitor) {
-          const x = Math.round((monitor.size.width - 400) / 2);
-          const y = 20;
+          // Position at bottom right with some margin
+          const x = monitor.size.width - 300 - 20; // width + margin
+          const y = monitor.size.height - 200 - 60; // height + margin for taskbar
           await this.setPosition(x, y);
         }
       } catch (error) {
-        console.error('Failed to center overlay:', error);
+        console.error('Failed to position sessions overlay:', error);
       }
-    },
-
-    setSessionInfo(branch: string | null, model: string | null, creatingSession: boolean) {
-      update((s) => ({
-        ...s,
-        sessionInfo: { branch, model, creatingSession },
-      }));
-    },
-
-    clearSessionInfo() {
-      update((s) => ({
-        ...s,
-        sessionInfo: { branch: null, model: null, creatingSession: false },
-      }));
     },
   };
 }
 
-export const overlay = createOverlayStore();
+export const sessionsOverlay = createSessionsOverlayStore();

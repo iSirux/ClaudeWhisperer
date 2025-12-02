@@ -1,5 +1,5 @@
-import { writable, derived } from 'svelte/store';
-import { invoke } from '@tauri-apps/api/core';
+import { writable, derived } from "svelte/store";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface WhisperConfig {
   endpoint: string;
@@ -32,6 +32,7 @@ export interface OverlayConfig {
   transcript_lines: number;
   show_settings: boolean;
   show_terminals: boolean;
+  sessions_overlay_enabled: boolean;
 }
 
 export interface AudioConfig {
@@ -42,14 +43,20 @@ export interface AudioConfig {
   use_hotkey: boolean;
 }
 
+export interface SystemConfig {
+  minimize_to_tray: boolean;
+  start_minimized: boolean;
+  autostart: boolean;
+}
+
 export interface RepoConfig {
   path: string;
   name: string;
 }
 
-export type TerminalMode = 'Interactive' | 'Prompt' | 'Sdk';
+export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
 
-export type Theme = 'Midnight' | 'Slate' | 'Snow' | 'Sand';
+export type Theme = "Midnight" | "Slate" | "Snow" | "Sand";
 
 export interface AppConfig {
   whisper: WhisperConfig;
@@ -64,50 +71,59 @@ export interface AppConfig {
   terminal_mode: TerminalMode;
   skip_permissions: boolean;
   theme: Theme;
+  system: SystemConfig;
+  show_branch_in_sessions: boolean;
 }
 
 const defaultConfig: AppConfig = {
   whisper: {
-    endpoint: 'http://localhost:8000/v1/audio/transcriptions',
-    model: 'Systran/faster-whisper-base',
-    language: 'en',
+    endpoint: "http://localhost:8000/v1/audio/transcriptions",
+    model: "Systran/faster-whisper-base",
+    language: "en",
   },
   haiku: {
     enabled: false,
-    api_key: '',
-    model: 'claude-3-haiku-20240307',
+    api_key: "",
+    model: "claude-3-haiku-20240307",
   },
   git: {
-    create_branch: true,
+    create_branch: false,
     auto_merge: false,
     create_pr: false,
-    use_worktrees: true,
+    use_worktrees: false,
   },
   hotkeys: {
-    toggle_recording: 'CommandOrControl+Shift+Space',
-    toggle_open_mic: 'CommandOrControl+Shift+M',
-    send_prompt: 'CommandOrControl+Enter',
-    switch_repo: 'CommandOrControl+Shift+R',
+    toggle_recording: "CommandOrControl+Shift+Space",
+    toggle_open_mic: "CommandOrControl+Shift+M",
+    send_prompt: "CommandOrControl+Enter",
+    switch_repo: "CommandOrControl+Shift+R",
   },
   overlay: {
     show_transcript: true,
     transcript_lines: 3,
     show_settings: true,
     show_terminals: true,
+    sessions_overlay_enabled: false,
   },
   audio: {
     device_id: null,
     open_mic: false,
-    voice_command: 'go go',
-    use_voice_command: true,
+    voice_command: "go go",
+    use_voice_command: false,
     use_hotkey: true,
   },
   repos: [],
   active_repo_index: 0,
-  default_model: 'claude-opus-4-5',
-  terminal_mode: 'Interactive',
+  default_model: "claude-opus-4-5",
+  terminal_mode: "Interactive",
   skip_permissions: false,
-  theme: 'Midnight',
+  theme: "Midnight",
+  system: {
+    minimize_to_tray: false,
+    start_minimized: false,
+    autostart: false,
+  },
+  show_branch_in_sessions: false,
 };
 
 function createSettingsStore() {
@@ -120,49 +136,49 @@ function createSettingsStore() {
 
     async load() {
       try {
-        const config = await invoke<AppConfig>('get_config');
+        const config = await invoke<AppConfig>("get_config");
         set(config);
       } catch (error) {
-        console.error('Failed to load config:', error);
+        console.error("Failed to load config:", error);
       }
     },
 
     async save(config: AppConfig) {
       try {
-        await invoke('save_config', { newConfig: config });
+        await invoke("save_config", { newConfig: config });
         set(config);
       } catch (error) {
-        console.error('Failed to save config:', error);
+        console.error("Failed to save config:", error);
         throw error;
       }
     },
 
     async addRepo(path: string, name: string) {
       try {
-        await invoke('add_repo', { path, name });
+        await invoke("add_repo", { path, name });
         await this.load();
       } catch (error) {
-        console.error('Failed to add repo:', error);
+        console.error("Failed to add repo:", error);
         throw error;
       }
     },
 
     async removeRepo(index: number) {
       try {
-        await invoke('remove_repo', { index });
+        await invoke("remove_repo", { index });
         await this.load();
       } catch (error) {
-        console.error('Failed to remove repo:', error);
+        console.error("Failed to remove repo:", error);
         throw error;
       }
     },
 
     async setActiveRepo(index: number) {
       try {
-        await invoke('set_active_repo', { index });
+        await invoke("set_active_repo", { index });
         await this.load();
       } catch (error) {
-        console.error('Failed to set active repo:', error);
+        console.error("Failed to set active repo:", error);
         throw error;
       }
     },

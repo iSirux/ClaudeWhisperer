@@ -80,6 +80,7 @@ pub struct OverlayConfig {
     pub transcript_lines: usize,
     pub show_settings: bool,
     pub show_terminals: bool,
+    pub sessions_overlay_enabled: bool,
 }
 
 impl Default for OverlayConfig {
@@ -89,6 +90,24 @@ impl Default for OverlayConfig {
             transcript_lines: 3,
             show_settings: true,
             show_terminals: true,
+            sessions_overlay_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemConfig {
+    pub minimize_to_tray: bool,
+    pub start_minimized: bool,
+    pub autostart: bool,
+}
+
+impl Default for SystemConfig {
+    fn default() -> Self {
+        Self {
+            minimize_to_tray: true,
+            start_minimized: false,
+            autostart: false,
         }
     }
 }
@@ -122,9 +141,9 @@ pub struct RepoConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum TerminalMode {
-    #[default]
     Interactive,
     Prompt,
+    #[default]
     Sdk,
 }
 
@@ -154,6 +173,10 @@ pub struct AppConfig {
     pub skip_permissions: bool,
     #[serde(default)]
     pub theme: Theme,
+    #[serde(default)]
+    pub system: SystemConfig,
+    #[serde(default)]
+    pub show_branch_in_sessions: bool,
 }
 
 impl Default for AppConfig {
@@ -171,6 +194,8 @@ impl Default for AppConfig {
             terminal_mode: TerminalMode::default(),
             skip_permissions: false,
             theme: Theme::default(),
+            system: SystemConfig::default(),
+            show_branch_in_sessions: false,
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::config::{AppConfig, RepoConfig};
+use crate::git::GitManager;
 use tauri::State;
 use parking_lot::Mutex;
 
@@ -52,4 +53,9 @@ pub fn set_active_repo(config: State<ConfigState>, index: usize) -> Result<(), S
 pub fn get_active_repo(config: State<ConfigState>) -> Option<RepoConfig> {
     let cfg = config.lock();
     cfg.get_active_repo().cloned()
+}
+
+#[tauri::command]
+pub fn get_git_branch(repo_path: String) -> Result<String, String> {
+    GitManager::get_current_branch(&repo_path)
 }
