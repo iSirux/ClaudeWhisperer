@@ -121,7 +121,7 @@
         </div>
         <div class="flex-1 min-w-0">
           <div class="text-xs text-text-muted mb-1 font-medium uppercase tracking-wide">Voice Prompt</div>
-          <p class="text-sm text-text-primary leading-relaxed">{session.prompt}</p>
+          <p class="text-sm text-text-primary leading-relaxed select-text">{session.prompt}</p>
         </div>
       </div>
     </div>

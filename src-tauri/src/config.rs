@@ -119,6 +119,8 @@ pub struct AudioConfig {
     pub voice_command: String,
     pub use_voice_command: bool,
     pub use_hotkey: bool,
+    #[serde(default)]
+    pub play_sound_on_completion: bool,
 }
 
 impl Default for AudioConfig {
@@ -129,6 +131,7 @@ impl Default for AudioConfig {
             voice_command: "go go".to_string(),
             use_voice_command: true,
             use_hotkey: true,
+            play_sound_on_completion: false,
         }
     }
 }

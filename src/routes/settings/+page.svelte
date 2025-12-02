@@ -22,7 +22,7 @@
   let newRepoName = $state('');
   let audioDevices: MediaDeviceInfo[] = $state([]);
   let loadingDevices = $state(false);
-  let saveStatus: 'idle' | 'saving' | 'saved' | 'error' = $state('idle');
+  let saveStatus: 'idle' | 'saving' | 'error' = $state('idle');
   let saveTimeout: ReturnType<typeof setTimeout> | null = null;
   let statusTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -35,8 +35,7 @@
       saveStatus = 'saving';
       try {
         await invoke('save_config', { newConfig: $settings });
-        saveStatus = 'saved';
-        statusTimeout = setTimeout(() => saveStatus = 'idle', 2000);
+        saveStatus = 'idle';
       } catch (error) {
         console.error('Failed to save settings:', error);
         saveStatus = 'error';
@@ -85,7 +84,6 @@
     { id: 'system', label: 'System' },
     { id: 'audio', label: 'Audio' },
     { id: 'whisper', label: 'Whisper' },
-    { id: 'haiku', label: 'Haiku' },
     { id: 'git', label: 'Git' },
     { id: 'hotkeys', label: 'Hotkeys' },
     { id: 'overlay', label: 'Overlay' },
@@ -247,7 +245,7 @@
           <div class="flex items-center justify-between">
             <div>
               <label class="text-sm font-medium text-text-secondary">Show Branch in Sessions</label>
-              <p class="text-xs text-text-muted">Display git branch if not main/master</p>
+              <p class="text-xs text-text-muted">Display git branch name in session list</p>
             </div>
             <input type="checkbox" class="toggle" bind:checked={$settings.show_branch_in_sessions} />
           </div>
@@ -338,6 +336,15 @@
             <label class="text-sm font-medium text-text-secondary">Use Hotkey</label>
             <input type="checkbox" class="toggle" bind:checked={$settings.audio.use_hotkey} />
           </div>
+          <div class="border-t border-border pt-4 mt-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-text-secondary">Play Sound on Completion</label>
+                <p class="text-xs text-text-muted mt-0.5">Play a notification sound when SDK session completes</p>
+              </div>
+              <input type="checkbox" class="toggle" bind:checked={$settings.audio.play_sound_on_completion} />
+            </div>
+          </div>
         </div>
 
       {:else if activeTab === 'whisper'}
@@ -370,24 +377,40 @@
           {:else if whisperStatus === 'error'}
             <p class="text-sm text-error">Connection failed. Check your endpoint.</p>
           {/if}
-        </div>
 
-      {:else if activeTab === 'haiku'}
-        <div class="space-y-4">
-          <div class="flex items-center justify-between">
-            <label class="text-sm font-medium text-text-secondary">Enable Prompt Interpretation</label>
-            <input type="checkbox" class="toggle" bind:checked={$settings.haiku.enabled} />
+          <div class="border-t border-border pt-4 mt-4">
+            <label class="block text-sm font-medium text-text-secondary mb-2">Docker Setup</label>
+            <p class="text-xs text-text-muted mb-2">GPU (CUDA):</p>
+            <div class="relative group mb-3">
+              <pre class="p-3 bg-background border border-border rounded text-xs font-mono text-text-primary overflow-x-auto whitespace-pre-wrap break-all">docker run -d --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface fedirz/faster-whisper-server:latest-cuda</pre>
+              <button
+                class="absolute top-2 right-2 p-1.5 bg-surface-elevated hover:bg-border rounded text-text-muted hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"
+                onclick={async () => {
+                  await navigator.clipboard.writeText('docker run -d --gpus all -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface fedirz/faster-whisper-server:latest-cuda');
+                }}
+                title="Copy to clipboard"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              </button>
+            </div>
+            <p class="text-xs text-text-muted mb-2">CPU only:</p>
+            <div class="relative group">
+              <pre class="p-3 bg-background border border-border rounded text-xs font-mono text-text-primary overflow-x-auto whitespace-pre-wrap break-all">docker run -d -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface fedirz/faster-whisper-server:latest-cpu</pre>
+              <button
+                class="absolute top-2 right-2 p-1.5 bg-surface-elevated hover:bg-border rounded text-text-muted hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"
+                onclick={async () => {
+                  await navigator.clipboard.writeText('docker run -d -p 8000:8000 -v ~/.cache/huggingface:/root/.cache/huggingface fedirz/faster-whisper-server:latest-cpu');
+                }}
+                title="Copy to clipboard"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              </button>
+            </div>
           </div>
-          {#if $settings.haiku.enabled}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">API Key</label>
-              <input type="password" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.haiku.api_key} placeholder="sk-ant-..." />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">Model</label>
-              <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.haiku.model} placeholder="claude-3-haiku-20240307" />
-            </div>
-          {/if}
         </div>
 
       {:else if activeTab === 'git'}
@@ -434,16 +457,6 @@
 
       {:else if activeTab === 'overlay'}
         <div class="space-y-4">
-          <div class="flex items-center justify-between">
-            <label class="text-sm font-medium text-text-secondary">Show Transcript</label>
-            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_transcript} />
-          </div>
-          {#if $settings.overlay.show_transcript}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">Transcript Lines</label>
-              <input type="number" min="1" max="10" class="w-20 px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.overlay.transcript_lines} />
-            </div>
-          {/if}
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Show Settings Info</label>
             <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_settings} />
@@ -502,11 +515,6 @@
       {#if saveStatus === 'saving'}
         <div class="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
         <span class="text-xs text-text-muted">Saving...</span>
-      {:else if saveStatus === 'saved'}
-        <svg class="w-3 h-3 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-        </svg>
-        <span class="text-xs text-text-muted">Saved</span>
       {:else if saveStatus === 'error'}
         <svg class="w-3 h-3 text-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />

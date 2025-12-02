@@ -1,10 +1,16 @@
 <script lang="ts">
-  import { recording, isRecording, isProcessing } from '$lib/stores/recording';
+  import { onMount, onDestroy } from 'svelte';
+  import { recording, isRecording, isProcessing, type RecordingState } from '$lib/stores/recording';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { activeSessions, doneSessions, errorSessions } from '$lib/stores/sessionStats';
   import { overlay } from '$lib/stores/overlay';
   import StatusBadge from './StatusBadge.svelte';
   import Waveform from './Waveform.svelte';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+  // Track remote recording state (from main window events)
+  let remoteRecordingState: RecordingState = 'idle';
+  let unlistenRecordingState: UnlistenFn | null = null;
 
   $: showTranscript = $settings.overlay.show_transcript;
   $: transcriptLines = $settings.overlay.transcript_lines;
@@ -16,33 +22,50 @@
     .slice(-transcriptLines)
     .join('\n');
 
+  // Use remote state if available, otherwise local state
+  $: isRecordingActive = remoteRecordingState === 'recording' || $isRecording;
+  $: isProcessingActive = remoteRecordingState === 'processing' || $isProcessing;
+
+  onMount(async () => {
+    // Listen for recording state changes from main window
+    unlistenRecordingState = await listen<{ state: RecordingState }>('recording-state', (event) => {
+      remoteRecordingState = event.payload.state;
+    });
+  });
+
+  onDestroy(() => {
+    if (unlistenRecordingState) {
+      unlistenRecordingState();
+    }
+  });
+
   function handleClick() {
-    if ($isRecording) {
+    if (isRecordingActive) {
       recording.stopRecording();
     }
   }
 </script>
 
 <div
-  class="overlay-window p-3"
-  class:clickable={$isRecording}
+  class="overlay-window p-3 h-full"
+  class:clickable={isRecordingActive}
   onclick={handleClick}
-  role={$isRecording ? 'button' : undefined}
-  tabindex={$isRecording ? 0 : undefined}
+  role={isRecordingActive ? 'button' : undefined}
+  tabindex={isRecordingActive ? 0 : undefined}
 >
   <!-- Waveform visualization when recording -->
-  {#if $isRecording}
+  {#if isRecordingActive}
     <div class="mb-3">
-      <Waveform height={40} barWidth={2} barGap={1} color="#ef4444" />
+      <Waveform height={40} barWidth={2} barGap={1} color="#ef4444" useEvents={true} />
     </div>
   {/if}
 
   <div class="flex items-center justify-between gap-4">
     <div class="flex items-center gap-2">
-      {#if $isRecording}
+      {#if isRecordingActive}
         <div class="w-3 h-3 bg-recording rounded-full animate-pulse-recording"></div>
         <span class="text-sm font-medium text-recording">Recording</span>
-      {:else if $isProcessing}
+      {:else if isProcessingActive}
         <div class="w-3 h-3 bg-warning rounded-full animate-pulse"></div>
         <span class="text-sm font-medium text-warning">Processing</span>
       {:else if $overlay.sessionInfo.creatingSession}

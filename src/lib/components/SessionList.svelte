@@ -89,8 +89,7 @@
 
     try {
       const branch = await invoke<string>('get_git_branch', { repoPath });
-      // Only show branch if it's not main or master
-      if (branch && branch !== 'main' && branch !== 'master') {
+      if (branch) {
         branchCache.set(repoPath, branch);
         return branch;
       }
@@ -405,7 +404,7 @@
         </div>
 
         <!-- Prompt text -->
-        <p class="text-sm text-text-primary leading-snug mb-1.5" title={session.prompt || 'Interactive session'}>
+        <p class="text-sm text-text-primary leading-snug mb-1.5 select-text" title={session.prompt || 'Interactive session'}>
           {#if session.prompt}
             {truncatePrompt(session.prompt)}
           {:else}

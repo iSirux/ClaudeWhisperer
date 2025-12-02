@@ -4,7 +4,6 @@
   import SdkView from '$lib/components/SdkView.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import SessionHeader from '$lib/components/SessionHeader.svelte';
-  import Transcript from '$lib/components/Transcript.svelte';
   import Settings from './settings/+page.svelte';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
@@ -20,6 +19,9 @@
 
   // Track whether we're in SDK mode for the active session
   $: isSdkMode = $settings.terminal_mode === 'Sdk';
+
+  // Flag to track if we're recording for a new session (header button)
+  let isRecordingForNewSession = false;
 
   let currentView: 'sessions' | 'settings' = 'sessions';
   let showRepoSelector = false;
@@ -185,6 +187,35 @@
     // Update the default model (only affects new sessions)
     settings.update(s => ({ ...s, default_model: newModel }));
   }
+
+  // Start recording for a NEW session (header button)
+  async function startRecordingNewSession() {
+    if ($isRecording) return;
+    isRecordingForNewSession = true;
+    await recording.startRecording($settings.audio.device_id || undefined);
+  }
+
+  // Stop recording and create a new session with the transcript
+  async function stopRecordingNewSession() {
+    if (!$isRecording) return;
+    const transcript = await recording.stopRecording(true);
+    if (transcript && isRecordingForNewSession) {
+      if ($settings.terminal_mode === 'Sdk') {
+        const repoPath = $activeRepo?.path || '.';
+        const model = $settings.default_model;
+        const sessionId = await sdkSessions.createSession(repoPath, model);
+        activeSdkSessionId.set(sessionId);
+        await sdkSessions.sendPrompt(sessionId, transcript);
+        activeSessionId.set(null);
+      } else {
+        const sessionId = await sessions.createSession(transcript);
+        activeSessionId.set(sessionId);
+        activeSdkSessionId.set(null);
+      }
+      recording.clearTranscript();
+    }
+    isRecordingForNewSession = false;
+  }
 </script>
 
 <div class="app-container h-screen flex flex-col bg-background">
@@ -274,6 +305,28 @@
     </div>
 
     <div class="flex items-center gap-2">
+      <!-- New Session Record Button -->
+      {#if $isRecording && isRecordingForNewSession}
+        <button
+          class="px-3 py-1.5 text-sm bg-recording hover:bg-recording/90 text-white rounded transition-colors flex items-center gap-2"
+          onclick={stopRecordingNewSession}
+          title="Stop recording and create new session"
+        >
+          <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+          Stop & Create Session
+        </button>
+      {:else if !$isRecording}
+        <button
+          class="px-3 py-1.5 text-sm bg-accent hover:bg-accent-hover text-white rounded transition-colors flex items-center gap-2"
+          onclick={startRecordingNewSession}
+          title="Record and create new session"
+        >
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
+          </svg>
+          New Session
+        </button>
+      {/if}
       <button
         class="p-2 hover:bg-surface-elevated rounded transition-colors"
         class:bg-surface-elevated={currentView === 'settings'}
@@ -319,7 +372,10 @@
             <div class="flex items-center gap-1.5">
               <span class="text-xs text-text-muted">{$sessions.length + $sdkSessions.length}</span>
               {#if activeCount > 0}
-                <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+                <div class="flex items-center gap-1">
+                  <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+                  <span class="text-xs text-emerald-400 font-medium">{activeCount}</span>
+                </div>
               {/if}
               {#if doneCount > 0}
                 <div class="flex items-center gap-1">
@@ -392,7 +448,6 @@
             <SdkView sessionId={$activeSdkSession.id} />
           {/key}
         </div>
-        <Transcript />
       {:else if $activeSession}
         <!-- PTY Mode Session -->
         <SessionHeader session={$activeSession} />
@@ -401,7 +456,6 @@
             <Terminal sessionId={$activeSession.id} />
           {/key}
         </div>
-        <Transcript />
       {:else}
         <div class="flex-1 flex items-center justify-center text-text-muted">
           <div class="text-center">
@@ -412,7 +466,6 @@
             <p class="text-sm">Record a voice prompt to start a new Claude session</p>
           </div>
         </div>
-        <Transcript />
       {/if}
     </main>
   </div>

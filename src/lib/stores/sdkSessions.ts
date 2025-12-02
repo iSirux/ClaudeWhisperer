@@ -1,6 +1,8 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { settings } from './settings';
+import { playCompletionSound } from '$lib/utils/sound';
 
 export interface SdkMessage {
   type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error';
@@ -155,6 +157,12 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+
+          // Play completion sound if enabled
+          const currentSettings = get(settings);
+          if (currentSettings.audio.play_sound_on_completion) {
+            playCompletionSound();
+          }
         })
       );
 

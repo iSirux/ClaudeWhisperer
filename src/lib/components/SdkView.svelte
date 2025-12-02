@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { sdkSessions, type SdkMessage, type SdkSession } from '$lib/stores/sdkSessions';
+  import { recording, isRecording, isProcessing } from '$lib/stores/recording';
+  import { settings } from '$lib/stores/settings';
   import { renderMarkdown } from '$lib/utils/markdown';
 
   let { sessionId }: { sessionId: string } = $props();
@@ -50,7 +52,7 @@
   });
 
   async function sendPrompt() {
-    if (!prompt.trim() || isQuerying) return;
+    if (!prompt.trim()) return;
     const currentPrompt = prompt;
     prompt = '';
     await sdkSessions.sendPrompt(sessionId, currentPrompt);
@@ -160,6 +162,40 @@
   }
 
   let sessionStartTime = $derived(formatSessionTime(session?.createdAt));
+
+  let textareaEl: HTMLTextAreaElement;
+
+  function autoResize() {
+    if (textareaEl) {
+      textareaEl.style.height = 'auto';
+      textareaEl.style.height = textareaEl.scrollHeight + 'px';
+    }
+  }
+
+  $effect(() => {
+    // Auto-resize when prompt changes
+    prompt;
+    autoResize();
+  });
+
+  // Recording for current session (not creating new session)
+  let isRecordingForCurrentSession = $state(false);
+
+  async function startRecordingForSession() {
+    if ($isRecording) return;
+    isRecordingForCurrentSession = true;
+    await recording.startRecording($settings.audio.device_id || undefined);
+  }
+
+  async function stopRecordingForSession() {
+    if (!$isRecording) return;
+    const transcript = await recording.stopRecording(true);
+    if (transcript && isRecordingForCurrentSession) {
+      await sdkSessions.sendPrompt(sessionId, transcript);
+      recording.clearTranscript();
+    }
+    isRecordingForCurrentSession = false;
+  }
 </script>
 
 <div class="sdk-view">
@@ -231,26 +267,50 @@
   </div>
 
   <div class="input-area">
+    <!-- Record button for current session -->
+    <div class="record-button-container">
+      {#if $isRecording && isRecordingForCurrentSession}
+        <button
+          class="record-button recording"
+          onclick={stopRecordingForSession}
+          title="Stop recording and send"
+        >
+          <div class="recording-pulse"></div>
+          <svg class="mic-icon" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      {:else if !$isRecording}
+        <button
+          class="record-button"
+          onclick={startRecordingForSession}
+          title="Record voice prompt"
+        >
+          <svg class="mic-icon" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      {/if}
+    </div>
     <textarea
+      bind:this={textareaEl}
       bind:value={prompt}
-      on:keydown={handleKeydown}
+      oninput={autoResize}
+      onkeydown={handleKeydown}
       placeholder="Enter your prompt... (Enter to send, Shift+Enter for newline)"
-      disabled={isQuerying}
-      rows="3"
+      rows="1"
     ></textarea>
     <div class="button-group">
       {#if isQuerying}
-        <button on:click={stopQuery} class="stop-button">
+        <button onclick={stopQuery} class="stop-button" title="Stop current query">
           <svg class="stop-icon" viewBox="0 0 24 24" fill="currentColor">
             <rect x="6" y="6" width="12" height="12" rx="2" />
           </svg>
-          Stop
-        </button>
-      {:else}
-        <button on:click={sendPrompt} disabled={!prompt.trim()}>
-          Send
         </button>
       {/if}
+      <button onclick={sendPrompt} disabled={!prompt.trim()} title={isQuerying ? "Send and interrupt" : "Send"}>
+        Send
+      </button>
     </div>
   </div>
 </div>
@@ -272,6 +332,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+    user-select: text;
   }
 
   .message {
@@ -322,6 +383,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    user-select: text;
   }
 
   .user-message {
@@ -675,6 +737,9 @@
     font-family: inherit;
     font-size: 0.9rem;
     line-height: 1.4;
+    min-height: unset;
+    max-height: 200px;
+    overflow-y: auto;
   }
 
   textarea:focus {
@@ -694,6 +759,7 @@
   .button-group {
     display: flex;
     align-items: flex-end;
+    gap: 0.5rem;
   }
 
   button {
@@ -724,6 +790,8 @@
 
   .stop-button {
     background: #ef4444;
+    padding: 0.75rem;
+    min-width: unset;
   }
 
   .stop-button:hover {
@@ -747,6 +815,66 @@
   @keyframes spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  .record-button-container {
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .record-button {
+    background: #374151;
+    color: #9ca3af;
+    border: none;
+    border-radius: 6px;
+    padding: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    min-width: unset;
+  }
+
+  .record-button:hover {
+    background: #4b5563;
+    color: #e5e7eb;
+  }
+
+  .record-button.recording {
+    background: #ef4444;
+    color: #fff;
+  }
+
+  .record-button.recording:hover {
+    background: #dc2626;
+  }
+
+  .mic-icon {
+    width: 18px;
+    height: 18px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .recording-pulse {
+    position: absolute;
+    inset: 0;
+    background: #ef4444;
+    border-radius: 6px;
+    animation: pulse-recording 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse-recording {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.7;
+      transform: scale(1.05);
     }
   }
 </style>

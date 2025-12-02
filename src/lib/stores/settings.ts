@@ -41,6 +41,7 @@ export interface AudioConfig {
   voice_command: string;
   use_voice_command: boolean;
   use_hotkey: boolean;
+  play_sound_on_completion: boolean;
 }
 
 export interface SystemConfig {
@@ -111,6 +112,7 @@ const defaultConfig: AppConfig = {
     voice_command: "go go",
     use_voice_command: false,
     use_hotkey: true,
+    play_sound_on_completion: false,
   },
   repos: [],
   active_repo_index: 0,

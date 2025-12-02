@@ -356,7 +356,7 @@
       placeholder="Edit your prompt..."
     ></textarea>
   {:else if $recording.transcript}
-    <div class="p-3 bg-background border border-border rounded font-mono text-sm max-h-32 overflow-y-auto whitespace-pre-wrap">
+    <div class="p-3 bg-background border border-border rounded font-mono text-sm max-h-32 overflow-y-auto whitespace-pre-wrap select-text">
       {$recording.transcript}
     </div>
   {:else}

@@ -24,12 +24,14 @@
     top: 0;
     left: 0;
     right: 0;
-    padding: 8px;
+    bottom: 0;
   }
 
   :global(body) {
     background: transparent !important;
     overflow: hidden;
+    margin: 0;
+    padding: 0;
   }
 
   :global(html) {

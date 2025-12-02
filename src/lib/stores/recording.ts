@@ -1,5 +1,6 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
 
@@ -22,6 +23,53 @@ function createRecordingStore() {
 
   let mediaRecorder: MediaRecorder | null = null;
   let audioChunks: Blob[] = [];
+  let audioContext: AudioContext | null = null;
+  let analyser: AnalyserNode | null = null;
+  let visualizationAnimationId: number | null = null;
+
+  function startVisualizationBroadcast(stream: MediaStream) {
+    try {
+      audioContext = new AudioContext();
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      function broadcastVisualization() {
+        if (!analyser) return;
+
+        analyser.getByteFrequencyData(dataArray);
+
+        // Emit audio data to all windows
+        emit('audio-visualization', { data: Array.from(dataArray) });
+
+        visualizationAnimationId = requestAnimationFrame(broadcastVisualization);
+      }
+
+      broadcastVisualization();
+    } catch (error) {
+      console.error('Failed to start visualization broadcast:', error);
+    }
+  }
+
+  function stopVisualizationBroadcast() {
+    if (visualizationAnimationId !== null) {
+      cancelAnimationFrame(visualizationAnimationId);
+      visualizationAnimationId = null;
+    }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    analyser = null;
+
+    // Emit empty data to signal recording stopped
+    emit('audio-visualization', { data: null });
+  }
 
   return {
     subscribe,
@@ -45,6 +93,13 @@ function createRecordingStore() {
         };
 
         mediaRecorder.start(100);
+
+        // Start broadcasting audio visualization data to all windows
+        startVisualizationBroadcast(stream);
+
+        // Also emit recording state change
+        emit('recording-state', { state: 'recording' });
+
         update((s) => ({ ...s, state: 'recording', error: null, transcript: '', stream }));
       } catch (error) {
         console.error('Failed to start recording:', error);
@@ -58,8 +113,12 @@ function createRecordingStore() {
     },
 
     async stopRecording(autoTranscribe: boolean = true): Promise<string | null> {
+      // Stop visualization broadcast immediately
+      stopVisualizationBroadcast();
+
       return new Promise((resolve, reject) => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+          emit('recording-state', { state: 'idle' });
           resolve(null);
           return;
         }
@@ -72,6 +131,7 @@ function createRecordingStore() {
 
             if (autoTranscribe) {
               update((s) => ({ ...s, state: 'processing' }));
+              emit('recording-state', { state: 'processing' });
 
               const transcript = await invoke<string>('transcribe_audio', {
                 audioData: Array.from(audioData),
@@ -84,6 +144,7 @@ function createRecordingStore() {
                 audioData,
                 stream: null,
               }));
+              emit('recording-state', { state: 'idle' });
 
               mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
               mediaRecorder = null;
@@ -92,6 +153,7 @@ function createRecordingStore() {
               resolve(transcript);
             } else {
               update((s) => ({ ...s, state: 'recorded', audioData, stream: null }));
+              emit('recording-state', { state: 'recorded' });
 
               mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
               mediaRecorder = null;
@@ -106,6 +168,7 @@ function createRecordingStore() {
               state: 'error',
               error: error instanceof Error ? error.message : 'Failed to process recording',
             }));
+            emit('recording-state', { state: 'error' });
             reject(error);
           }
         };
@@ -159,6 +222,7 @@ function createRecordingStore() {
     },
 
     cancelRecording() {
+      stopVisualizationBroadcast();
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach((track) => track.stop());
@@ -166,6 +230,7 @@ function createRecordingStore() {
       mediaRecorder = null;
       audioChunks = [];
       set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null });
+      emit('recording-state', { state: 'idle' });
     },
 
     clearTranscript() {
