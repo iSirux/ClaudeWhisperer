@@ -2,6 +2,7 @@
   import { settings, type Theme } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
+  import HotkeyInput from '$lib/components/HotkeyInput.svelte';
 
   // Accept an initial tab from parent component
   interface Props {
@@ -16,8 +17,16 @@
     activeTab = initialTab;
   });
 
+  interface ConnectionTestResult {
+    health_ok: boolean;
+    health_error: string | null;
+    transcription_ok: boolean;
+    transcription_error: string | null;
+  }
+
   let testingWhisper = $state(false);
-  let whisperStatus: 'idle' | 'success' | 'error' = $state('idle');
+  let whisperStatus: 'idle' | 'success' | 'partial' | 'error' = $state('idle');
+  let whisperTestResult: ConnectionTestResult | null = $state(null);
   let newRepoPath = $state('');
   let newRepoName = $state('');
   let audioDevices: MediaDeviceInfo[] = $state([]);
@@ -94,9 +103,17 @@
   async function testWhisperConnection() {
     testingWhisper = true;
     whisperStatus = 'idle';
+    whisperTestResult = null;
     try {
-      const result = await invoke<boolean>('test_whisper_connection');
-      whisperStatus = result ? 'success' : 'error';
+      const result = await invoke<ConnectionTestResult>('test_whisper_connection');
+      whisperTestResult = result;
+      if (result.health_ok && result.transcription_ok) {
+        whisperStatus = 'success';
+      } else if (result.health_ok || result.transcription_ok) {
+        whisperStatus = 'partial';
+      } else {
+        whisperStatus = 'error';
+      }
     } catch {
       whisperStatus = 'error';
     }
@@ -519,8 +536,28 @@
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Model</label>
             <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.whisper.model}>
-              <option value="Systran/faster-whisper-base">Systran/faster-whisper-base</option>
-              <option value="Systran/faster-whisper-large-v3">Systran/faster-whisper-large-v3</option>
+              <optgroup label="Standard Models">
+                <option value="Systran/faster-whisper-tiny">tiny (39M) - Fastest</option>
+                <option value="Systran/faster-whisper-tiny.en">tiny.en (39M) - English only</option>
+                <option value="Systran/faster-whisper-base">base (74M) - Very fast</option>
+                <option value="Systran/faster-whisper-base.en">base.en (74M) - English only</option>
+                <option value="Systran/faster-whisper-small">small (244M) - Fast</option>
+                <option value="Systran/faster-whisper-small.en">small.en (244M) - English only</option>
+                <option value="Systran/faster-whisper-medium">medium (769M) - Moderate</option>
+                <option value="Systran/faster-whisper-medium.en">medium.en (769M) - English only</option>
+              </optgroup>
+              <optgroup label="Large Models">
+                <option value="Systran/faster-whisper-large-v1">large-v1 (1550M) - Legacy</option>
+                <option value="Systran/faster-whisper-large-v2">large-v2 (1550M) - Production</option>
+                <option value="Systran/faster-whisper-large-v3">large-v3 (1550M) - Best accuracy</option>
+                <option value="Systran/faster-whisper-large-v3-turbo">large-v3-turbo (809M) - Recommended</option>
+              </optgroup>
+              <optgroup label="Distil Models (English only)">
+                <option value="Systran/faster-distil-whisper-small.en">distil-small.en (~166M) - Very fast</option>
+                <option value="Systran/faster-distil-whisper-medium.en">distil-medium.en (~394M) - Fast</option>
+                <option value="Systran/faster-distil-whisper-large-v2">distil-large-v2 (~756M) - 6x faster</option>
+                <option value="Systran/faster-distil-whisper-large-v3">distil-large-v3 (~756M) - Best distilled</option>
+              </optgroup>
             </select>
           </div>
           <div>
@@ -537,8 +574,25 @@
           </button>
           {#if whisperStatus === 'success'}
             <p class="text-sm text-success">Connection successful!</p>
+          {:else if whisperStatus === 'partial'}
+            <p class="text-sm text-warning">Partial connection</p>
           {:else if whisperStatus === 'error'}
             <p class="text-sm text-error">Connection failed. Check your endpoint.</p>
+          {/if}
+
+          {#if whisperTestResult}
+            <div class="space-y-1 text-xs">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full {whisperTestResult.health_ok ? 'bg-success' : 'bg-error'}"></div>
+                <span class="text-text-secondary">Health:</span>
+                <span class="text-text-muted">{whisperTestResult.health_ok ? 'OK' : (whisperTestResult.health_error || 'Failed')}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full {whisperTestResult.transcription_ok ? 'bg-success' : 'bg-error'}"></div>
+                <span class="text-text-secondary">Transcription:</span>
+                <span class="text-text-muted">{whisperTestResult.transcription_ok ? 'OK' : (whisperTestResult.transcription_error || 'Failed')}</span>
+              </div>
+            </div>
           {/if}
 
           <div class="border-t border-border pt-4 mt-4">
@@ -609,26 +663,29 @@
               <li><strong>Record & Send</strong> — transcribes and sends to Claude</li>
               <li><strong>Transcribe Only</strong> — transcribes and pastes to current app</li>
             </ul>
+            <p class="text-xs text-text-muted mt-2 pt-2 border-t border-border/50">
+              <strong class="text-text-secondary">Tip:</strong> Click a hotkey field and press your desired key combination to set it.
+            </p>
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Record & Send</label>
             <p class="text-xs text-text-muted mb-2">Starts recording. Press again to transcribe and send to Claude.</p>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.toggle_recording} />
+            <HotkeyInput bind:value={$settings.hotkeys.toggle_recording} />
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Transcribe Only</label>
             <p class="text-xs text-text-muted mb-2">While recording, transcribes and pastes into current app (does not send to Claude)</p>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.transcribe_to_input} />
+            <HotkeyInput bind:value={$settings.hotkeys.transcribe_to_input} />
           </div>
           <div class="border-t border-border pt-4">
             <label class="block text-sm font-medium text-text-secondary mb-1">Cycle Repository</label>
             <p class="text-xs text-text-muted mb-2">While recording, cycles through repositories</p>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.cycle_repo} />
+            <HotkeyInput bind:value={$settings.hotkeys.cycle_repo} />
           </div>
           <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Cycle Model</label>
             <p class="text-xs text-text-muted mb-2">While recording, cycles through models (Opus → Sonnet → Haiku)</p>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.cycle_model} />
+            <HotkeyInput bind:value={$settings.hotkeys.cycle_model} />
           </div>
         </div>
 

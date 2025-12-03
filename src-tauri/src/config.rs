@@ -13,7 +13,7 @@ impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
             endpoint: "http://localhost:8000/v1/audio/transcriptions".to_string(),
-            model: "Systran/faster-whisper-base".to_string(),
+            model: "distil-medium.en".to_string(),
             language: "en".to_string(),
         }
     }

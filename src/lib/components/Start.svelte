@@ -3,10 +3,19 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
 
+  interface ConnectionTestResult {
+    health_ok: boolean;
+    health_error: string | null;
+    transcription_ok: boolean;
+    transcription_error: string | null;
+  }
+
   let audioDevices: MediaDeviceInfo[] = $state([]);
   let loadingDevices = $state(false);
   let testingWhisper = $state(false);
-  let whisperStatus: "idle" | "testing" | "success" | "error" = $state("idle");
+  let whisperStatus: "idle" | "testing" | "success" | "partial" | "error" =
+    $state("idle");
+  let whisperTestResult: ConnectionTestResult | null = $state(null);
 
   onMount(async () => {
     // Load audio devices and test whisper connection on mount
@@ -33,9 +42,18 @@
   async function testWhisperConnection() {
     testingWhisper = true;
     whisperStatus = "testing";
+    whisperTestResult = null;
     try {
-      const result = await invoke<boolean>("test_whisper_connection");
-      whisperStatus = result ? "success" : "error";
+      const result =
+        await invoke<ConnectionTestResult>("test_whisper_connection");
+      whisperTestResult = result;
+      if (result.health_ok && result.transcription_ok) {
+        whisperStatus = "success";
+      } else if (result.health_ok || result.transcription_ok) {
+        whisperStatus = "partial";
+      } else {
+        whisperStatus = "error";
+      }
     } catch {
       whisperStatus = "error";
     }
@@ -178,9 +196,11 @@
           <div
             class="p-2 rounded-lg {whisperStatus === 'success'
               ? 'bg-success/10'
-              : whisperStatus === 'error'
-                ? 'bg-error/10'
-                : 'bg-accent/10'}"
+              : whisperStatus === 'partial'
+                ? 'bg-warning/10'
+                : whisperStatus === 'error'
+                  ? 'bg-error/10'
+                  : 'bg-accent/10'}"
           >
             {#if whisperStatus === "success"}
               <svg
@@ -194,6 +214,20 @@
                   stroke-linejoin="round"
                   stroke-width="2"
                   d="M5 13l4 4L19 7"
+                />
+              </svg>
+            {:else if whisperStatus === "partial"}
+              <svg
+                class="w-6 h-6 text-warning"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
                 />
               </svg>
             {:else if whisperStatus === "error"}
@@ -234,7 +268,9 @@
               {#if whisperStatus === "testing"}
                 Testing connection...
               {:else if whisperStatus === "success"}
-                Connected to Whisper server
+                Connected and ready
+              {:else if whisperStatus === "partial"}
+                Partially connected
               {:else if whisperStatus === "error"}
                 Cannot connect to Whisper server
               {:else}
@@ -243,6 +279,38 @@
             </p>
           </div>
         </div>
+
+        <!-- Detailed test results -->
+        {#if whisperTestResult}
+          <div class="mb-4 space-y-2">
+            <div class="flex items-center gap-2 text-sm">
+              <div
+                class="w-2 h-2 rounded-full {whisperTestResult.health_ok
+                  ? 'bg-success'
+                  : 'bg-error'}"
+              ></div>
+              <span class="text-text-secondary">Health Check</span>
+              <span class="text-text-muted">
+                {whisperTestResult.health_ok
+                  ? "OK"
+                  : whisperTestResult.health_error || "Failed"}
+              </span>
+            </div>
+            <div class="flex items-center gap-2 text-sm">
+              <div
+                class="w-2 h-2 rounded-full {whisperTestResult.transcription_ok
+                  ? 'bg-success'
+                  : 'bg-error'}"
+              ></div>
+              <span class="text-text-secondary">Transcription</span>
+              <span class="text-text-muted">
+                {whisperTestResult.transcription_ok
+                  ? "OK"
+                  : whisperTestResult.transcription_error || "Failed"}
+              </span>
+            </div>
+          </div>
+        {/if}
 
         <div class="flex items-center gap-2">
           <button

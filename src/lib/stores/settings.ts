@@ -95,7 +95,7 @@ export interface AppConfig {
 const defaultConfig: AppConfig = {
   whisper: {
     endpoint: "http://localhost:8000/v1/audio/transcriptions",
-    model: "Systran/faster-whisper-base",
+    model: "distil-medium.en",
     language: "en",
   },
   git: {

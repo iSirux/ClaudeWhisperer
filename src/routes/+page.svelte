@@ -102,6 +102,9 @@
     }
   });
 
+  // Track the currently registered toggle_recording hotkey so we can detect changes
+  let registeredToggleRecordingHotkey: string | null = null;
+
   onMount(async () => {
     await settings.load();
 
@@ -126,6 +129,22 @@
     window.addEventListener('switch-to-sessions', showSessionsView);
     // Listen for open-settings events from Start component
     window.addEventListener('open-settings', handleOpenSettings as EventListener);
+  });
+
+  // Re-register hotkeys when the toggle_recording hotkey changes in settings
+  $effect(() => {
+    const currentHotkey = $settings.hotkeys.toggle_recording;
+
+    // Skip if settings haven't loaded yet or hotkey hasn't changed
+    if (!currentHotkey || currentHotkey === registeredToggleRecordingHotkey) {
+      return;
+    }
+
+    // Only re-register if we've already done initial setup (registeredToggleRecordingHotkey is set)
+    if (registeredToggleRecordingHotkey !== null) {
+      console.log('[Hotkey] Detected hotkey change, re-registering...', { old: registeredToggleRecordingHotkey, new: currentHotkey });
+      setupHotkeys();
+    }
   });
 
   onDestroy(() => {
@@ -355,7 +374,8 @@
       cycleModelHotkeyRegistered = false;
       registeredCycleRepoHotkey = null;
       registeredCycleModelHotkey = null;
-      console.log('[Hotkey] All hotkeys unregistered, registering toggle_recording...');
+      registeredToggleRecordingHotkey = null;
+      console.log('[Hotkey] All hotkeys unregistered, registering toggle_recording:', $settings.hotkeys.toggle_recording);
 
       // Start Recording / Send hotkey
       // - If not recording: starts recording
@@ -422,6 +442,10 @@
 
       // Note: transcribe_to_input, cycle_repo, and cycle_model hotkeys are registered dynamically when recording starts
       // and unregistered when recording stops, so they don't block other apps
+
+      // Track that we successfully registered with this hotkey
+      registeredToggleRecordingHotkey = $settings.hotkeys.toggle_recording;
+      console.log('[Hotkey] Successfully registered toggle_recording:', registeredToggleRecordingHotkey);
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
     }
@@ -647,7 +671,7 @@
   <div class="main-content flex-1 flex overflow-hidden">
     <aside class="sidebar border-r border-border bg-surface flex flex-col relative" style="width: {sidebarWidth}px; min-width: {MIN_SIDEBAR_WIDTH}px; max-width: {MAX_SIDEBAR_WIDTH}px;">
       <button
-        class="p-3 border-b border-border text-left hover:bg-surface-elevated transition-colors"
+        class="px-3 py-2.5 border-b border-border text-left hover:bg-surface-elevated transition-colors"
         class:bg-surface-elevated={currentView === 'sessions'}
         onclick={showSessionsView}
       >

@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::whisper::WhisperClient;
+use crate::whisper::{ConnectionTestResult, WhisperClient};
 use parking_lot::Mutex;
 use tauri::State;
 
@@ -18,7 +18,9 @@ pub async fn transcribe_audio(
 }
 
 #[tauri::command]
-pub async fn test_whisper_connection(config: State<'_, ConfigState>) -> Result<bool, String> {
+pub async fn test_whisper_connection(
+    config: State<'_, ConfigState>,
+) -> Result<ConnectionTestResult, String> {
     let cfg = config.lock().clone();
     let client = WhisperClient::new(cfg.whisper.endpoint, cfg.whisper.model, cfg.whisper.language);
     client.test_connection().await
