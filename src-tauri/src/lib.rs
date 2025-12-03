@@ -1,7 +1,6 @@
 mod commands;
 mod config;
 mod git;
-mod haiku;
 mod session_persistence;
 mod sidecar;
 mod terminal;

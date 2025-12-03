@@ -9,6 +9,19 @@ use tauri::{AppHandle, Emitter, Manager};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+/// Image data for multimodal prompts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageData {
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    #[serde(rename = "base64Data")]
+    pub base64_data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutboundMessage {
@@ -17,10 +30,14 @@ pub enum OutboundMessage {
         cwd: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        system_prompt: Option<String>,
     },
     Query {
         id: String,
         prompt: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        images: Option<Vec<ImageData>>,
     },
     Stop {
         id: String,
@@ -79,6 +96,17 @@ pub enum InboundMessage {
         #[serde(rename = "contextWindow")]
         context_window: u64,
     },
+    ProgressiveUsage {
+        id: String,
+        #[serde(rename = "inputTokens")]
+        input_tokens: u64,
+        #[serde(rename = "outputTokens")]
+        output_tokens: u64,
+        #[serde(rename = "cacheReadTokens")]
+        cache_read_tokens: u64,
+        #[serde(rename = "cacheCreationTokens")]
+        cache_creation_tokens: u64,
+    },
     ModelUpdated {
         id: String,
         model: String,
@@ -93,6 +121,20 @@ pub enum InboundMessage {
     Debug {
         id: String,
         message: String,
+    },
+    SubagentStart {
+        id: String,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "agentType")]
+        agent_type: String,
+    },
+    SubagentStop {
+        id: String,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        #[serde(rename = "transcriptPath")]
+        transcript_path: String,
     },
 }
 
@@ -319,6 +361,23 @@ impl SidecarManager {
                     }),
                 );
             }
+            InboundMessage::ProgressiveUsage {
+                id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } => {
+                let _ = app.emit(
+                    &format!("sdk-progressive-usage-{}", id),
+                    serde_json::json!({
+                        "inputTokens": input_tokens,
+                        "outputTokens": output_tokens,
+                        "cacheReadTokens": cache_read_tokens,
+                        "cacheCreationTokens": cache_creation_tokens,
+                    }),
+                );
+            }
             InboundMessage::ModelUpdated { id, model } => {
                 println!("[sidecar] Model updated for {}: {}", id, model);
                 let _ = app.emit(&format!("sdk-model-updated-{}", id), &model);
@@ -331,6 +390,40 @@ impl SidecarManager {
             }
             InboundMessage::Debug { id, message } => {
                 println!("[sidecar debug][{}] {}", id, message);
+            }
+            InboundMessage::SubagentStart {
+                id,
+                agent_id,
+                agent_type,
+            } => {
+                println!(
+                    "[sidecar] Subagent started: {} (type: {}) for session {}",
+                    agent_id, agent_type, id
+                );
+                let _ = app.emit(
+                    &format!("sdk-subagent-start-{}", id),
+                    serde_json::json!({
+                        "agentId": agent_id,
+                        "agentType": agent_type,
+                    }),
+                );
+            }
+            InboundMessage::SubagentStop {
+                id,
+                agent_id,
+                transcript_path,
+            } => {
+                println!(
+                    "[sidecar] Subagent stopped: {} for session {}",
+                    agent_id, id
+                );
+                let _ = app.emit(
+                    &format!("sdk-subagent-stop-{}", id),
+                    serde_json::json!({
+                        "agentId": agent_id,
+                        "transcriptPath": transcript_path,
+                    }),
+                );
             }
         }
     }

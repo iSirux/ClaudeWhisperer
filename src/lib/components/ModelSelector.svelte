@@ -10,6 +10,7 @@
   const models = [
     { id: 'claude-opus-4-5', label: 'Opus', title: 'Claude Opus 4.5 - Most capable model' },
     { id: 'claude-sonnet-4-5-20250929', label: 'Sonnet', title: 'Claude Sonnet 4.5 - Balanced performance' },
+    { id: 'claude-sonnet-4-5-20250929[1m]', label: 'Sonnet 1M', title: 'Claude Sonnet 4.5 - 1M token context window' },
     { id: 'claude-haiku-4-5', label: 'Haiku', title: 'Claude Haiku 4.5 - Fastest model' },
   ];
 

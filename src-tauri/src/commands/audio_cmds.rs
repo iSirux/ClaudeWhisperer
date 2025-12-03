@@ -1,5 +1,4 @@
 use crate::config::AppConfig;
-use crate::haiku::HaikuInterpreter;
 use crate::whisper::WhisperClient;
 use parking_lot::Mutex;
 use tauri::State;
@@ -15,14 +14,7 @@ pub async fn transcribe_audio(
 
     let client = WhisperClient::new(cfg.whisper.endpoint, cfg.whisper.model, cfg.whisper.language);
 
-    let transcript = client.transcribe(audio_data).await?;
-
-    if cfg.haiku.enabled && !cfg.haiku.api_key.is_empty() {
-        let interpreter = HaikuInterpreter::new(cfg.haiku.api_key, cfg.haiku.model);
-        interpreter.interpret_prompt(&transcript).await
-    } else {
-        Ok(transcript)
-    }
+    client.transcribe(audio_data).await
 }
 
 #[tauri::command]

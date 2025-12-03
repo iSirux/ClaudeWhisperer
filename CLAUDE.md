@@ -33,7 +33,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 **Routes:**
 - `src/routes/+page.svelte` - Main application view with session list, terminal/SDK view, and transcript
 - `src/routes/overlay/+page.svelte` - Floating overlay window for recording status
-- `src/routes/settings/+page.svelte` - Settings modal with tabs (General, Audio, Whisper, Haiku, Git, Hotkeys, Overlay, Repositories)
+- `src/routes/settings/+page.svelte` - Settings modal with tabs (General, System, Audio, Whisper, Git, Hotkeys, Overlay, Repositories)
 
 **Stores (`src/lib/stores/`):**
 - `settings.ts` - App configuration (terminal mode, whisper endpoint, hotkeys, repos, theme)
@@ -63,7 +63,6 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `terminal.rs` - PTY management via `portable-pty`, spawns `claude` CLI
 - `sidecar.rs` - SidecarManager for Node.js process IPC with Claude Agent SDK
 - `whisper.rs` - HTTP client for Whisper transcription API
-- `haiku.rs` - HaikuInterpreter for transcript cleanup using Claude Haiku
 - `git.rs` - GitManager for repository operations (branch/worktree creation)
 
 **Commands (`src-tauri/src/commands/`):**
@@ -92,7 +91,7 @@ The app supports three terminal modes (configured in settings):
 ### PTY Mode (Interactive/Prompt)
 1. User presses hotkey → `recording.startRecording()` captures audio via WebRTC
 2. Stop recording → audio sent to backend via `transcribe_audio` command
-3. Backend posts to Whisper API → optionally cleaned up with Claude Haiku
+3. Backend posts to Whisper API → returns transcription
 4. User confirms → `create_terminal_session` spawns `claude` CLI in PTY
 5. PTY output streamed via `terminal-output-${sessionId}` event → rendered in xterm.js
 
@@ -119,12 +118,12 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - `terminal_mode` - Interactive | Prompt | Sdk
 - `theme` - Midnight | Slate | Snow | Sand
 - `whisper` - Transcription endpoint, model, language
-- `haiku` - Transcript cleanup (API key, enabled flag)
-- `hotkeys` - Global shortcuts (toggle recording, open mic, send prompt, switch repo)
+- `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo, transcribe to input)
 - `repos` - List of git repositories with paths and optional default models
-- `audio` - Recording device, open mic mode, voice commands
+- `audio` - Recording device, hotkey toggle, sound settings
 - `git` - Branch/worktree creation settings
 - `overlay` - Position and visibility settings
+- `system` - Tray behavior, autostart settings
 
 ## Key Technologies
 

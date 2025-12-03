@@ -167,41 +167,6 @@
     }
   }
 
-  function checkVoiceCommand(text: string): boolean {
-    if (!$settings.audio.use_voice_command) return false;
-    const command = $settings.audio.voice_command.toLowerCase();
-    return text.toLowerCase().trim().endsWith(command);
-  }
-
-  $: if (checkVoiceCommand($recording.transcript)) {
-    const cleanedTranscript = $recording.transcript
-      .slice(0, -$settings.audio.voice_command.length)
-      .trim();
-    if (cleanedTranscript) {
-      if ($settings.terminal_mode === 'Sdk') {
-        // SDK mode
-        const repoPath = $activeRepo?.path || '.';
-        const model = $settings.default_model;
-        const existingId = $activeSdkSessionId;
-        if (existingId) {
-          sdkSessions.sendPrompt(existingId, cleanedTranscript);
-        } else {
-          sdkSessions.createSession(repoPath, model).then((sessionId) => {
-            activeSdkSessionId.set(sessionId);
-            sdkSessions.sendPrompt(sessionId, cleanedTranscript);
-          });
-        }
-        activeSessionId.set(null);
-      } else {
-        // PTY mode
-        sessions.createSession(cleanedTranscript).then((sessionId) => {
-          activeSessionId.set(sessionId);
-          activeSdkSessionId.set(null);
-        });
-      }
-      recording.clearTranscript();
-    }
-  }
 </script>
 
 <div class="transcript-panel p-4 bg-surface border-t border-border">
@@ -369,7 +334,7 @@
       {:else if $hasRecorded}
         Audio recorded. Click "Transcribe" to preview, "Transcribe & Send" to send immediately, or "Clear" to discard.
       {:else}
-        Press hotkey, click Record button, or use open mic to start recording
+        Press hotkey or click Record button to start recording
       {/if}
     </div>
   {/if}

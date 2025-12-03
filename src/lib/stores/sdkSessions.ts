@@ -5,12 +5,24 @@ import { settings } from './settings';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 
+export interface SdkImageContent {
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  base64Data: string;
+  width?: number;
+  height?: number;
+}
+
 export interface SdkMessage {
-  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error';
+  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop';
   content?: string;
+  images?: SdkImageContent[]; // For user messages with images
   tool?: string;
   input?: Record<string, unknown>;
   output?: string;
+  // Subagent fields
+  agentId?: string;
+  agentType?: string;
+  transcriptPath?: string;
   timestamp: number;
 }
 
@@ -26,8 +38,15 @@ export interface SdkUsage {
   contextWindow: number;
 }
 
+export interface SdkProgressiveUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
 export interface SdkSessionUsage {
-  // Cumulative totals for the session
+  // Cumulative totals for the session (finalized after each query)
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCacheReadTokens: number;
@@ -41,6 +60,11 @@ export interface SdkSessionUsage {
   contextUsagePercent: number;
   // Per-query history
   queryUsage: SdkUsage[];
+  // Progressive usage during active query (not yet finalized)
+  progressiveInputTokens: number;
+  progressiveOutputTokens: number;
+  progressiveCacheReadTokens: number;
+  progressiveCacheCreationTokens: number;
 }
 
 export interface SdkSession {
@@ -50,13 +74,19 @@ export interface SdkSession {
   messages: SdkMessage[];
   status: 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
-  startedAt?: number; // Timestamp when first prompt was sent
+  startedAt?: number; // Timestamp when first prompt was sent (deprecated, kept for compatibility)
+  // Timer-based duration tracking (survives session restore)
+  accumulatedDurationMs: number; // Total accumulated work time in milliseconds
+  currentWorkStartedAt?: number; // Timestamp when current work period started (undefined when idle)
   usage?: SdkSessionUsage; // Token usage tracking
+  unread?: boolean; // Whether the session has completed but user hasn't viewed it yet
 }
 
 function createSdkSessionsStore() {
   const { subscribe, set, update } = writable<SdkSession[]>([]);
   const listeners = new Map<string, UnlistenFn[]>();
+  // Track sessions that are live (registered with the backend and have listeners)
+  const liveSessions = new Set<string>();
   let sidecarStarted = false;
 
   return {
@@ -75,7 +105,7 @@ function createSdkSessionsStore() {
       }
     },
 
-    async createSession(cwd: string, model: string): Promise<string> {
+    async createSession(cwd: string, model: string, systemPrompt?: string): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
@@ -87,6 +117,7 @@ function createSdkSessionsStore() {
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
+        accumulatedDurationMs: 0,
       };
 
       update(sessions => [...sessions, session]);
@@ -107,8 +138,10 @@ function createSdkSessionsStore() {
                 s.id === id
                   ? {
                       ...s,
-                      // Set startedAt on first actual response from SDK
+                      // Set startedAt on first actual response from SDK (deprecated, kept for compatibility)
                       startedAt: s.startedAt || Date.now(),
+                      // Start work timer if not already started
+                      currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
                       messages: [
                         ...s.messages,
                         { type: 'text' as const, content: e.payload, timestamp: Date.now() },
@@ -136,8 +169,10 @@ function createSdkSessionsStore() {
                 s.id === id
                   ? {
                       ...s,
-                      // Set startedAt on first actual response from SDK
+                      // Set startedAt on first actual response from SDK (deprecated, kept for compatibility)
                       startedAt: s.startedAt || Date.now(),
+                      // Start work timer if not already started
+                      currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
                       messages: [
                         ...s.messages,
                         {
@@ -181,20 +216,29 @@ function createSdkSessionsStore() {
       unlisteners.push(
         await listen(`sdk-done-${id}`, () => {
           console.log('[sdkSessions] Received done event for session:', id);
+          const currentSettings = get(settings);
           update(sessions =>
-            sessions.map(s =>
-              s.id === id
-                ? {
-                    ...s,
-                    status: 'idle' as const,
-                    messages: [...s.messages, { type: 'done' as const, timestamp: Date.now() }],
-                  }
-                : s
-            )
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              // Calculate elapsed time for this work period and add to accumulated
+              const now = Date.now();
+              const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
+
+              return {
+                ...s,
+                status: 'idle' as const,
+                // Accumulate the work time and reset the current work timer
+                accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
+                currentWorkStartedAt: undefined,
+                messages: [...s.messages, { type: 'done' as const, timestamp: now }],
+                // Mark as unread if the setting is enabled
+                unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              };
+            })
           );
 
           // Play completion sound if enabled
-          const currentSettings = get(settings);
           if (currentSettings.audio.play_sound_on_completion) {
             playCompletionSound();
           }
@@ -203,19 +247,29 @@ function createSdkSessionsStore() {
 
       unlisteners.push(
         await listen<string>(`sdk-error-${id}`, (e) => {
+          const currentSettings = get(settings);
           update(sessions =>
-            sessions.map(s =>
-              s.id === id
-                ? {
-                    ...s,
-                    status: 'error' as const,
-                    messages: [
-                      ...s.messages,
-                      { type: 'error' as const, content: e.payload, timestamp: Date.now() },
-                    ],
-                  }
-                : s
-            )
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              // Calculate elapsed time for this work period and add to accumulated
+              const now = Date.now();
+              const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
+
+              return {
+                ...s,
+                status: 'error' as const,
+                // Accumulate the work time and reset the current work timer
+                accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
+                currentWorkStartedAt: undefined,
+                messages: [
+                  ...s.messages,
+                  { type: 'error' as const, content: e.payload, timestamp: now },
+                ],
+                // Mark as unread if the setting is enabled
+                unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              };
+            })
           );
         })
       );
@@ -251,6 +305,10 @@ function createSdkSessionsStore() {
                 contextWindow: queryUsage.contextWindow,
                 contextUsagePercent: 0,
                 queryUsage: [],
+                progressiveInputTokens: 0,
+                progressiveOutputTokens: 0,
+                progressiveCacheReadTokens: 0,
+                progressiveCacheCreationTokens: 0,
               };
 
               // Calculate cumulative totals
@@ -274,6 +332,11 @@ function createSdkSessionsStore() {
                   contextWindow,
                   contextUsagePercent,
                   queryUsage: [...prevUsage.queryUsage, queryUsage],
+                  // Reset progressive usage since query is done
+                  progressiveInputTokens: 0,
+                  progressiveOutputTokens: 0,
+                  progressiveCacheReadTokens: 0,
+                  progressiveCacheCreationTokens: 0,
                 },
               };
             })
@@ -281,12 +344,118 @@ function createSdkSessionsStore() {
         })
       );
 
+      // Progressive usage listener (for live updates during query)
+      unlisteners.push(
+        await listen<SdkProgressiveUsage>(`sdk-progressive-usage-${id}`, (e) => {
+          const progressiveUsage = e.payload;
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const prevUsage = s.usage || {
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCostUsd: 0,
+                totalDurationMs: 0,
+                totalDurationApiMs: 0,
+                totalTurns: 0,
+                contextWindow: 200000,
+                contextUsagePercent: 0,
+                queryUsage: [],
+                progressiveInputTokens: 0,
+                progressiveOutputTokens: 0,
+                progressiveCacheReadTokens: 0,
+                progressiveCacheCreationTokens: 0,
+              };
+
+              // Progressive usage accumulates within the current query
+              const progressiveInputTokens = prevUsage.progressiveInputTokens + progressiveUsage.inputTokens;
+              const progressiveOutputTokens = prevUsage.progressiveOutputTokens + progressiveUsage.outputTokens;
+
+              // Calculate live context usage (cumulative + progressive)
+              const liveInputTokens = prevUsage.totalInputTokens + progressiveInputTokens;
+              const liveOutputTokens = prevUsage.totalOutputTokens + progressiveOutputTokens;
+              const liveTotalTokens = liveInputTokens + liveOutputTokens;
+              const contextUsagePercent = Math.min(100, (liveTotalTokens / prevUsage.contextWindow) * 100);
+
+              return {
+                ...s,
+                usage: {
+                  ...prevUsage,
+                  contextUsagePercent,
+                  progressiveInputTokens,
+                  progressiveOutputTokens,
+                  progressiveCacheReadTokens: prevUsage.progressiveCacheReadTokens + progressiveUsage.cacheReadTokens,
+                  progressiveCacheCreationTokens: prevUsage.progressiveCacheCreationTokens + progressiveUsage.cacheCreationTokens,
+                },
+              };
+            })
+          );
+        })
+      );
+
+      // Subagent start listener
+      unlisteners.push(
+        await listen<{ agentId: string; agentType: string }>(`sdk-subagent-start-${id}`, (e) => {
+          console.log('[sdkSessions] Subagent started:', e.payload.agentType, 'id:', e.payload.agentId);
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'subagent_start' as const,
+                        agentId: e.payload.agentId,
+                        agentType: e.payload.agentType,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      // Subagent stop listener
+      unlisteners.push(
+        await listen<{ agentId: string; transcriptPath: string }>(`sdk-subagent-stop-${id}`, (e) => {
+          console.log('[sdkSessions] Subagent stopped:', e.payload.agentId);
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'subagent_stop' as const,
+                        agentId: e.payload.agentId,
+                        transcriptPath: e.payload.transcriptPath,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
       listeners.set(id, unlisteners);
 
       // Create the session on the backend
-      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', model);
-      await invoke('create_sdk_session', { id, cwd, model });
+      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', model, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
+      await invoke('create_sdk_session', { id, cwd, model, systemPrompt: systemPrompt ?? null });
       console.log('[sdkSessions] Session created');
+
+      // Mark session as live (registered with backend and has listeners)
+      liveSessions.add(id);
 
       // Track session creation for usage stats
       usageStats.trackSession('sdk', model, cwd);
@@ -294,8 +463,362 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async sendPrompt(id: string, prompt: string): Promise<void> {
-      console.log('[sdkSessions] sendPrompt called for session:', id, 'prompt:', prompt.slice(0, 50));
+    /**
+     * Ensure a restored session is re-registered with the backend and has listeners set up.
+     * This is needed for sessions restored from persistence that don't have active connections.
+     */
+    async ensureSessionLive(id: string): Promise<void> {
+      if (liveSessions.has(id)) {
+        return; // Session is already live
+      }
+
+      // Get session data from store
+      let session: SdkSession | undefined;
+      subscribe(sessions => {
+        session = sessions.find(s => s.id === id);
+      })();
+
+      if (!session) {
+        throw new Error(`Session ${id} not found`);
+      }
+
+      console.log('[sdkSessions] Reinitializing restored session:', id);
+
+      // Ensure sidecar is running
+      await this.ensureSidecarStarted();
+
+      // Set up event listeners for this session
+      const unlisteners: UnlistenFn[] = [];
+
+      const textEventName = `sdk-text-${id}`;
+      console.log('[sdkSessions] Setting up listener for:', textEventName);
+      unlisteners.push(
+        await listen<string>(textEventName, (e) => {
+          console.log('[sdkSessions] Text event callback invoked for:', textEventName);
+          console.log('[sdkSessions] Payload:', e.payload?.substring(0, 100));
+          try {
+            update(sessions => {
+              console.log('[sdkSessions] Running update, current sessions:', sessions.length);
+              return sessions.map(s =>
+                s.id === id
+                  ? {
+                      ...s,
+                      startedAt: s.startedAt || Date.now(),
+                      // Start work timer if not already started
+                      currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
+                      messages: [
+                        ...s.messages,
+                        { type: 'text' as const, content: e.payload, timestamp: Date.now() },
+                      ],
+                    }
+                  : s
+              );
+            });
+            console.log('[sdkSessions] Update completed');
+          } catch (err) {
+            console.error('[sdkSessions] Error in update:', err);
+          }
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ tool: string; input: Record<string, unknown> }>(
+          `sdk-tool-start-${id}`,
+          (e) => {
+            usageStats.trackToolCall(e.payload.tool);
+            update(sessions =>
+              sessions.map(s =>
+                s.id === id
+                  ? {
+                      ...s,
+                      startedAt: s.startedAt || Date.now(),
+                      // Start work timer if not already started
+                      currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
+                      messages: [
+                        ...s.messages,
+                        {
+                          type: 'tool_start' as const,
+                          tool: e.payload.tool,
+                          input: e.payload.input,
+                          timestamp: Date.now(),
+                        },
+                      ],
+                    }
+                  : s
+              )
+            );
+          }
+        )
+      );
+
+      unlisteners.push(
+        await listen<{ tool: string; output: string }>(`sdk-tool-result-${id}`, (e) => {
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'tool_result' as const,
+                        tool: e.payload.tool,
+                        output: e.payload.output,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen(`sdk-done-${id}`, () => {
+          console.log('[sdkSessions] Received done event for session:', id);
+          const currentSettings = get(settings);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              // Calculate elapsed time for this work period and add to accumulated
+              const now = Date.now();
+              const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
+
+              return {
+                ...s,
+                status: 'idle' as const,
+                // Accumulate the work time and reset the current work timer
+                accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
+                currentWorkStartedAt: undefined,
+                messages: [...s.messages, { type: 'done' as const, timestamp: now }],
+                // Mark as unread if the setting is enabled
+                unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              };
+            })
+          );
+
+          if (currentSettings.audio.play_sound_on_completion) {
+            playCompletionSound();
+          }
+        })
+      );
+
+      unlisteners.push(
+        await listen<string>(`sdk-error-${id}`, (e) => {
+          const currentSettings = get(settings);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              // Calculate elapsed time for this work period and add to accumulated
+              const now = Date.now();
+              const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
+
+              return {
+                ...s,
+                status: 'error' as const,
+                // Accumulate the work time and reset the current work timer
+                accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
+                currentWorkStartedAt: undefined,
+                messages: [
+                  ...s.messages,
+                  { type: 'error' as const, content: e.payload, timestamp: now },
+                ],
+                // Mark as unread if the setting is enabled
+                unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              };
+            })
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen<SdkUsage>(`sdk-usage-${id}`, (e) => {
+          console.log('[sdkSessions] Received usage event:', e.payload);
+          const queryUsage = e.payload;
+
+          usageStats.trackTokenUsage(
+            queryUsage.inputTokens,
+            queryUsage.outputTokens,
+            queryUsage.cacheReadTokens,
+            queryUsage.cacheCreationTokens,
+            queryUsage.totalCostUsd
+          );
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const prevUsage = s.usage || {
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCostUsd: 0,
+                totalDurationMs: 0,
+                totalDurationApiMs: 0,
+                totalTurns: 0,
+                contextWindow: queryUsage.contextWindow,
+                contextUsagePercent: 0,
+                queryUsage: [],
+                progressiveInputTokens: 0,
+                progressiveOutputTokens: 0,
+                progressiveCacheReadTokens: 0,
+                progressiveCacheCreationTokens: 0,
+              };
+
+              const totalInputTokens = prevUsage.totalInputTokens + queryUsage.inputTokens;
+              const totalOutputTokens = prevUsage.totalOutputTokens + queryUsage.outputTokens;
+              const totalTokens = totalInputTokens + totalOutputTokens;
+              const contextWindow = queryUsage.contextWindow || prevUsage.contextWindow || 200000;
+              const contextUsagePercent = Math.min(100, (totalTokens / contextWindow) * 100);
+
+              return {
+                ...s,
+                usage: {
+                  totalInputTokens,
+                  totalOutputTokens,
+                  totalCacheReadTokens: prevUsage.totalCacheReadTokens + queryUsage.cacheReadTokens,
+                  totalCacheCreationTokens: prevUsage.totalCacheCreationTokens + queryUsage.cacheCreationTokens,
+                  totalCostUsd: prevUsage.totalCostUsd + queryUsage.totalCostUsd,
+                  totalDurationMs: prevUsage.totalDurationMs + queryUsage.durationMs,
+                  totalDurationApiMs: prevUsage.totalDurationApiMs + queryUsage.durationApiMs,
+                  totalTurns: prevUsage.totalTurns + queryUsage.numTurns,
+                  contextWindow,
+                  contextUsagePercent,
+                  queryUsage: [...prevUsage.queryUsage, queryUsage],
+                  progressiveInputTokens: 0,
+                  progressiveOutputTokens: 0,
+                  progressiveCacheReadTokens: 0,
+                  progressiveCacheCreationTokens: 0,
+                },
+              };
+            })
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen<SdkProgressiveUsage>(`sdk-progressive-usage-${id}`, (e) => {
+          const progressiveUsage = e.payload;
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const prevUsage = s.usage || {
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCostUsd: 0,
+                totalDurationMs: 0,
+                totalDurationApiMs: 0,
+                totalTurns: 0,
+                contextWindow: 200000,
+                contextUsagePercent: 0,
+                queryUsage: [],
+                progressiveInputTokens: 0,
+                progressiveOutputTokens: 0,
+                progressiveCacheReadTokens: 0,
+                progressiveCacheCreationTokens: 0,
+              };
+
+              const progressiveInputTokens = prevUsage.progressiveInputTokens + progressiveUsage.inputTokens;
+              const progressiveOutputTokens = prevUsage.progressiveOutputTokens + progressiveUsage.outputTokens;
+
+              const liveInputTokens = prevUsage.totalInputTokens + progressiveInputTokens;
+              const liveOutputTokens = prevUsage.totalOutputTokens + progressiveOutputTokens;
+              const liveTotalTokens = liveInputTokens + liveOutputTokens;
+              const contextUsagePercent = Math.min(100, (liveTotalTokens / prevUsage.contextWindow) * 100);
+
+              return {
+                ...s,
+                usage: {
+                  ...prevUsage,
+                  contextUsagePercent,
+                  progressiveInputTokens,
+                  progressiveOutputTokens,
+                  progressiveCacheReadTokens: prevUsage.progressiveCacheReadTokens + progressiveUsage.cacheReadTokens,
+                  progressiveCacheCreationTokens: prevUsage.progressiveCacheCreationTokens + progressiveUsage.cacheCreationTokens,
+                },
+              };
+            })
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ agentId: string; agentType: string }>(`sdk-subagent-start-${id}`, (e) => {
+          console.log('[sdkSessions] Subagent started:', e.payload.agentType, 'id:', e.payload.agentId);
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'subagent_start' as const,
+                        agentId: e.payload.agentId,
+                        agentType: e.payload.agentType,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ agentId: string; transcriptPath: string }>(`sdk-subagent-stop-${id}`, (e) => {
+          console.log('[sdkSessions] Subagent stopped:', e.payload.agentId);
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'subagent_stop' as const,
+                        agentId: e.payload.agentId,
+                        transcriptPath: e.payload.transcriptPath,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      listeners.set(id, unlisteners);
+
+      // Register session with backend (without system prompt for restored sessions)
+      await invoke('create_sdk_session', {
+        id,
+        cwd: session.cwd,
+        model: session.model,
+        systemPrompt: null
+      });
+
+      // Mark session as live
+      liveSessions.add(id);
+
+      console.log('[sdkSessions] Restored session reinitialized:', id);
+    },
+
+    async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
+      console.log('[sdkSessions] sendPrompt called for session:', id, 'prompt:', prompt.slice(0, 50), 'images:', images?.length ?? 0);
+
+      // Ensure session is live (handles restored sessions that need reinitialization)
+      await this.ensureSessionLive(id);
 
       // Get session cwd for tracking
       let sessionCwd: string | undefined;
@@ -316,7 +839,12 @@ function createSdkSessionsStore() {
                 // Note: startedAt is set when the SDK actually starts working (first text or tool event)
                 messages: [
                   ...s.messages,
-                  { type: 'user' as const, content: prompt, timestamp: Date.now() },
+                  {
+                    type: 'user' as const,
+                    content: prompt,
+                    images: images, // Include images in the message
+                    timestamp: Date.now()
+                  },
                 ],
               }
             : s
@@ -325,7 +853,8 @@ function createSdkSessionsStore() {
 
       try {
         console.log('[sdkSessions] Invoking send_sdk_prompt');
-        await invoke('send_sdk_prompt', { id, prompt });
+        // Pass images to the backend if present
+        await invoke('send_sdk_prompt', { id, prompt, images: images ?? null });
         console.log('[sdkSessions] send_sdk_prompt invoke returned');
       } catch (error) {
         update(sessions =>
@@ -352,6 +881,20 @@ function createSdkSessionsStore() {
 
     async stopQuery(id: string): Promise<void> {
       console.log('[sdkSessions] stopQuery called for session:', id);
+
+      // If session isn't live, there's nothing to stop
+      if (!liveSessions.has(id)) {
+        console.log('[sdkSessions] Session not live, nothing to stop');
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'idle' as const }
+              : s
+          )
+        );
+        return;
+      }
+
       try {
         await invoke('stop_sdk_query', { id });
         update(sessions =>
@@ -386,6 +929,9 @@ function createSdkSessionsStore() {
         listeners.delete(id);
       }
 
+      // Remove from live sessions
+      liveSessions.delete(id);
+
       update(sessions => sessions.filter(s => s.id !== id));
     },
 
@@ -407,14 +953,30 @@ function createSdkSessionsStore() {
         )
       );
 
+      // Only send to backend if session is live
+      // For restored sessions, the model will be used when session is reinitialized
+      if (!liveSessions.has(id)) {
+        console.log('[sdkSessions] Session not live, model update stored locally:', model);
+        return;
+      }
+
       // Send the model update to the backend
       try {
         await invoke('update_sdk_model', { id, model });
         console.log('[sdkSessions] Model updated to:', model);
       } catch (error) {
         console.error('Failed to update SDK model:', error);
-        // Optionally revert the change or show an error
       }
+    },
+
+    markAsRead(id: string): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, unread: false }
+            : s
+        )
+      );
     },
   };
 }

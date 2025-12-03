@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
+import { emit } from '@tauri-apps/api/event';
 
 export type OverlayMode = 'session' | 'paste';
 
@@ -105,6 +106,16 @@ function createOverlayStore() {
         ...s,
         sessionInfo: { branch, model, creatingSession },
       }));
+      // Emit event to sync with overlay window
+      emit('overlay-session-info', { branch, model, creatingSession });
+    },
+
+    // Update session info without emitting (used when receiving event from another window)
+    updateSessionInfoLocal(branch: string | null, model: string | null, creatingSession: boolean) {
+      update((s) => ({
+        ...s,
+        sessionInfo: { branch, model, creatingSession },
+      }));
     },
 
     clearSessionInfo() {
@@ -112,6 +123,8 @@ function createOverlayStore() {
         ...s,
         sessionInfo: { branch: null, model: null, creatingSession: false },
       }));
+      // Emit event to sync with overlay window
+      emit('overlay-session-info', { branch: null, model: null, creatingSession: false });
     },
 
     setMode(mode: OverlayMode) {

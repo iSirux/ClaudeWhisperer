@@ -1,4 +1,4 @@
-import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type Query, type Options, type SDKMessage, type SubagentStartHookInput, type SubagentStopHookInput } from '@anthropic-ai/claude-agent-sdk';
 import * as readline from 'readline';
 
 // Types for IPC messages
@@ -7,13 +7,22 @@ interface CreateMessage {
   id: string;
   cwd: string;
   model?: string;
+  system_prompt?: string;
   options?: Partial<Options>;
+}
+
+interface ImageData {
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  base64Data: string;
+  width?: number;
+  height?: number;
 }
 
 interface QueryMessage {
   type: 'query';
   id: string;
   prompt: string;
+  images?: ImageData[];
 }
 
 interface CloseMessage {
@@ -38,6 +47,7 @@ interface Session {
   cwd: string;
   options: Options;
   abortController?: AbortController;
+  queryIterator?: Query; // The active query iterator for interrupt()
   sdkSessionId?: string; // Track the SDK's internal session ID for resume
 }
 
@@ -78,8 +88,26 @@ function sendUsage(id: string, usage: {
   send({ type: 'usage', id, ...usage });
 }
 
+// Progressive usage during streaming (from assistant messages)
+function sendProgressiveUsage(id: string, usage: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}): void {
+  send({ type: 'progressive_usage', id, ...usage });
+}
+
 function sendError(id: string, message: string): void {
   send({ type: 'error', id, message });
+}
+
+function sendSubagentStart(id: string, agentId: string, agentType: string): void {
+  send({ type: 'subagent_start', id, agentId, agentType });
+}
+
+function sendSubagentStop(id: string, agentId: string, transcriptPath: string): void {
+  send({ type: 'subagent_stop', id, agentId, transcriptPath });
 }
 
 async function handleCreate(msg: CreateMessage): Promise<void> {
@@ -89,11 +117,48 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     // Load CLAUDE.md and settings from filesystem like Claude Code does
     settingSources: ['user', 'project', 'local'],
     ...(msg.model && { model: msg.model }),
+    ...(msg.system_prompt && { systemPrompt: msg.system_prompt }),
     ...msg.options,
   };
 
   sessions.set(msg.id, { cwd: msg.cwd, options });
   send({ type: 'created', id: msg.id });
+}
+
+// Content block types for multimodal prompts
+type TextBlock = { type: 'text'; text: string };
+type ImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+type ContentBlock = TextBlock | ImageBlock;
+
+// Build content blocks for multimodal prompts (text + images)
+function buildPromptContent(prompt: string, images?: ImageData[]): string | ContentBlock[] {
+  // If no images, just return the string prompt (simpler path)
+  if (!images || images.length === 0) {
+    return prompt;
+  }
+
+  // Build content blocks array with images first, then text
+  const contentBlocks: ContentBlock[] = [];
+
+  // Add image blocks
+  for (const img of images) {
+    contentBlocks.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mediaType,
+        data: img.base64Data,
+      },
+    });
+  }
+
+  // Add text block
+  contentBlocks.push({
+    type: 'text',
+    text: prompt,
+  });
+
+  return contentBlocks;
 }
 
 async function handleQuery(msg: QueryMessage): Promise<void> {
@@ -103,7 +168,8 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     return;
   }
 
-  send({ type: 'debug', id: msg.id, message: `Starting query with prompt: ${msg.prompt.slice(0, 100)}...` });
+  const hasImages = msg.images && msg.images.length > 0;
+  send({ type: 'debug', id: msg.id, message: `Starting query with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0})` });
 
   try {
     // Create abort controller for this query
@@ -113,11 +179,18 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     send({ type: 'debug', id: msg.id, message: `Calling SDK query()... resume=${session.sdkSessionId || 'none'}` });
     send({ type: 'debug', id: msg.id, message: `Options: cwd=${session.options.cwd}, pathToClaudeCodeExecutable=${session.options.pathToClaudeCodeExecutable}` });
 
+    // Build the prompt - either string or content blocks with images
+    const promptContent = buildPromptContent(msg.prompt, msg.images);
+    if (hasImages) {
+      send({ type: 'debug', id: msg.id, message: `Built multimodal prompt with ${msg.images!.length} image(s)` });
+    }
+
     // Use the query function from the SDK
     let queryIterator;
     try {
+      // The SDK accepts either a string or content blocks array for prompt
       queryIterator = query({
-        prompt: msg.prompt,
+        prompt: promptContent as string, // Type assertion - SDK accepts both
         options: {
           ...session.options,
           abortController,
@@ -127,6 +200,21 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
           stderr: (data: string) => {
             send({ type: 'debug', id: msg.id, message: `[stderr] ${data}` });
           },
+          // Hook callbacks for subagent lifecycle events
+          hooks: {
+            SubagentStart: [{
+              hooks: [async (input: SubagentStartHookInput) => {
+                sendSubagentStart(msg.id, input.agent_id, input.agent_type);
+                return { continue: true };
+              }],
+            }],
+            SubagentStop: [{
+              hooks: [async (input: SubagentStopHookInput) => {
+                sendSubagentStop(msg.id, input.agent_id, input.agent_transcript_path);
+                return { continue: true };
+              }],
+            }],
+          },
         },
       });
     } catch (spawnError) {
@@ -134,6 +222,9 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       sendError(msg.id, `Failed to spawn query: ${spawnError}`);
       return;
     }
+
+    // Store the query iterator on the session so we can call interrupt() on it
+    session.queryIterator = queryIterator;
 
     send({ type: 'debug', id: msg.id, message: `Query iterator created, starting iteration...` });
 
@@ -162,6 +253,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     sendError(msg.id, errorMessage);
   } finally {
     session.abortController = undefined;
+    session.queryIterator = undefined;
   }
 }
 
@@ -178,6 +270,16 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         } else if (block.type === 'tool_use') {
           sendToolStart(id, block.name, block.input);
         }
+      }
+      // Send progressive usage data from assistant message if available
+      if (message.message.usage) {
+        const usage = message.message.usage;
+        sendProgressiveUsage(id, {
+          inputTokens: usage.input_tokens ?? 0,
+          outputTokens: usage.output_tokens ?? 0,
+          cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+          cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+        });
       }
       break;
 
@@ -262,8 +364,25 @@ async function handleStop(msg: StopMessage): Promise<void> {
     return;
   }
 
-  if (session.abortController) {
-    send({ type: 'debug', id: msg.id, message: 'Aborting query...' });
+  // Use interrupt() on the query iterator - this is the proper way to stop
+  // the query and all subagents. The abort controller alone doesn't properly
+  // stop subagents that are already running.
+  if (session.queryIterator) {
+    send({ type: 'debug', id: msg.id, message: 'Interrupting query via iterator.interrupt()...' });
+    try {
+      await session.queryIterator.interrupt();
+      send({ type: 'debug', id: msg.id, message: 'Query interrupted successfully' });
+    } catch (err) {
+      send({ type: 'debug', id: msg.id, message: `Error interrupting query: ${err}` });
+      // Fall back to abort controller if interrupt fails
+      if (session.abortController) {
+        session.abortController.abort();
+      }
+    }
+    session.queryIterator = undefined;
+    session.abortController = undefined;
+  } else if (session.abortController) {
+    send({ type: 'debug', id: msg.id, message: 'No query iterator, falling back to abortController.abort()...' });
     session.abortController.abort();
     session.abortController = undefined;
   } else {
@@ -285,8 +404,17 @@ async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
 
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
-  if (session?.abortController) {
-    session.abortController.abort();
+  if (session) {
+    // Use interrupt() if we have an active query
+    if (session.queryIterator) {
+      try {
+        await session.queryIterator.interrupt();
+      } catch {
+        // Ignore errors during close
+      }
+    } else if (session.abortController) {
+      session.abortController.abort();
+    }
   }
   sessions.delete(msg.id);
   send({ type: 'closed', id: msg.id });

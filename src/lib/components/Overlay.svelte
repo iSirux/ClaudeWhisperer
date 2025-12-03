@@ -11,6 +11,7 @@
   // Track remote recording state (from main window events)
   let remoteRecordingState: RecordingState = 'idle';
   let unlistenRecordingState: UnlistenFn | null = null;
+  let unlistenSessionInfo: UnlistenFn | null = null;
 
   $: showTranscript = $settings.overlay.show_transcript;
   $: transcriptLines = $settings.overlay.transcript_lines;
@@ -30,6 +31,7 @@
   const modelLabels: Record<string, string> = {
     'claude-opus-4-5': 'Opus',
     'claude-sonnet-4-5-20250929': 'Sonnet',
+    'claude-sonnet-4-5-20250929-extended': 'Sonnet 1M',
     'claude-haiku-4-5': 'Haiku',
   };
 
@@ -43,11 +45,19 @@
     unlistenRecordingState = await listen<{ state: RecordingState }>('recording-state', (event) => {
       remoteRecordingState = event.payload.state;
     });
+
+    // Listen for session info changes from main window (for model display)
+    unlistenSessionInfo = await listen<{ branch: string | null; model: string | null; creatingSession: boolean }>('overlay-session-info', (event) => {
+      overlay.updateSessionInfoLocal(event.payload.branch, event.payload.model, event.payload.creatingSession);
+    });
   });
 
   onDestroy(() => {
     if (unlistenRecordingState) {
       unlistenRecordingState();
+    }
+    if (unlistenSessionInfo) {
+      unlistenSessionInfo();
     }
   });
 

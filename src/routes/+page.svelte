@@ -7,6 +7,7 @@
   import Settings from './settings/+page.svelte';
   import Start from '$lib/components/Start.svelte';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
+  import UsagePreview from '$lib/components/UsagePreview.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
@@ -19,6 +20,12 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+  // System prompt for voice-transcribed sessions
+  const VOICE_TRANSCRIPTION_SYSTEM_PROMPT =
+    "The user's prompt was recorded via voice and transcribed using speech-to-text. " +
+    "There may be minor transcription errors such as homophones, missing punctuation, or misheard words. " +
+    "Please interpret the intent behind the request even if there are small errors in the transcription.";
 
   // Sidebar resize state
   const MIN_SIDEBAR_WIDTH = 200;
@@ -53,7 +60,7 @@
   // Flag to track if we're recording for a new session (header button)
   let isRecordingForNewSession = $state(false);
 
-  let currentView = $state<'sessions' | 'settings' | 'start'>('sessions');
+  let currentView = $state<'sessions' | 'settings' | 'start'>('start');
   let showRepoSelector = $state(false);
   let isTogglingRecording = false;
   let wasAppFocusedOnRecordStart = true;
@@ -140,18 +147,16 @@
     if (!$recording.transcript) return;
 
     if ($settings.terminal_mode === 'Sdk') {
-      // SDK mode: create SDK session and send prompt
+      // SDK mode: always create a new SDK session and send prompt
       const repoPath = $activeRepo?.path || '.';
       const model = $settings.default_model;
-      let sessionId = $activeSdkSessionId;
 
-      if (!sessionId) {
-        // Create a new SDK session if none exists
-        sessionId = await sdkSessions.createSession(repoPath, model);
-        activeSdkSessionId.set(sessionId);
-      }
+      // Always create a new session for each recording, optionally with voice transcription context
+      const systemPrompt = $settings.audio.include_transcription_notice ? VOICE_TRANSCRIPTION_SYSTEM_PROMPT : undefined;
+      const sessionId = await sdkSessions.createSession(repoPath, model, systemPrompt);
+      activeSdkSessionId.set(sessionId);
 
-      // Send the prompt to the SDK session
+      // Send the prompt to the new SDK session
       await sdkSessions.sendPrompt(sessionId, $recording.transcript);
       activeSessionId.set(null); // Clear PTY session selection
     } else {
@@ -179,8 +184,8 @@
             overlay.clearSessionInfo();
             await recording.stopRecording();
 
-            // Auto-send transcript if app wasn't focused when recording started
-            if (!wasAppFocusedOnRecordStart && $recording.transcript) {
+            // Auto-send transcript to create a new session
+            if ($recording.transcript) {
               await sendTranscript();
             }
           } else {
@@ -199,21 +204,8 @@
               console.error('Failed to get git branch:', e);
             }
 
-            // If app not focused and in SDK mode, start a new SDK session
-            if (!wasAppFocusedOnRecordStart && $settings.terminal_mode === 'Sdk') {
-              // Set overlay to show we're creating a session
-              overlay.setSessionInfo(branch, model, true);
-
-              const sessionId = await sdkSessions.createSession(repoPath, model);
-              activeSdkSessionId.set(sessionId);
-              activeSessionId.set(null); // Clear PTY session selection
-
-              // Update overlay to show session is created
-              overlay.setSessionInfo(branch, model, false);
-            } else {
-              // Set overlay info without creating session (for focused app or non-SDK mode)
-              overlay.setSessionInfo(branch, model, false);
-            }
+            // Set overlay info - session will be created after transcription completes
+            overlay.setSessionInfo(branch, model, false);
 
             await recording.startRecording($settings.audio.device_id || undefined);
 
@@ -303,18 +295,43 @@
   async function startRecordingNewSession() {
     if ($isRecording) return;
     isRecordingForNewSession = true;
+
+    const repoPath = $activeRepo?.path || '.';
+    const model = $settings.default_model;
+
+    // Get current git branch for overlay display
+    let branch: string | null = null;
+    try {
+      branch = await invoke<string>('get_git_branch', { repoPath });
+    } catch (e) {
+      console.error('Failed to get git branch:', e);
+    }
+
+    // Set overlay info - session will be created after transcription completes
+    overlay.setSessionInfo(branch, model, false);
+
     await recording.startRecording($settings.audio.device_id || undefined);
+
+    // Show overlay
+    await overlay.show();
   }
 
-  // Stop recording and create a new session with the transcript
+  // Stop recording and always create a new session with the transcript
   async function stopRecordingNewSession() {
     if (!$isRecording) return;
+
+    // Hide overlay immediately before processing starts
+    await overlay.hide();
+    overlay.clearSessionInfo();
+
     const transcript = await recording.stopRecording(true);
     if (transcript && isRecordingForNewSession) {
       if ($settings.terminal_mode === 'Sdk') {
         const repoPath = $activeRepo?.path || '.';
         const model = $settings.default_model;
-        const sessionId = await sdkSessions.createSession(repoPath, model);
+        // Always create a new session
+        const systemPrompt = $settings.audio.include_transcription_notice ? VOICE_TRANSCRIPTION_SYSTEM_PROMPT : undefined;
+        const sessionId = await sdkSessions.createSession(repoPath, model, systemPrompt);
         activeSdkSessionId.set(sessionId);
         await sdkSessions.sendPrompt(sessionId, transcript);
         activeSessionId.set(null);
@@ -332,7 +349,13 @@
 <div class="app-container h-screen flex flex-col bg-background">
   <header class="header flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
     <div class="flex items-center gap-4">
-      <h1 class="text-lg font-semibold text-text-primary">Claude Whisperer</h1>
+      <button
+        class="text-lg font-semibold text-text-primary hover:text-accent transition-colors"
+        onclick={showStartView}
+        title="Go to start page"
+      >
+        Claude Whisperer
+      </button>
       
       <div class="relative">
         <button
@@ -416,26 +439,29 @@
     </div>
 
     <div class="flex items-center gap-2">
-      <!-- New Session Record Button -->
+      <!-- Usage Preview -->
+      <UsagePreview />
+
+      <!-- Record Button (sends to current session or creates new if none) -->
       {#if $isRecording && isRecordingForNewSession}
         <button
           class="px-3 py-1.5 text-sm bg-recording hover:bg-recording/90 text-white rounded transition-colors flex items-center gap-2"
           onclick={stopRecordingNewSession}
-          title="Stop recording and create new session"
+          title="Stop recording and send"
         >
           <div class="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-          Stop & Create Session
+          Stop & Send
         </button>
       {:else if !$isRecording}
         <button
           class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
           onclick={startRecordingNewSession}
-          title="Record and start new session"
+          title="Record voice prompt"
         >
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
+            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
           </svg>
-          Record and Start New Session
+          Record
         </button>
       {/if}
       <button
@@ -504,18 +530,6 @@
       <div class="flex-1 overflow-hidden">
         <SessionList {currentView} />
       </div>
-      <div class="border-t border-border">
-        <button
-          class="w-full p-3 text-left hover:bg-surface-elevated transition-colors flex items-center gap-2"
-          class:bg-surface-elevated={currentView === 'start'}
-          onclick={showStartView}
-        >
-          <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-          <span class="text-sm font-medium text-text-secondary">Start</span>
-        </button>
-      </div>
       <!-- Resize handle -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -532,10 +546,12 @@
         <Settings initialTab={settingsInitialTab} />
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
+        {@const sessionTime = $activeSdkSession.createdAt ? new Date($activeSdkSession.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
         <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
           <div class="flex items-center gap-3">
-            <span class="px-2 py-0.5 text-xs font-medium bg-accent text-white rounded">SDK</span>
-            <span class="text-sm text-text-primary truncate">Session</span>
+            {#if sessionTime}
+              <span class="text-sm text-text-muted">{sessionTime}</span>
+            {/if}
             <ModelSelector
               model={$activeSdkSession.model}
               onchange={(newModel) => {
@@ -547,7 +563,33 @@
             />
           </div>
           <div class="flex items-center gap-2">
-            <span class="text-xs text-text-muted">{$activeSdkSession.status}</span>
+            <button
+              class="copy-all-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors text-text-muted hover:text-text-primary flex items-center gap-1"
+              onclick={async () => {
+                const messages = $activeSdkSession?.messages ?? [];
+                const text = messages
+                  .filter(msg => msg.type !== 'done')
+                  .map(msg => {
+                    const prefix = msg.type === 'user' ? 'User: ' : msg.type === 'text' ? 'Claude: ' : '';
+                    if (msg.type === 'user') return prefix + (msg.content ?? '');
+                    if (msg.type === 'text') return prefix + (msg.content ?? '');
+                    if (msg.type === 'error') return `Error: ${msg.content ?? ''}`;
+                    if (msg.type === 'tool_start') return `[Tool: ${msg.tool}]\nInput: ${JSON.stringify(msg.input, null, 2)}`;
+                    if (msg.type === 'tool_result') return `[Tool: ${msg.tool} completed]\nOutput: ${msg.output ?? ''}`;
+                    return '';
+                  })
+                  .join('\n\n');
+                await navigator.clipboard.writeText(text);
+              }}
+              title="Copy entire chat"
+              disabled={!$activeSdkSession?.messages?.length}
+            >
+              <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" />
+                <path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" />
+              </svg>
+              Copy
+            </button>
             <button
               class="p-1 hover:bg-border rounded transition-colors text-text-muted hover:text-error"
               onclick={() => {

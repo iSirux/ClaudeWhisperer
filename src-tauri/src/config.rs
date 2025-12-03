@@ -20,23 +20,6 @@ impl Default for WhisperConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HaikuConfig {
-    pub enabled: bool,
-    pub api_key: String,
-    pub model: String,
-}
-
-impl Default for HaikuConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: String::new(),
-            model: "claude-3-haiku-20240307".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitConfig {
     pub create_branch: bool,
     pub auto_merge: bool,
@@ -58,7 +41,6 @@ impl Default for GitConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyConfig {
     pub toggle_recording: String,
-    pub toggle_open_mic: String,
     pub send_prompt: String,
     pub switch_repo: String,
     #[serde(default = "default_transcribe_to_input")]
@@ -73,7 +55,6 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             toggle_recording: "CommandOrControl+Shift+Space".to_string(),
-            toggle_open_mic: "CommandOrControl+Shift+M".to_string(),
             send_prompt: "CommandOrControl+Enter".to_string(),
             switch_repo: "CommandOrControl+Shift+R".to_string(),
             transcribe_to_input: "CommandOrControl+Shift+T".to_string(),
@@ -130,6 +111,12 @@ impl Default for SystemConfig {
 pub struct SessionPersistenceConfig {
     pub enabled: bool,
     pub max_sessions: usize,
+    #[serde(default = "default_restore_sessions")]
+    pub restore_sessions: usize,
+}
+
+fn default_restore_sessions() -> usize {
+    10
 }
 
 impl Default for SessionPersistenceConfig {
@@ -137,6 +124,7 @@ impl Default for SessionPersistenceConfig {
         Self {
             enabled: true,
             max_sessions: 50,
+            restore_sessions: 10,
         }
     }
 }
@@ -440,30 +428,31 @@ impl UsageStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub device_id: Option<String>,
-    pub open_mic: bool,
-    pub voice_command: String,
-    pub use_voice_command: bool,
     pub use_hotkey: bool,
     #[serde(default)]
     pub play_sound_on_completion: bool,
     #[serde(default = "default_recording_linger_ms")]
     pub recording_linger_ms: u32,
+    #[serde(default = "default_include_transcription_notice")]
+    pub include_transcription_notice: bool,
 }
 
 fn default_recording_linger_ms() -> u32 {
     500
 }
 
+fn default_include_transcription_notice() -> bool {
+    true
+}
+
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             device_id: None,
-            open_mic: false,
-            voice_command: "go go".to_string(),
-            use_voice_command: true,
             use_hotkey: true,
             play_sound_on_completion: false,
             recording_linger_ms: 500,
+            include_transcription_notice: true,
         }
     }
 }
@@ -491,10 +480,16 @@ pub enum Theme {
     Sand,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum SessionSortOrder {
+    #[default]
+    Chronological,
+    StatusThenChronological,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub whisper: WhisperConfig,
-    pub haiku: HaikuConfig,
     pub git: GitConfig,
     pub hotkeys: HotkeyConfig,
     pub overlay: OverlayConfig,
@@ -514,13 +509,20 @@ pub struct AppConfig {
     pub show_branch_in_sessions: bool,
     #[serde(default)]
     pub session_persistence: SessionPersistenceConfig,
+    #[serde(default)]
+    pub session_sort_order: SessionSortOrder,
+    #[serde(default = "default_mark_sessions_unread")]
+    pub mark_sessions_unread: bool,
+}
+
+fn default_mark_sessions_unread() -> bool {
+    true
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             whisper: WhisperConfig::default(),
-            haiku: HaikuConfig::default(),
             git: GitConfig::default(),
             hotkeys: HotkeyConfig::default(),
             overlay: OverlayConfig::default(),
@@ -534,6 +536,8 @@ impl Default for AppConfig {
             system: SystemConfig::default(),
             show_branch_in_sessions: false,
             session_persistence: SessionPersistenceConfig::default(),
+            session_sort_order: SessionSortOrder::default(),
+            mark_sessions_unread: true,
         }
     }
 }

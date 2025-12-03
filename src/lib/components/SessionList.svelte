@@ -38,16 +38,10 @@
     if (interval) clearInterval(interval);
   });
 
-  // Reactive elapsed time formatter that depends on `now`
-  // Returns null if startedAt is undefined (timer not started yet)
-  function getElapsedTime(startedAt: number | undefined, endedAt?: number): string | null {
-    if (startedAt === undefined) {
-      return null; // Timer not started yet
-    }
-    const endTime = endedAt ?? now;
-    const elapsed = Math.max(0, endTime - startedAt);
-    const mins = Math.floor(elapsed / 60);
-    const secs = elapsed % 60;
+  // Format elapsed time in seconds to human-readable string
+  function formatDuration(elapsedSeconds: number): string {
+    const mins = Math.floor(elapsedSeconds / 60);
+    const secs = elapsedSeconds % 60;
 
     if (mins >= 60) {
       const hrs = Math.floor(mins / 60);
@@ -60,6 +54,40 @@
     return `${secs}s`;
   }
 
+  // Get elapsed time for a session using timer-based tracking
+  // Returns null if session hasn't started working yet
+  function getElapsedTime(
+    accumulatedDurationMs: number,
+    currentWorkStartedAt: number | undefined,
+    isFinished: boolean
+  ): string | null {
+    // If no work has been done yet (no accumulated time and not currently working)
+    if (accumulatedDurationMs === 0 && !currentWorkStartedAt) {
+      return null;
+    }
+
+    let totalMs = accumulatedDurationMs;
+
+    // If currently working, add the live elapsed time
+    if (currentWorkStartedAt && !isFinished) {
+      const liveElapsedMs = (now * 1000) - currentWorkStartedAt;
+      totalMs += Math.max(0, liveElapsedMs);
+    }
+
+    const elapsedSeconds = Math.floor(totalMs / 1000);
+    return formatDuration(elapsedSeconds);
+  }
+
+  // Legacy function for PTY sessions that still use timestamp-based tracking
+  function getLegacyElapsedTime(startedAt: number | undefined, endedAt?: number): string | null {
+    if (startedAt === undefined) {
+      return null; // Timer not started yet
+    }
+    const endTime = endedAt ?? now;
+    const elapsed = Math.max(0, endTime - startedAt);
+    return formatDuration(elapsed);
+  }
+
   // Unified session type for display
   interface DisplaySession {
     id: string;
@@ -70,9 +98,14 @@
     repoPath: string;
     model?: string; // model name for SDK sessions
     createdAt: number; // When the session was created (for sorting)
-    startedAt?: number; // When the timer should start (when prompt was sent/SDK started working)
-    endedAt?: number; // timestamp when session finished (for SDK sessions)
+    startedAt?: number; // When the timer should start (when prompt was sent/SDK started working) - deprecated for SDK
+    endedAt?: number; // timestamp when session finished (for SDK sessions) - deprecated
     branch?: string; // git branch name
+    // Timer-based duration (SDK sessions only)
+    accumulatedDurationMs: number;
+    currentWorkStartedAt?: number;
+    isFinished: boolean; // Whether the session is done/idle/error
+    unread?: boolean; // Whether the session completed and user hasn't viewed it yet
   }
 
   // Cache for git branches to avoid repeated calls
@@ -111,9 +144,31 @@
 
     if (session.status === 'querying') {
       // Find the last tool_start that doesn't have a matching tool_result after it
+      // Also track if we're in a subagent
+      let inSubagent = false;
+      let subagentType: string | undefined;
+
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
+
+        // Track subagent state (stop before start when iterating backwards)
+        if (msg.type === 'subagent_stop') {
+          // Subagent finished, continue looking for what's happening now
+          continue;
+        }
+        if (msg.type === 'subagent_start') {
+          // We found a subagent_start without a matching stop - subagent is running
+          inSubagent = true;
+          subagentType = msg.agentType;
+          continue;
+        }
+
         if (msg.type === 'tool_start') {
+          // If we're in a subagent, show that instead
+          if (inSubagent) {
+            return { status: 'subagent', detail: subagentType || 'Agent' };
+          }
+
           // Count consecutive calls to this same tool
           let count = 1;
           const currentTool = msg.tool;
@@ -138,12 +193,24 @@
           return { status: 'tool', detail };
         }
         if (msg.type === 'tool_result') {
-          // Tool finished, Claude is thinking
+          // Tool finished, Claude is thinking (but might have subagent running)
+          if (inSubagent) {
+            return { status: 'subagent', detail: subagentType || 'Agent' };
+          }
           return { status: 'thinking' };
         }
         if (msg.type === 'text') {
+          // Got text but might have subagent running after it
+          if (inSubagent) {
+            return { status: 'subagent', detail: subagentType || 'Agent' };
+          }
           return { status: 'responding' };
         }
+      }
+
+      // If we found a subagent but no other status-determining messages
+      if (inSubagent) {
+        return { status: 'subagent', detail: subagentType || 'Agent' };
       }
       return { status: 'thinking' };
     }
@@ -155,6 +222,19 @@
 
     if (lastMsg?.type === 'done') {
       return { status: 'done' };
+    }
+
+    // Check if there's an unfinished subagent (status not querying but subagent might still be running)
+    // This handles edge cases where status gets out of sync
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type === 'subagent_stop' || msg.type === 'done') {
+        break; // Found a completion marker, we're really idle
+      }
+      if (msg.type === 'subagent_start') {
+        // Found subagent_start without stop - still working
+        return { status: 'subagent', detail: msg.agentType || 'Agent' };
+      }
     }
 
     return { status: 'idle' };
@@ -170,13 +250,15 @@
   function selectSdkSession(id: string) {
     activeSdkSessionId.set(id);
     activeSessionId.set(null);
+    // Mark as read when selected
+    sdkSessions.markAsRead(id);
     // Dispatch event to parent to switch view
     window.dispatchEvent(new CustomEvent('switch-to-sessions'));
   }
 
   // Check if a session status indicates it's actively working
   function isActivelyWorking(status: string): boolean {
-    const activeStatuses = ['Starting', 'Running', 'querying', 'tool', 'thinking', 'responding'];
+    const activeStatuses = ['Starting', 'Running', 'querying', 'tool', 'thinking', 'responding', 'subagent'];
     return activeStatuses.includes(status);
   }
 
@@ -244,7 +326,7 @@
   function getStatusColor(status: string): string {
     switch (status) {
       case 'Starting': return 'text-yellow-400';
-      case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': return 'text-emerald-400';
+      case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': case 'subagent': return 'text-emerald-400';
       case 'Completed': case 'idle': case 'done': return 'text-blue-400';
       case 'new': return 'text-text-muted';
       case 'Failed': case 'error': return 'text-red-400';
@@ -255,7 +337,7 @@
   function getStatusBg(status: string): string {
     switch (status) {
       case 'Starting': return 'bg-yellow-400';
-      case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': return 'bg-emerald-400';
+      case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': case 'subagent': return 'bg-emerald-400';
       case 'Completed': case 'idle': case 'done': return 'bg-blue-400';
       case 'new': return 'bg-slate-400';
       case 'Failed': case 'error': return 'bg-red-400';
@@ -267,6 +349,7 @@
     switch (status) {
       case 'Running': case 'querying': return 'Active';
       case 'tool': return detail || 'Tool';
+      case 'subagent': return detail || 'Agent';
       case 'thinking': return 'Thinking';
       case 'responding': return 'Responding';
       case 'idle': return 'Ready';
@@ -305,6 +388,7 @@
     const ptySessions = $sessions;
     const sdkSessionsList = $sdkSessions;
     const showBranch = $settings.show_branch_in_sessions;
+    const sortOrder = $settings.session_sort_order;
 
     // Build base sessions without branches
     const baseSessions: DisplaySession[] = [
@@ -316,14 +400,15 @@
         prompt: s.prompt,
         repoPath: s.repo_path,
         createdAt: s.created_at,
-        startedAt: s.created_at, // PTY sessions start timing immediately
+        startedAt: s.created_at, // PTY sessions start timing immediately (legacy)
+        // PTY sessions don't have timer-based tracking, set defaults
+        accumulatedDurationMs: 0,
+        currentWorkStartedAt: undefined,
+        isFinished: s.status === 'Completed' || s.status === 'Failed',
       })),
       ...sdkSessionsList.map(s => {
         const smartStatus = getSdkSmartStatus(s);
-        const doneMessage = s.messages.find(m => m.type === 'done');
-        const endedAt = (smartStatus.status === 'done' || smartStatus.status === 'idle' || smartStatus.status === 'error') && doneMessage
-          ? Math.floor(doneMessage.timestamp / 1000)
-          : undefined;
+        const isFinished = smartStatus.status === 'done' || smartStatus.status === 'idle' || smartStatus.status === 'error' || smartStatus.status === 'new';
 
         return {
           id: s.id,
@@ -334,21 +419,29 @@
           repoPath: s.cwd,
           model: s.model,
           createdAt: Math.floor(s.createdAt / 1000), // For sorting
-          startedAt: s.startedAt ? Math.floor(s.startedAt / 1000) : undefined, // For timer display
-          endedAt,
+          startedAt: s.startedAt ? Math.floor(s.startedAt / 1000) : undefined, // Legacy, deprecated
+          // Timer-based duration tracking
+          accumulatedDurationMs: s.accumulatedDurationMs || 0,
+          currentWorkStartedAt: s.currentWorkStartedAt,
+          isFinished,
+          unread: s.unread,
         };
       })
     ];
 
-    // Sort sessions
+    // Sort sessions based on user preference
     const sorted = baseSessions.sort((a, b) => {
-      const statusOrder: Record<string, number> = {
-        Starting: 0, Running: 0, querying: 0, tool: 0, thinking: 0, responding: 0,
-        idle: 1, new: 1, Completed: 2, done: 2,
-        Failed: 3, error: 3
-      };
-      const statusDiff = (statusOrder[a.status] ?? 4) - (statusOrder[b.status] ?? 4);
-      if (statusDiff !== 0) return statusDiff;
+      if (sortOrder === 'StatusThenChronological') {
+        // Sort by status first, then by creation time (newest first)
+        const statusOrder: Record<string, number> = {
+          Starting: 0, Running: 0, querying: 0, tool: 0, thinking: 0, responding: 0, subagent: 0,
+          idle: 1, new: 1, Completed: 2, done: 2,
+          Failed: 3, error: 3
+        };
+        const statusDiff = (statusOrder[a.status] ?? 4) - (statusOrder[b.status] ?? 4);
+        if (statusDiff !== 0) return statusDiff;
+      }
+      // Chronological: newest first
       return b.createdAt - a.createdAt;
     });
 
@@ -416,31 +509,39 @@
       <div
         class="session-item p-3 border-b border-border/50 hover:bg-surface-elevated/50 transition-all cursor-pointer"
         class:active={isSessionActive(session)}
-        onclick={() => session.type === 'pty' ? selectPtySession(session.id) : selectSdkSession(session.id)}
-        onauxclick={(e) => {
+        class:unread={session.unread}
+        onmousedown={(e) => {
+          // Middle mouse button closes the session
           if (e.button === 1) {
             e.preventDefault();
             session.type === 'pty' ? closePtySession(session.id, e) : closeSdkSession(session.id, e);
           }
         }}
+        onclick={() => session.type === 'pty' ? selectPtySession(session.id) : selectSdkSession(session.id)}
       >
         <!-- Header row: type badge, status dot, time, close button -->
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
-            {#if session.type === 'sdk'}
-              <span class="px-1.5 py-0.5 text-[10px] font-medium bg-accent/20 text-accent rounded">SDK</span>
+            {#if session.type === 'sdk' && session.model}
+              <span class="px-1.5 py-0.5 text-[10px] font-medium bg-accent/20 text-accent rounded">{getShortModelName(session.model)}</span>
             {/if}
             <div class="relative">
               <div class="w-2 h-2 rounded-full {getStatusBg(session.status)}"></div>
-              {#if ['Running', 'Starting', 'querying', 'tool', 'thinking', 'responding'].includes(session.status)}
+              {#if ['Running', 'Starting', 'querying', 'tool', 'thinking', 'responding', 'subagent'].includes(session.status)}
                 <div class="absolute inset-0 w-2 h-2 rounded-full {getStatusBg(session.status)} animate-ping opacity-75"></div>
               {/if}
             </div>
             <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status, session.statusDetail)}</span>
           </div>
           <div class="flex items-center gap-2">
-            {#if getElapsedTime(session.startedAt, session.endedAt) !== null}
-              <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.startedAt, session.endedAt)}</span>
+            {#if session.type === 'sdk'}
+              {#if getElapsedTime(session.accumulatedDurationMs, session.currentWorkStartedAt, session.isFinished) !== null}
+                <span class="text-xs text-text-muted font-mono tabular-nums">{getElapsedTime(session.accumulatedDurationMs, session.currentWorkStartedAt, session.isFinished)}</span>
+              {/if}
+            {:else}
+              {#if getLegacyElapsedTime(session.startedAt) !== null}
+                <span class="text-xs text-text-muted font-mono tabular-nums">{getLegacyElapsedTime(session.startedAt)}</span>
+              {/if}
             {/if}
             <button
               class="text-text-muted hover:text-red-400 hover:bg-red-400/10 rounded p-0.5 transition-colors"
@@ -472,10 +573,6 @@
           {#if session.branch}
             <span class="text-xs text-text-muted">·</span>
             <span class="text-xs text-blue-400/70" title="Git branch: {session.branch}">{session.branch}</span>
-          {/if}
-          {#if session.model}
-            <span class="text-xs text-text-muted">·</span>
-            <span class="text-xs text-accent/70">{getShortModelName(session.model)}</span>
           {/if}
         </div>
       </div>
@@ -540,6 +637,16 @@
 
   .session-item.active {
     background-color: rgba(99, 102, 241, 0.05);
+    border-left: 2px solid var(--color-accent);
+  }
+
+  .session-item.unread {
+    background-color: rgba(59, 130, 246, 0.08);
+    border-left: 2px solid rgb(59, 130, 246);
+  }
+
+  .session-item.unread.active {
+    background-color: rgba(99, 102, 241, 0.1);
     border-left: 2px solid var(--color-accent);
   }
 </style>

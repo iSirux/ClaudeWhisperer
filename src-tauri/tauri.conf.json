@@ -1,78 +1,78 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Whisperer",
-  "version": "0.1.0",
-  "identifier": "com.isirux.claude-whisperer",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && npm run sidecar:build",
-    "frontendDist": "../build"
-  },
-  "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Claude Whisperer",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 800,
-        "minHeight": 600,
-        "decorations": true,
-        "transparent": false
-      },
-      {
-        "label": "overlay",
-        "title": "Recording",
-        "url": "/overlay",
-        "width": 400,
-        "height": 120,
-        "center": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true,
-        "resizable": false,
-        "focus": false
-      },
-      {
-        "label": "sessions-overlay",
-        "title": "Sessions",
-        "url": "/sessions-overlay",
-        "width": 200,
-        "height": 32,
-        "center": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true,
-        "resizable": false
-      }
-    ],
-    "security": {
-      "csp": null
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "Claude Whisperer",
+    "version": "0.2.0",
+    "identifier": "com.isirux.claude-whisperer",
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "devUrl": "http://localhost:1420",
+        "beforeBuildCommand": "npm run build && npm run sidecar:build",
+        "frontendDist": "../build"
+    },
+    "app": {
+        "windows": [
+            {
+                "label": "main",
+                "title": "Claude Whisperer",
+                "width": 1200,
+                "height": 800,
+                "minWidth": 800,
+                "minHeight": 600,
+                "decorations": true,
+                "transparent": false
+            },
+            {
+                "label": "overlay",
+                "title": "Recording",
+                "url": "/overlay",
+                "width": 400,
+                "height": 120,
+                "center": false,
+                "decorations": false,
+                "transparent": true,
+                "alwaysOnTop": true,
+                "visible": false,
+                "skipTaskbar": true,
+                "resizable": false,
+                "focus": false
+            },
+            {
+                "label": "sessions-overlay",
+                "title": "Sessions",
+                "url": "/sessions-overlay",
+                "width": 200,
+                "height": 32,
+                "center": false,
+                "decorations": false,
+                "transparent": true,
+                "alwaysOnTop": true,
+                "visible": false,
+                "skipTaskbar": true,
+                "resizable": false
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "icon": [
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.icns",
+            "icons/icon.ico"
+        ],
+        "resources": [
+            "sidecar/dist/",
+            "sidecar/node_modules/@anthropic-ai/"
+        ]
+    },
+    "plugins": {
+        "shell": {
+            "open": true
+        }
     }
-  },
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
-    "resources": [
-      "sidecar/dist/",
-      "sidecar/node_modules/@anthropic-ai/"
-    ]
-  },
-  "plugins": {
-    "shell": {
-      "open": true
-    }
-  }
 }

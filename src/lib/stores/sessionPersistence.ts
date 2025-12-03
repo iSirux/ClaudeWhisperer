@@ -22,6 +22,8 @@ export interface PersistedSdkSession {
   status: string;
   createdAt: number;
   startedAt?: number;
+  // Timer-based duration tracking
+  accumulatedDurationMs?: number;
 }
 
 export interface PersistedTerminalSession {
@@ -45,6 +47,13 @@ export interface PersistedSessions {
  * Convert frontend SDK session to persisted format
  */
 function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
+  // When saving, calculate the final accumulated duration
+  // If session is currently working, include that time too
+  let accumulatedDurationMs = session.accumulatedDurationMs || 0;
+  if (session.currentWorkStartedAt) {
+    accumulatedDurationMs += Date.now() - session.currentWorkStartedAt;
+  }
+
   return {
     id: session.id,
     cwd: session.cwd,
@@ -60,6 +69,7 @@ function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
     status: session.status,
     createdAt: session.createdAt,
     startedAt: session.startedAt,
+    accumulatedDurationMs,
   };
 }
 
@@ -83,6 +93,9 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
     status: persisted.status === 'querying' ? 'idle' : (persisted.status as SdkSession['status']),
     createdAt: persisted.createdAt,
     startedAt: persisted.startedAt,
+    // Restore accumulated duration, reset current work timer (not working when restored)
+    accumulatedDurationMs: persisted.accumulatedDurationMs || 0,
+    currentWorkStartedAt: undefined, // Session is idle when restored
   };
 }
 
@@ -158,6 +171,8 @@ export async function loadSessionsFromDisk(): Promise<void> {
     return;
   }
 
+  const restoreLimit = currentSettings.session_persistence.restore_sessions;
+
   try {
     const persistedData = await invoke<PersistedSessions>('get_persisted_sessions');
 
@@ -166,14 +181,19 @@ export async function loadSessionsFromDisk(): Promise<void> {
       return;
     }
 
-    console.log('[sessionPersistence] Restoring', persistedData.sdk_sessions.length, 'SDK sessions and', persistedData.terminal_sessions.length, 'terminal sessions');
+    // Limit the number of sessions to restore based on setting
+    // Sessions are already sorted by created_at descending from the backend
+    const limitedSdkSessions = persistedData.sdk_sessions.slice(0, restoreLimit);
+    const limitedTerminalSessions = persistedData.terminal_sessions.slice(0, restoreLimit);
+
+    console.log('[sessionPersistence] Restoring', limitedSdkSessions.length, 'of', persistedData.sdk_sessions.length, 'SDK sessions and', limitedTerminalSessions.length, 'of', persistedData.terminal_sessions.length, 'terminal sessions (limit:', restoreLimit + ')');
 
     // Restore SDK sessions
-    if (persistedData.sdk_sessions.length > 0) {
-      const restoredSdkSessions = persistedData.sdk_sessions.map(persistedToSdkSession);
+    if (limitedSdkSessions.length > 0) {
+      const restoredSdkSessions = limitedSdkSessions.map(persistedToSdkSession);
       sdkSessions.set(restoredSdkSessions);
 
-      // Restore active SDK session selection if it exists
+      // Restore active SDK session selection if it exists and is within the restored sessions
       if (persistedData.active_sdk_session_id) {
         const exists = restoredSdkSessions.some(s => s.id === persistedData.active_sdk_session_id);
         if (exists) {
@@ -183,11 +203,11 @@ export async function loadSessionsFromDisk(): Promise<void> {
     }
 
     // Restore terminal sessions (as completed/read-only)
-    if (persistedData.terminal_sessions.length > 0) {
-      const restoredTerminalSessions = persistedData.terminal_sessions.map(persistedToTerminalSession);
+    if (limitedTerminalSessions.length > 0) {
+      const restoredTerminalSessions = limitedTerminalSessions.map(persistedToTerminalSession);
       sessions.set(restoredTerminalSessions);
 
-      // Restore active terminal session selection if it exists
+      // Restore active terminal session selection if it exists and is within the restored sessions
       if (persistedData.active_terminal_session_id) {
         const exists = restoredTerminalSessions.some(s => s.id === persistedData.active_terminal_session_id);
         if (exists) {

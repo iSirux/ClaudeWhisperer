@@ -7,12 +7,6 @@ export interface WhisperConfig {
   language: string;
 }
 
-export interface HaikuConfig {
-  enabled: boolean;
-  api_key: string;
-  model: string;
-}
-
 export interface GitConfig {
   create_branch: boolean;
   auto_merge: boolean;
@@ -22,7 +16,6 @@ export interface GitConfig {
 
 export interface HotkeyConfig {
   toggle_recording: string;
-  toggle_open_mic: string;
   send_prompt: string;
   switch_repo: string;
   transcribe_to_input: string;
@@ -39,12 +32,10 @@ export interface OverlayConfig {
 
 export interface AudioConfig {
   device_id: string | null;
-  open_mic: boolean;
-  voice_command: string;
-  use_voice_command: boolean;
   use_hotkey: boolean;
   play_sound_on_completion: boolean;
   recording_linger_ms: number;
+  include_transcription_notice: boolean;
 }
 
 export interface SystemConfig {
@@ -56,6 +47,7 @@ export interface SystemConfig {
 export interface SessionPersistenceConfig {
   enabled: boolean;
   max_sessions: number;
+  restore_sessions: number;
 }
 
 export interface RepoConfig {
@@ -67,9 +59,10 @@ export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
 
 export type Theme = "Midnight" | "Slate" | "Snow" | "Sand";
 
+export type SessionSortOrder = "Chronological" | "StatusThenChronological";
+
 export interface AppConfig {
   whisper: WhisperConfig;
-  haiku: HaikuConfig;
   git: GitConfig;
   hotkeys: HotkeyConfig;
   overlay: OverlayConfig;
@@ -83,6 +76,8 @@ export interface AppConfig {
   system: SystemConfig;
   show_branch_in_sessions: boolean;
   session_persistence: SessionPersistenceConfig;
+  session_sort_order: SessionSortOrder;
+  mark_sessions_unread: boolean;
 }
 
 const defaultConfig: AppConfig = {
@@ -90,11 +85,6 @@ const defaultConfig: AppConfig = {
     endpoint: "http://localhost:8000/v1/audio/transcriptions",
     model: "Systran/faster-whisper-base",
     language: "en",
-  },
-  haiku: {
-    enabled: false,
-    api_key: "",
-    model: "claude-3-haiku-20240307",
   },
   git: {
     create_branch: false,
@@ -104,7 +94,6 @@ const defaultConfig: AppConfig = {
   },
   hotkeys: {
     toggle_recording: "CommandOrControl+Shift+Space",
-    toggle_open_mic: "CommandOrControl+Shift+M",
     send_prompt: "CommandOrControl+Enter",
     switch_repo: "CommandOrControl+Shift+R",
     transcribe_to_input: "CommandOrControl+Shift+T",
@@ -119,12 +108,10 @@ const defaultConfig: AppConfig = {
   },
   audio: {
     device_id: null,
-    open_mic: false,
-    voice_command: "go go",
-    use_voice_command: false,
     use_hotkey: true,
     play_sound_on_completion: false,
     recording_linger_ms: 500,
+    include_transcription_notice: true,
   },
   repos: [],
   active_repo_index: 0,
@@ -141,7 +128,10 @@ const defaultConfig: AppConfig = {
   session_persistence: {
     enabled: true,
     max_sessions: 50,
+    restore_sessions: 10,
   },
+  session_sort_order: "Chronological",
+  mark_sessions_unread: true,
 };
 
 function createSettingsStore() {

@@ -1,16 +1,27 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { sdkSessions, type SdkMessage, type SdkSession } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type SdkMessage, type SdkSession, type SdkImageContent } from '$lib/stores/sdkSessions';
   import { recording, isRecording, isProcessing } from '$lib/stores/recording';
   import { settings } from '$lib/stores/settings';
   import { renderMarkdown } from '$lib/utils/markdown';
   import { formatTokens, formatCost } from '$lib/stores/usageStats';
+  import {
+    getImagesFromClipboard,
+    getImagesFromDrop,
+    processImages,
+    createPreviewUrl,
+    formatFileSize,
+    type ImageData
+  } from '$lib/utils/image';
 
   let { sessionId }: { sessionId: string } = $props();
 
   // Copy button state
   let copiedMessageId = $state<number | null>(null);
-  let copiedAll = $state(false);
+
+  // Image attachment state
+  let pendingImages = $state<ImageData[]>([]);
+  let isProcessingImages = $state(false);
 
   let prompt = $state('');
   let messagesEl: HTMLDivElement;
@@ -18,16 +29,8 @@
   let unsubscribe: (() => void) | undefined;
 
   let messages = $derived(session?.messages ?? []);
-  let firstUserPrompt = $derived(session?.messages.filter(m => m.type === 'user').at(0)?.content ?? '');
   let status = $derived(session?.status ?? 'idle');
   let isQuerying = $derived(status === 'querying');
-
-  const PROMPT_PREVIEW_LENGTH = 120;
-  let truncatedPrompt = $derived(
-    firstUserPrompt.length > PROMPT_PREVIEW_LENGTH
-      ? firstUserPrompt.slice(0, PROMPT_PREVIEW_LENGTH) + '...'
-      : firstUserPrompt
-  );
 
   onMount(() => {
     console.log('[SdkView] Setting up subscription for session:', sessionId);
@@ -72,10 +75,63 @@
   });
 
   async function sendPrompt() {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() && pendingImages.length === 0) return;
     const currentPrompt = prompt;
+    const currentImages = pendingImages.length > 0 ? [...pendingImages] : undefined;
+
+    // Convert ImageData to SdkImageContent format
+    const imageContent: SdkImageContent[] | undefined = currentImages?.map(img => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width,
+      height: img.height,
+    }));
+
     prompt = '';
-    await sdkSessions.sendPrompt(sessionId, currentPrompt);
+    pendingImages = [];
+    await sdkSessions.sendPrompt(sessionId, currentPrompt || 'What is in this image?', imageContent);
+  }
+
+  // Handle paste events for images
+  async function handlePaste(e: ClipboardEvent) {
+    const imageFiles = await getImagesFromClipboard(e);
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      await addImages(imageFiles);
+    }
+  }
+
+  // Handle drag and drop
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = 'copy';
+  }
+
+  async function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    const imageFiles = getImagesFromDrop(e);
+    if (imageFiles.length > 0) {
+      await addImages(imageFiles);
+    }
+  }
+
+  // Process and add images
+  async function addImages(files: File[]) {
+    if (isProcessingImages) return;
+    isProcessingImages = true;
+    try {
+      const processed = await processImages(files);
+      pendingImages = [...pendingImages, ...processed];
+    } catch (err) {
+      console.error('[SdkView] Error processing images:', err);
+    } finally {
+      isProcessingImages = false;
+    }
+  }
+
+  // Remove a pending image
+  function removeImage(index: number) {
+    pendingImages = pendingImages.filter((_, i) => i !== index);
   }
 
   async function stopQuery() {
@@ -88,6 +144,11 @@
       e.preventDefault();
       sendPrompt();
     }
+  }
+
+  // Helper to create preview URL for SdkImageContent
+  function createImagePreviewUrl(img: SdkImageContent): string {
+    return `data:${img.mediaType};base64,${img.base64Data}`;
   }
 
   function formatInput(input: Record<string, unknown> | undefined): string {
@@ -175,15 +236,18 @@
   let smartStatus = $derived(getSmartStatus());
   let statusMessage = $derived(getStatusMessage(smartStatus));
 
-  function formatSessionTime(timestamp: number | undefined): string {
-    if (!timestamp) return '';
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-
-  let sessionStartTime = $derived(formatSessionTime(session?.createdAt));
   let usage = $derived(session?.usage);
-  let hasUsageData = $derived(!!usage && (usage.totalInputTokens > 0 || usage.totalOutputTokens > 0));
+  // Show usage bar if we have any usage data (including progressive usage during queries)
+  let hasUsageData = $derived(!!usage && (
+    usage.totalInputTokens > 0 ||
+    usage.totalOutputTokens > 0 ||
+    usage.progressiveInputTokens > 0 ||
+    usage.progressiveOutputTokens > 0
+  ));
+  // Calculate live token counts (total + progressive)
+  let liveInputTokens = $derived(usage ? usage.totalInputTokens + usage.progressiveInputTokens : 0);
+  let liveOutputTokens = $derived(usage ? usage.totalOutputTokens + usage.progressiveOutputTokens : 0);
+  let liveCacheReadTokens = $derived(usage ? usage.totalCacheReadTokens + usage.progressiveCacheReadTokens : 0);
 
   let textareaEl: HTMLTextAreaElement;
 
@@ -221,31 +285,12 @@
     }
   }
 
-  function formatChatForCopy(): string {
-    return messages
-      .filter(msg => msg.type !== 'done')
-      .map(msg => {
-        const prefix = msg.type === 'user' ? 'User: ' : msg.type === 'text' ? 'Claude: ' : '';
-        return prefix + getMessageText(msg);
-      })
-      .join('\n\n');
-  }
-
   async function copyMessage(msg: SdkMessage) {
     const text = msg.type === 'user' ? msg.content ?? '' : getMessageText(msg);
     await navigator.clipboard.writeText(text);
     copiedMessageId = msg.timestamp;
     setTimeout(() => {
       copiedMessageId = null;
-    }, 2000);
-  }
-
-  async function copyAllMessages() {
-    const text = formatChatForCopy();
-    await navigator.clipboard.writeText(text);
-    copiedAll = true;
-    setTimeout(() => {
-      copiedAll = false;
     }, 2000);
   }
 
@@ -270,57 +315,28 @@
 </script>
 
 <div class="sdk-view">
+  {#if hasUsageData && usage}
   <div class="session-header">
-    <div class="header-top">
-      {#if sessionStartTime}
-        <span class="session-time">{sessionStartTime}</span>
-      {/if}
-      {#if truncatedPrompt}
-        <span class="prompt-label">Prompt:</span>
-        <span class="prompt-text">{truncatedPrompt}</span>
-      {/if}
-      <button
-        class="copy-all-button"
-        class:copied={copiedAll}
-        onclick={copyAllMessages}
-        title="Copy entire chat"
-        disabled={messages.length === 0}
-      >
-        {#if copiedAll}
-          <svg class="copy-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-          </svg>
-          Copied!
-        {:else}
-          <svg class="copy-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" />
-            <path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" />
-          </svg>
-          Copy All
-        {/if}
-      </button>
-    </div>
-    {#if hasUsageData && usage}
-      <div class="usage-bar">
+      <div class="usage-bar" class:querying={isQuerying}>
         <div class="usage-stats">
-          <span class="usage-stat" title="Input tokens">
+          <span class="usage-stat" class:live={usage.progressiveInputTokens > 0} title="Input tokens{usage.progressiveInputTokens > 0 ? ' (live)' : ''}">
             <svg class="usage-icon" viewBox="0 0 16 16" fill="currentColor">
               <path d="M4 8a.5.5 0 0 1 .5-.5h5.793L8.146 5.354a.5.5 0 1 1 .708-.708l3 3a.5.5 0 0 1 0 .708l-3 3a.5.5 0 0 1-.708-.708L10.293 8.5H4.5A.5.5 0 0 1 4 8z"/>
             </svg>
-            {formatTokens(usage.totalInputTokens)}
+            {formatTokens(liveInputTokens)}
           </span>
-          <span class="usage-stat" title="Output tokens">
+          <span class="usage-stat" class:live={usage.progressiveOutputTokens > 0} title="Output tokens{usage.progressiveOutputTokens > 0 ? ' (live)' : ''}">
             <svg class="usage-icon" viewBox="0 0 16 16" fill="currentColor">
               <path d="M12 8a.5.5 0 0 1-.5.5H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5a.5.5 0 0 1 .5.5z"/>
             </svg>
-            {formatTokens(usage.totalOutputTokens)}
+            {formatTokens(liveOutputTokens)}
           </span>
-          {#if usage.totalCacheReadTokens > 0}
-            <span class="usage-stat cache" title="Cache read tokens (reduced cost)">
+          {#if liveCacheReadTokens > 0}
+            <span class="usage-stat cache" class:live={usage.progressiveCacheReadTokens > 0} title="Cache read tokens (reduced cost){usage.progressiveCacheReadTokens > 0 ? ' (live)' : ''}">
               <svg class="usage-icon" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>
               </svg>
-              {formatTokens(usage.totalCacheReadTokens)}
+              {formatTokens(liveCacheReadTokens)}
             </span>
           {/if}
           <span class="usage-stat cost" title="Total cost">
@@ -333,20 +349,30 @@
               class="context-bar-fill"
               class:warning={usage.contextUsagePercent > 70}
               class:danger={usage.contextUsagePercent > 90}
+              class:live={isQuerying && (usage.progressiveInputTokens > 0 || usage.progressiveOutputTokens > 0)}
               style="width: {Math.min(100, usage.contextUsagePercent)}%"
             ></div>
           </div>
           <span class="context-percent">{usage.contextUsagePercent.toFixed(0)}%</span>
         </div>
       </div>
-    {/if}
   </div>
+  {/if}
   <div class="messages" bind:this={messagesEl} onscroll={checkIfNearBottom}>
     {#each messages as msg (msg.timestamp)}
       <div class="message message-{msg.type}">
         {#if msg.type === 'user'}
           <div class="user-message">
-            <pre class="user-content">{msg.content}</pre>
+            {#if msg.images && msg.images.length > 0}
+              <div class="message-images">
+                {#each msg.images as img}
+                  <img src={createImagePreviewUrl(img)} alt="Attached" class="message-image" />
+                {/each}
+              </div>
+            {/if}
+            {#if msg.content}
+              <pre class="user-content">{msg.content}</pre>
+            {/if}
             <button
               class="copy-message-button"
               class:copied={copiedMessageId === msg.timestamp}
@@ -419,6 +445,15 @@
             <span class="error-icon">❌</span>
             <span class="error-text">{msg.content}</span>
           </div>
+        {:else if msg.type === 'subagent_start'}
+          <div class="subagent-call">
+            <div class="subagent-header">
+              <span class="subagent-icon">🤖</span>
+              <span class="subagent-label">Subagent Started</span>
+              <span class="subagent-type">{msg.agentType}</span>
+            </div>
+            <div class="subagent-id">ID: {msg.agentId?.slice(0, 8)}...</div>
+          </div>
         {/if}
       </div>
     {/each}
@@ -435,13 +470,36 @@
     {/if}
   </div>
 
-  <div class="input-area">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="input-area" ondragover={handleDragOver} ondrop={handleDrop}>
+    <!-- Pending images preview -->
+    {#if pendingImages.length > 0 || isProcessingImages}
+      <div class="pending-images">
+        {#each pendingImages as img, i}
+          <div class="pending-image">
+            <img src={createPreviewUrl(img)} alt="Pending" />
+            <button class="remove-image" onclick={() => removeImage(i)} title="Remove image">
+              <svg viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+            </button>
+            <span class="image-size">{formatFileSize(img.compressedSize)}</span>
+          </div>
+        {/each}
+        {#if isProcessingImages}
+          <div class="pending-image processing">
+            <div class="processing-spinner"></div>
+          </div>
+        {/if}
+      </div>
+    {/if}
     <textarea
       bind:this={textareaEl}
       bind:value={prompt}
       oninput={autoResize}
       onkeydown={handleKeydown}
-      placeholder="Enter your prompt... (Enter to send, Shift+Enter for newline)"
+      onpaste={handlePaste}
+      placeholder={pendingImages.length > 0 ? "Add a message about the image(s)... (Enter to send)" : "Enter your prompt... (Ctrl+V to paste images, Enter to send)"}
       rows="1"
     ></textarea>
     <div class="button-group">
@@ -475,7 +533,7 @@
           </svg>
         </button>
       {/if}
-      <button onclick={sendPrompt} disabled={!prompt.trim()} title={isQuerying ? "Send and interrupt" : "Send"}>
+      <button onclick={sendPrompt} disabled={!prompt.trim() && pendingImages.length === 0} title={isQuerying ? "Send and interrupt" : "Send"}>
         Send
       </button>
     </div>
@@ -524,25 +582,13 @@
     padding: 0.5rem 1rem;
     background: #1e293b;
     border-bottom: 1px solid #334155;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
     font-size: 0.85rem;
-  }
-
-  .header-top {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
   }
 
   .usage-bar {
     display: flex;
     align-items: center;
     gap: 1rem;
-    padding-top: 0.25rem;
-    border-top: 1px solid #334155;
-    margin-top: 0.25rem;
   }
 
   .usage-stats {
@@ -607,74 +653,48 @@
     background: #ef4444;
   }
 
+  /* Live/streaming indicator styles */
+  .usage-bar.querying {
+    border-color: #3b82f6;
+  }
+
+  .usage-stat.live {
+    color: #60a5fa;
+    animation: pulse-value 1.5s ease-in-out infinite;
+  }
+
+  .usage-stat.cache.live {
+    color: #4ade80;
+  }
+
+  .context-bar-fill.live {
+    animation: pulse-bar 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse-value {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.7;
+    }
+  }
+
+  @keyframes pulse-bar {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.8;
+    }
+  }
+
   .context-percent {
     font-size: 0.7rem;
     color: #64748b;
     font-weight: 500;
     min-width: 32px;
     text-align: right;
-  }
-
-  .session-time {
-    color: #94a3b8;
-    font-weight: 500;
-    flex-shrink: 0;
-    padding-right: 0.5rem;
-    border-right: 1px solid #475569;
-    margin-right: 0.25rem;
-  }
-
-  .prompt-label {
-    color: #64748b;
-    font-weight: 500;
-    flex-shrink: 0;
-  }
-
-  .prompt-text {
-    color: #e2e8f0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    user-select: text;
-    flex: 1;
-  }
-
-  .copy-all-button {
-    margin-left: auto;
-    background: #374151;
-    color: #9ca3af;
-    border: none;
-    border-radius: 4px;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    flex-shrink: 0;
-    min-width: unset;
-  }
-
-  .copy-all-button:hover:not(:disabled) {
-    background: #4b5563;
-    color: #e5e7eb;
-  }
-
-  .copy-all-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .copy-all-button.copied {
-    background: #065f46;
-    color: #10b981;
-  }
-
-  .copy-all-button .copy-icon {
-    width: 14px;
-    height: 14px;
   }
 
   .user-message {
@@ -699,7 +719,7 @@
 
   .copy-message-button {
     position: absolute;
-    top: 0.5rem;
+    bottom: 0.5rem;
     right: 0.5rem;
     background: #374151;
     color: #9ca3af;
@@ -1010,6 +1030,47 @@
     font-size: 0.9rem;
   }
 
+  /* Subagent styles */
+  .subagent-call {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    padding: 0.75rem;
+    border-radius: 6px;
+    border-left: 3px solid #8b5cf6;
+  }
+
+  .subagent-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .subagent-icon {
+    font-size: 1rem;
+  }
+
+  .subagent-label {
+    color: #a78bfa;
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .subagent-type {
+    background: #8b5cf6;
+    color: #fff;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: auto;
+  }
+
+  .subagent-id {
+    font-size: 0.75rem;
+    color: #64748b;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
   .message-loading {
     display: flex;
     align-items: center;
@@ -1216,5 +1277,138 @@
       opacity: 0.7;
       transform: scale(1.05);
     }
+  }
+
+  /* Pending images preview */
+  .pending-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+  }
+
+  .pending-image {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #2a2a2a;
+  }
+
+  .pending-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .pending-image .remove-image {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 20px;
+    height: 20px;
+    min-width: unset;
+    padding: 2px;
+    background: rgba(0, 0, 0, 0.7);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .pending-image:hover .remove-image {
+    opacity: 1;
+  }
+
+  .pending-image .remove-image svg {
+    width: 12px;
+    height: 12px;
+    color: #fff;
+  }
+
+  .pending-image .remove-image:hover {
+    background: rgba(239, 68, 68, 0.9);
+  }
+
+  .pending-image .image-size {
+    position: absolute;
+    bottom: 2px;
+    left: 2px;
+    font-size: 0.65rem;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
+  .pending-image.processing {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .processing-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid #444;
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* Adjust textarea when images are present */
+  .input-area:has(.pending-images) textarea {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    border-top: none;
+  }
+
+  /* Message images */
+  .message-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .message-image {
+    max-width: 300px;
+    max-height: 200px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: transform 0.2s;
+  }
+
+  .message-image:hover {
+    transform: scale(1.02);
+  }
+
+  /* Drag and drop indicator */
+  .input-area {
+    position: relative;
+  }
+
+  .input-area.drag-over::before {
+    content: 'Drop images here';
+    position: absolute;
+    inset: 0;
+    background: rgba(99, 102, 241, 0.1);
+    border: 2px dashed #6366f1;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #6366f1;
+    font-weight: 500;
+    z-index: 10;
   }
 </style>
