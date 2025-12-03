@@ -59,8 +59,8 @@
     top: 0;
     z-index: 10;
     padding: 0.5rem 1rem;
-    background: #1e293b;
-    border-bottom: 1px solid #334155;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
     font-size: 0.85rem;
   }
 
@@ -81,17 +81,17 @@
     display: flex;
     align-items: center;
     gap: 0.25rem;
-    color: #94a3b8;
+    color: var(--color-text-secondary);
     font-size: 0.75rem;
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 
   .usage-stat.cache {
-    color: #22c55e;
+    color: var(--color-success);
   }
 
   .usage-stat.cost {
-    color: #f59e0b;
+    color: var(--color-warning);
     font-weight: 600;
   }
 
@@ -112,37 +112,37 @@
   .context-bar-bg {
     flex: 1;
     height: 6px;
-    background: #334155;
+    background: var(--color-surface-elevated);
     border-radius: 3px;
     overflow: hidden;
   }
 
   .context-bar-fill {
     height: 100%;
-    background: #3b82f6;
+    background: var(--color-accent);
     border-radius: 3px;
     transition: width 0.3s ease, background 0.3s ease;
   }
 
   .context-bar-fill.warning {
-    background: #f59e0b;
+    background: var(--color-warning);
   }
 
   .context-bar-fill.danger {
-    background: #ef4444;
+    background: var(--color-error);
   }
 
   .usage-bar.querying {
-    border-color: #3b82f6;
+    border-color: var(--color-accent);
   }
 
   .usage-stat.live {
-    color: #60a5fa;
+    color: var(--color-accent-hover);
     animation: pulse-value 1.5s ease-in-out infinite;
   }
 
   .usage-stat.cache.live {
-    color: #4ade80;
+    color: color-mix(in srgb, var(--color-success) 80%, white);
   }
 
   .context-bar-fill.live {
@@ -169,7 +169,7 @@
 
   .context-percent {
     font-size: 0.7rem;
-    color: #64748b;
+    color: var(--color-text-muted);
     font-weight: 500;
     min-width: 32px;
     text-align: right;

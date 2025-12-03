@@ -17,7 +17,7 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.5rem;
-    color: #888;
+    color: var(--color-text-muted);
   }
 
   .loading-indicator {
@@ -28,7 +28,7 @@
   .loading-dot {
     width: 6px;
     height: 6px;
-    background: #6366f1;
+    background: var(--color-accent);
     border-radius: 50%;
     animation: bounce 1.4s ease-in-out infinite;
   }

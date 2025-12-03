@@ -869,6 +869,27 @@ function createSdkSessionsStore() {
       // Ensure session is live (handles restored sessions that need reinitialization)
       await this.ensureSessionLive(id);
 
+      // Check if there's already a query in progress - if so, stop it first
+      // This prevents race conditions where the old query's 'done' event overwrites our new 'querying' status
+      let isCurrentlyQuerying = false;
+      subscribe(sessions => {
+        const session = sessions.find(s => s.id === id);
+        if (session && session.status === 'querying') {
+          isCurrentlyQuerying = true;
+        }
+      })();
+
+      if (isCurrentlyQuerying) {
+        console.log('[sdkSessions] Previous query still in progress, stopping it first');
+        try {
+          await invoke('stop_sdk_query', { id });
+          console.log('[sdkSessions] Previous query stopped');
+        } catch (error) {
+          console.warn('[sdkSessions] Failed to stop previous query:', error);
+          // Continue anyway - the new query will proceed
+        }
+      }
+
       // Get session cwd for tracking
       let sessionCwd: string | undefined;
       subscribe(sessions => {

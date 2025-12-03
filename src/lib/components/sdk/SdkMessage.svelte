@@ -153,9 +153,9 @@
 
   .user-message {
     padding: 0.75rem 1rem;
-    background: #1e293b;
+    background: var(--color-surface);
     border-radius: 8px;
-    border-left: 3px solid #3b82f6;
+    border-left: 3px solid var(--color-accent);
     position: relative;
   }
 
@@ -175,8 +175,8 @@
     position: absolute;
     bottom: 0.5rem;
     right: 0.5rem;
-    background: #374151;
-    color: #9ca3af;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
     border: none;
     border-radius: 4px;
     padding: 0.35rem;
@@ -190,13 +190,13 @@
   }
 
   .copy-message-button:hover {
-    background: #4b5563;
-    color: #e5e7eb;
+    background: var(--color-border);
+    color: var(--color-text-primary);
   }
 
   .copy-message-button.copied {
-    background: #065f46;
-    color: #10b981;
+    background: color-mix(in srgb, var(--color-success) 20%, transparent);
+    color: var(--color-success);
     opacity: 1;
   }
 
@@ -211,7 +211,7 @@
     word-break: break-word;
     font-size: 0.9rem;
     line-height: 1.5;
-    color: #e2e8f0;
+    color: var(--color-text-primary);
   }
 
   .text-content {
@@ -222,7 +222,7 @@
 
   /* Markdown body styles */
   .markdown-body {
-    color: #e0e0e0;
+    color: var(--color-text-primary);
   }
 
   .markdown-body :global(h1),
@@ -235,7 +235,7 @@
     margin-bottom: 0.5em;
     font-weight: 600;
     line-height: 1.25;
-    color: #f0f0f0;
+    color: var(--color-text-primary);
   }
 
   .markdown-body :global(h1:first-child),
@@ -247,12 +247,12 @@
     margin-top: 0;
   }
 
-  .markdown-body :global(h1) { font-size: 1.5em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
-  .markdown-body :global(h2) { font-size: 1.3em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
+  .markdown-body :global(h1) { font-size: 1.5em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.3em; }
+  .markdown-body :global(h2) { font-size: 1.3em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.3em; }
   .markdown-body :global(h3) { font-size: 1.15em; }
   .markdown-body :global(h4) { font-size: 1em; }
   .markdown-body :global(h5) { font-size: 0.9em; }
-  .markdown-body :global(h6) { font-size: 0.85em; color: #888; }
+  .markdown-body :global(h6) { font-size: 0.85em; color: var(--color-text-muted); }
 
   .markdown-body :global(p) {
     margin-top: 0;
@@ -264,7 +264,7 @@
   }
 
   .markdown-body :global(a) {
-    color: #6366f1;
+    color: var(--color-accent);
     text-decoration: none;
   }
 
@@ -274,7 +274,7 @@
 
   .markdown-body :global(strong) {
     font-weight: 600;
-    color: #f0f0f0;
+    color: var(--color-text-primary);
   }
 
   .markdown-body :global(em) {
@@ -282,7 +282,7 @@
   }
 
   .markdown-body :global(code) {
-    background: #1a1a2e;
+    background: var(--color-surface);
     padding: 0.2em 0.4em;
     border-radius: 4px;
     font-size: 0.9em;
@@ -290,7 +290,7 @@
   }
 
   .markdown-body :global(pre) {
-    background: #1a1a2e;
+    background: var(--color-surface);
     padding: 1em;
     border-radius: 6px;
     overflow-x: auto;
@@ -324,9 +324,9 @@
   .markdown-body :global(blockquote) {
     margin: 0.75em 0;
     padding: 0.5em 1em;
-    border-left: 4px solid #6366f1;
-    background: #1a1a2e;
-    color: #aaa;
+    border-left: 4px solid var(--color-accent);
+    background: var(--color-surface);
+    color: var(--color-text-secondary);
   }
 
   .markdown-body :global(blockquote p) {
@@ -335,7 +335,7 @@
 
   .markdown-body :global(hr) {
     border: none;
-    border-top: 1px solid #333;
+    border-top: 1px solid var(--color-border);
     margin: 1em 0;
   }
 
@@ -347,24 +347,24 @@
 
   .markdown-body :global(th),
   .markdown-body :global(td) {
-    border: 1px solid #333;
+    border: 1px solid var(--color-border);
     padding: 0.5em 0.75em;
     text-align: left;
   }
 
   .markdown-body :global(th) {
-    background: #1a1a2e;
+    background: var(--color-surface);
     font-weight: 600;
   }
 
   .markdown-body :global(tr:nth-child(even)) {
-    background: rgba(26, 26, 46, 0.5);
+    background: color-mix(in srgb, var(--color-surface) 50%, transparent);
   }
 
-  /* Highlight.js theme overrides for dark mode */
+  /* Highlight.js theme overrides - these remain fixed for good syntax contrast */
   .markdown-body :global(.hljs) {
     background: transparent;
-    color: #e0e0e0;
+    color: var(--color-text-primary);
   }
 
   .markdown-body :global(.hljs-keyword),
@@ -405,7 +405,7 @@
 
   .tool-call,
   .tool-result {
-    background: #1a1a2e;
+    background: var(--color-surface);
     padding: 0.75rem;
     border-radius: 6px;
   }
@@ -422,22 +422,22 @@
   }
 
   .tool-name {
-    color: #6366f1;
+    color: var(--color-accent);
     font-weight: 600;
   }
 
   .tool-result .tool-name {
-    color: #22c55e;
+    color: var(--color-success);
   }
 
   .tool-status {
     font-size: 0.75rem;
-    color: #888;
+    color: var(--color-text-muted);
     margin-left: auto;
   }
 
   .tool-status.completed {
-    color: #22c55e;
+    color: var(--color-success);
   }
 
   .tool-input,
@@ -449,7 +449,7 @@
   .tool-output summary {
     cursor: pointer;
     font-size: 0.8rem;
-    color: #888;
+    color: var(--color-text-muted);
     user-select: none;
   }
 
@@ -457,7 +457,7 @@
   .tool-output pre {
     margin: 0.5rem 0 0 0;
     padding: 0.5rem;
-    background: #0f0f1a;
+    background: var(--color-background);
     border-radius: 4px;
     font-size: 0.8rem;
     overflow-x: auto;
@@ -470,9 +470,9 @@
     align-items: flex-start;
     gap: 0.5rem;
     padding: 0.75rem;
-    background: rgba(239, 68, 68, 0.1);
+    background: color-mix(in srgb, var(--color-error) 10%, transparent);
     border-radius: 6px;
-    border-left: 3px solid #ef4444;
+    border-left: 3px solid var(--color-error);
   }
 
   .error-icon {
@@ -480,16 +480,16 @@
   }
 
   .error-text {
-    color: #ef4444;
+    color: var(--color-error);
     font-size: 0.9rem;
   }
 
   /* Subagent styles */
   .subagent-call {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    background: linear-gradient(135deg, var(--color-surface) 0%, color-mix(in srgb, var(--color-surface) 80%, var(--color-model-opus)) 100%);
     padding: 0.75rem;
     border-radius: 6px;
-    border-left: 3px solid #8b5cf6;
+    border-left: 3px solid var(--color-model-opus);
   }
 
   .subagent-header {
@@ -504,14 +504,14 @@
   }
 
   .subagent-label {
-    color: #a78bfa;
+    color: var(--color-model-opus);
     font-weight: 600;
     font-size: 0.85rem;
   }
 
   .subagent-type {
-    background: #8b5cf6;
-    color: #fff;
+    background: var(--color-model-opus);
+    color: var(--color-background);
     padding: 0.15rem 0.5rem;
     border-radius: 4px;
     font-size: 0.75rem;
@@ -521,7 +521,7 @@
 
   .subagent-id {
     font-size: 0.75rem;
-    color: #64748b;
+    color: var(--color-text-muted);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 

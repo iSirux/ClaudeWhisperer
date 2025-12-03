@@ -271,6 +271,24 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     return;
   }
 
+  // If there's already a query in progress, interrupt it first
+  // This prevents race conditions where the old query's 'done' event arrives after the new query starts
+  if (session.queryIterator) {
+    send({ type: 'debug', id: msg.id, message: 'Previous query still in progress, interrupting it first...' });
+    try {
+      await session.queryIterator.interrupt();
+      send({ type: 'debug', id: msg.id, message: 'Previous query interrupted successfully' });
+    } catch (err) {
+      send({ type: 'debug', id: msg.id, message: `Error interrupting previous query: ${err}` });
+      // Fall back to abort controller if interrupt fails
+      if (session.abortController) {
+        session.abortController.abort();
+      }
+    }
+    session.queryIterator = undefined;
+    session.abortController = undefined;
+  }
+
   const hasImages = msg.images && msg.images.length > 0;
   const hasHistory = session.conversationHistory && session.conversationHistory.length > 0 && !session.sdkSessionId;
   send({ type: 'debug', id: msg.id, message: `Starting query with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0}, history: ${session.conversationHistory?.length ?? 0})` });

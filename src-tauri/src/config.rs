@@ -30,10 +30,10 @@ pub struct GitConfig {
 impl Default for GitConfig {
     fn default() -> Self {
         Self {
-            create_branch: true,
+            create_branch: false,
             auto_merge: false,
             create_pr: false,
-            use_worktrees: true,
+            use_worktrees: false,
         }
     }
 }
@@ -41,32 +41,39 @@ impl Default for GitConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyConfig {
     pub toggle_recording: String,
-    pub switch_repo: String,
     #[serde(default = "default_transcribe_to_input")]
     pub transcribe_to_input: String,
+    #[serde(default = "default_cycle_repo", alias = "switch_repo")]
+    pub cycle_repo: String,
+    #[serde(default = "default_cycle_model", alias = "toggle_model")]
+    pub cycle_model: String,
 }
 
 fn default_transcribe_to_input() -> String {
     "CommandOrControl+Shift+T".to_string()
 }
 
+fn default_cycle_repo() -> String {
+    "CommandOrControl+Shift+R".to_string()
+}
+
+fn default_cycle_model() -> String {
+    "CommandOrControl+Shift+M".to_string()
+}
+
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             toggle_recording: "CommandOrControl+Shift+Space".to_string(),
-            switch_repo: "CommandOrControl+Shift+R".to_string(),
             transcribe_to_input: "CommandOrControl+Shift+T".to_string(),
+            cycle_repo: "CommandOrControl+Shift+R".to_string(),
+            cycle_model: "CommandOrControl+Shift+M".to_string(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayConfig {
-    pub show_transcript: bool,
-    pub transcript_lines: usize,
-    pub show_settings: bool,
-    pub show_terminals: bool,
-    pub sessions_overlay_enabled: bool,
     #[serde(default = "default_show_when_focused")]
     pub show_when_focused: bool,
     #[serde(default = "default_show_hotkey_hints")]
@@ -88,11 +95,6 @@ fn default_show_hotkey_hints() -> bool {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            show_transcript: true,
-            transcript_lines: 3,
-            show_settings: true,
-            show_terminals: true,
-            sessions_overlay_enabled: true,
             show_when_focused: true,
             show_hotkey_hints: true,
             position_x: None,
@@ -111,7 +113,7 @@ pub struct SystemConfig {
 impl Default for SystemConfig {
     fn default() -> Self {
         Self {
-            minimize_to_tray: true,
+            minimize_to_tray: false,
             start_minimized: false,
             autostart: false,
         }
@@ -220,7 +222,13 @@ impl Default for UsageStats {
 
 impl UsageStats {
     pub fn stats_path() -> PathBuf {
-        AppConfig::config_dir().join("usage_stats.json")
+        // Use separate stats file for debug builds to avoid conflicts
+        #[cfg(debug_assertions)]
+        let filename = "usage_stats.dev.json";
+        #[cfg(not(debug_assertions))]
+        let filename = "usage_stats.json";
+
+        AppConfig::config_dir().join(filename)
     }
 
     pub fn load() -> Self {
@@ -489,6 +497,12 @@ pub enum Theme {
     Slate,
     Snow,
     Sand,
+    // New themes
+    Ocean,
+    Forest,
+    Rose,
+    Mocha,
+    Torch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -564,7 +578,7 @@ impl Default for AppConfig {
             audio: AudioConfig::default(),
             repos: vec![],
             active_repo_index: 0,
-            default_model: "claude-sonnet-4-20250514".to_string(),
+            default_model: "claude-opus-4-5-20251101".to_string(),
             terminal_mode: TerminalMode::default(),
             skip_permissions: false,
             theme: Theme::default(),
@@ -589,7 +603,13 @@ impl AppConfig {
     }
 
     pub fn config_path() -> PathBuf {
-        Self::config_dir().join("config.json")
+        // Use separate config file for debug builds to avoid conflicts
+        #[cfg(debug_assertions)]
+        let filename = "config.dev.json";
+        #[cfg(not(debug_assertions))]
+        let filename = "config.json";
+
+        Self::config_dir().join(filename)
     }
 
     pub fn load() -> Self {

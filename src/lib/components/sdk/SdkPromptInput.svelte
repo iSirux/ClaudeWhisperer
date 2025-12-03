@@ -214,16 +214,16 @@
     align-items: flex-end;
     gap: 0.75rem;
     padding: 1rem;
-    border-top: 1px solid #2a2a2a;
-    background: #0a0a0a;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-background);
     position: relative;
   }
 
   textarea {
     flex: 1;
-    background: #1a1a1a;
-    color: #e0e0e0;
-    border: 1px solid #333;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     padding: 0.75rem;
     resize: none;
@@ -243,7 +243,7 @@
 
   textarea:focus {
     outline: none;
-    border-color: #6366f1;
+    border-color: var(--color-accent);
   }
 
   textarea:disabled {
@@ -252,7 +252,7 @@
   }
 
   textarea::placeholder {
-    color: #666;
+    color: var(--color-text-muted);
   }
 
   .button-group {
@@ -262,8 +262,8 @@
   }
 
   button {
-    background: #6366f1;
-    color: #fff;
+    background: var(--color-accent);
+    color: var(--color-background);
     border: none;
     border-radius: 6px;
     padding: 0.75rem 1.5rem;
@@ -279,7 +279,7 @@
   }
 
   button:hover:not(:disabled) {
-    background: #5558e3;
+    background: var(--color-accent-hover);
   }
 
   button:disabled {
@@ -288,13 +288,13 @@
   }
 
   .stop-button {
-    background: #ef4444;
+    background: var(--color-error);
     padding: 0.75rem;
     min-width: unset;
   }
 
   .stop-button:hover {
-    background: #dc2626;
+    background: color-mix(in srgb, var(--color-error) 80%, black);
   }
 
   .stop-icon {
@@ -303,8 +303,8 @@
   }
 
   .record-button {
-    background: #374151;
-    color: #9ca3af;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
     border: none;
     border-radius: 6px;
     padding: 0.75rem;
@@ -318,17 +318,17 @@
   }
 
   .record-button:hover {
-    background: #4b5563;
-    color: #e5e7eb;
+    background: var(--color-border);
+    color: var(--color-text-primary);
   }
 
   .record-button.recording {
-    background: #ef4444;
-    color: #fff;
+    background: var(--color-recording);
+    color: var(--color-background);
   }
 
   .record-button.recording:hover {
-    background: #dc2626;
+    background: color-mix(in srgb, var(--color-recording) 80%, black);
   }
 
   .mic-icon {
@@ -341,7 +341,7 @@
   .recording-pulse {
     position: absolute;
     inset: 0;
-    background: #ef4444;
+    background: var(--color-recording);
     border-radius: 6px;
     animation: pulse-recording 1.5s ease-in-out infinite;
   }
@@ -364,8 +364,8 @@
     flex-wrap: wrap;
     gap: 0.5rem;
     padding: 0.5rem;
-    background: #1a1a1a;
-    border: 1px solid #333;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-bottom: none;
     border-radius: 6px 6px 0 0;
   }
@@ -376,7 +376,7 @@
     height: 80px;
     border-radius: 4px;
     overflow: hidden;
-    background: #2a2a2a;
+    background: var(--color-surface-elevated);
   }
 
   .pending-image img {
@@ -415,7 +415,7 @@
   }
 
   .pending-image .remove-image:hover {
-    background: rgba(239, 68, 68, 0.9);
+    background: color-mix(in srgb, var(--color-error) 90%, transparent);
   }
 
   .pending-image .image-size {
@@ -438,8 +438,8 @@
   .processing-spinner {
     width: 24px;
     height: 24px;
-    border: 2px solid #444;
-    border-top-color: #6366f1;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -462,13 +462,13 @@
     content: "Drop images here";
     position: absolute;
     inset: 0;
-    background: rgba(99, 102, 241, 0.1);
-    border: 2px dashed #6366f1;
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    border: 2px dashed var(--color-accent);
     border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #6366f1;
+    color: var(--color-accent);
     font-weight: 500;
     z-index: 10;
   }

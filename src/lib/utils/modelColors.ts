@@ -1,4 +1,5 @@
 // Model color utilities for consistent color coding across the app
+// Each model has a distinct color that follows the current theme
 
 export type ModelType = 'opus' | 'sonnet' | 'haiku' | 'unknown';
 
@@ -20,57 +21,57 @@ export function getShortModelName(model: string): string {
   return parts[parts.length - 1] || model;
 }
 
-// Background colors for selected/active state
+// Background colors for selected/active state - uses theme model colors
 export function getModelBgColor(modelId: string): string {
   const type = getModelType(modelId);
   switch (type) {
-    case 'opus': return 'bg-purple-600';
-    case 'sonnet': return 'bg-amber-600';
-    case 'haiku': return 'bg-emerald-600';
+    case 'opus': return 'bg-model-opus';
+    case 'sonnet': return 'bg-model-sonnet';
+    case 'haiku': return 'bg-model-haiku';
     default: return 'bg-accent';
   }
 }
 
-// Lighter background colors for badges/pills
+// Lighter background colors for badges/pills - uses theme model colors
 export function getModelBadgeBgColor(modelId: string): string {
   const type = getModelType(modelId);
   switch (type) {
-    case 'opus': return 'bg-purple-500/20';
-    case 'sonnet': return 'bg-amber-500/20';
-    case 'haiku': return 'bg-emerald-500/20';
+    case 'opus': return 'bg-model-opus/20';
+    case 'sonnet': return 'bg-model-sonnet/20';
+    case 'haiku': return 'bg-model-haiku/20';
     default: return 'bg-accent/20';
   }
 }
 
-// Text colors for badges/labels
+// Text colors for badges/labels - uses theme model colors
 export function getModelTextColor(modelId: string): string {
   const type = getModelType(modelId);
   switch (type) {
-    case 'opus': return 'text-purple-400';
-    case 'sonnet': return 'text-amber-400';
-    case 'haiku': return 'text-emerald-400';
+    case 'opus': return 'text-model-opus';
+    case 'sonnet': return 'text-model-sonnet';
+    case 'haiku': return 'text-model-haiku';
     default: return 'text-accent';
   }
 }
 
-// Ring/border colors for focus states
+// Ring/border colors for focus states - uses theme model colors
 export function getModelRingColor(modelId: string): string {
   const type = getModelType(modelId);
   switch (type) {
-    case 'opus': return 'ring-purple-600';
-    case 'sonnet': return 'ring-amber-600';
-    case 'haiku': return 'ring-emerald-600';
+    case 'opus': return 'ring-model-opus';
+    case 'sonnet': return 'ring-model-sonnet';
+    case 'haiku': return 'ring-model-haiku';
     default: return 'ring-accent';
   }
 }
 
-// Hover background colors for unselected buttons
+// Hover background colors for unselected buttons - uses theme model colors
 export function getModelHoverBgColor(modelId: string): string {
   const type = getModelType(modelId);
   switch (type) {
-    case 'opus': return 'hover:bg-purple-500/10';
-    case 'sonnet': return 'hover:bg-amber-500/10';
-    case 'haiku': return 'hover:bg-emerald-500/10';
-    default: return 'hover:bg-border';
+    case 'opus': return 'hover:bg-model-opus/10';
+    case 'sonnet': return 'hover:bg-model-sonnet/10';
+    case 'haiku': return 'hover:bg-model-haiku/10';
+    default: return 'hover:bg-accent/10';
   }
 }

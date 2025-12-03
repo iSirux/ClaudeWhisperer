@@ -3,7 +3,6 @@
     getModelBgColor,
     getModelRingColor,
     getModelHoverBgColor,
-    getModelType,
   } from "$lib/utils/modelColors";
 
   interface Props {
@@ -49,17 +48,7 @@
       return `${base} ${getModelBgColor(id)} text-white shadow-md ring-2 ${getModelRingColor(id)} ring-opacity-50 scale-105`;
     }
 
-    const type = getModelType(id);
-    const hoverClass =
-      type === "opus"
-        ? "hover:bg-purple-500/10"
-        : type === "sonnet"
-          ? "hover:bg-amber-500/10"
-          : type === "haiku"
-            ? "hover:bg-emerald-500/10"
-            : "hover:bg-border";
-
-    return `${base} text-text-secondary ${hoverClass}`;
+    return `${base} text-text-secondary ${getModelHoverBgColor(id)}`;
   }
 </script>
 

@@ -246,17 +246,17 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: #0f0f0f;
-    color: #e0e0e0;
+    background: var(--color-background);
+    color: var(--color-text-primary);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 
   .prompt-preview {
     padding: 0.5rem 1rem;
-    background: #1a1a1a;
-    border-bottom: 1px solid #2a2a2a;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
     font-size: 0.8rem;
-    color: #888;
+    color: var(--color-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

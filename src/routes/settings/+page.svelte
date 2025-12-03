@@ -81,6 +81,7 @@
 
   const tabs = [
     { id: 'general', label: 'General' },
+    { id: 'themes', label: 'Themes' },
     { id: 'system', label: 'System' },
     { id: 'audio', label: 'Audio' },
     { id: 'whisper', label: 'Whisper' },
@@ -180,37 +181,6 @@
       {#if activeTab === 'general'}
         <div class="space-y-4">
           <div>
-            <label class="block text-sm font-medium text-text-secondary mb-2">Theme</label>
-            <div class="grid grid-cols-2 gap-2">
-              {#each [
-                { id: 'Midnight' as Theme, label: 'Midnight', desc: 'Deep dark', colors: ['#0f0f0f', '#1a1a1a', '#6366f1'] },
-                { id: 'Slate' as Theme, label: 'Slate', desc: 'Blue-gray dark', colors: ['#1e293b', '#334155', '#3b82f6'] },
-                { id: 'Snow' as Theme, label: 'Snow', desc: 'Clean light', colors: ['#ffffff', '#f1f5f9', '#6366f1'] },
-                { id: 'Sand' as Theme, label: 'Sand', desc: 'Warm light', colors: ['#fefdfb', '#f5f0e8', '#d97706'] },
-              ] as theme}
-                <button
-                  class="flex items-center gap-3 p-3 rounded border-2 transition-all"
-                  class:border-accent={$settings.theme === theme.id}
-                  class:border-border={$settings.theme !== theme.id}
-                  onclick={() => {
-                    settings.update(s => ({ ...s, theme: theme.id }));
-                    document.documentElement.setAttribute('data-theme', theme.id);
-                  }}
-                >
-                  <div class="flex gap-0.5">
-                    {#each theme.colors as color}
-                      <div class="w-4 h-4 rounded-sm" style="background-color: {color}"></div>
-                    {/each}
-                  </div>
-                  <div class="text-left">
-                    <div class="text-sm font-medium text-text-primary">{theme.label}</div>
-                    <div class="text-xs text-text-muted">{theme.desc}</div>
-                  </div>
-                </button>
-              {/each}
-            </div>
-          </div>
-          <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Terminal Mode</label>
             <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.terminal_mode}>
               <option value="Interactive">Interactive</option>
@@ -304,6 +274,74 @@
                 </div>
                 <p class="text-xs text-text-muted mt-1">Maximum rows to show for agent responses in session list</p>
               </div>
+            </div>
+          </div>
+        </div>
+
+      {:else if activeTab === 'themes'}
+        <div class="space-y-4">
+          <div>
+            <p class="text-sm text-text-secondary mb-4">Choose a theme that suits your preference. Dark themes are easier on the eyes in low-light conditions.</p>
+
+            <h3 class="text-sm font-medium text-text-primary mb-3">Dark Themes</h3>
+            <div class="grid grid-cols-2 gap-2 mb-6">
+              {#each [
+                { id: 'Midnight' as Theme, label: 'Midnight', desc: 'Deep dark', colors: ['#0f0f0f', '#1a1a1a', '#6366f1'] },
+                { id: 'Slate' as Theme, label: 'Slate', desc: 'Blue-gray dark', colors: ['#1e293b', '#334155', '#3b82f6'] },
+                { id: 'Ocean' as Theme, label: 'Ocean', desc: 'Deep blue', colors: ['#0c1222', '#1a2744', '#0ea5e9'] },
+                { id: 'Forest' as Theme, label: 'Forest', desc: 'Earthy green', colors: ['#0d1512', '#1a2820', '#22c55e'] },
+                { id: 'Mocha' as Theme, label: 'Mocha', desc: 'Warm brown', colors: ['#1a1614', '#2a2420', '#c2956e'] },
+                { id: 'Torch' as Theme, label: 'Torch', desc: 'Fiery orange', colors: ['#1a1210', '#2a1e18', '#f97316'] },
+              ] as theme}
+                <button
+                  class="flex items-center gap-3 p-3 rounded border-2 transition-all"
+                  class:border-accent={$settings.theme === theme.id}
+                  class:border-border={$settings.theme !== theme.id}
+                  onclick={() => {
+                    settings.update(s => ({ ...s, theme: theme.id }));
+                    document.documentElement.setAttribute('data-theme', theme.id);
+                  }}
+                >
+                  <div class="flex gap-0.5">
+                    {#each theme.colors as color}
+                      <div class="w-4 h-4 rounded-sm" style="background-color: {color}"></div>
+                    {/each}
+                  </div>
+                  <div class="text-left">
+                    <div class="text-sm font-medium text-text-primary">{theme.label}</div>
+                    <div class="text-xs text-text-muted">{theme.desc}</div>
+                  </div>
+                </button>
+              {/each}
+            </div>
+
+            <h3 class="text-sm font-medium text-text-primary mb-3">Light Themes</h3>
+            <div class="grid grid-cols-2 gap-2">
+              {#each [
+                { id: 'Snow' as Theme, label: 'Snow', desc: 'Clean white', colors: ['#ffffff', '#f1f5f9', '#6366f1'] },
+                { id: 'Sand' as Theme, label: 'Sand', desc: 'Warm cream', colors: ['#fefdfb', '#f5f0e8', '#d97706'] },
+                { id: 'Rose' as Theme, label: 'Rose', desc: 'Soft pink', colors: ['#fffbfc', '#fce7eb', '#e11d48'] },
+              ] as theme}
+                <button
+                  class="flex items-center gap-3 p-3 rounded border-2 transition-all"
+                  class:border-accent={$settings.theme === theme.id}
+                  class:border-border={$settings.theme !== theme.id}
+                  onclick={() => {
+                    settings.update(s => ({ ...s, theme: theme.id }));
+                    document.documentElement.setAttribute('data-theme', theme.id);
+                  }}
+                >
+                  <div class="flex gap-0.5">
+                    {#each theme.colors as color}
+                      <div class="w-4 h-4 rounded-sm border border-border/20" style="background-color: {color}"></div>
+                    {/each}
+                  </div>
+                  <div class="text-left">
+                    <div class="text-sm font-medium text-text-primary">{theme.label}</div>
+                    <div class="text-xs text-text-muted">{theme.desc}</div>
+                  </div>
+                </button>
+              {/each}
             </div>
           </div>
         </div>
@@ -583,8 +621,14 @@
             <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.transcribe_to_input} />
           </div>
           <div class="border-t border-border pt-4">
-            <label class="block text-sm font-medium text-text-secondary mb-1">Switch Repository</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.switch_repo} />
+            <label class="block text-sm font-medium text-text-secondary mb-1">Cycle Repository</label>
+            <p class="text-xs text-text-muted mb-2">While recording, cycles through repositories</p>
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.cycle_repo} />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-text-secondary mb-1">Cycle Model</label>
+            <p class="text-xs text-text-muted mb-2">While recording, cycles through models (Opus → Sonnet → Haiku)</p>
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.cycle_model} />
           </div>
         </div>
 
@@ -598,28 +642,11 @@
             <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_when_focused} />
           </div>
           <div class="flex items-center justify-between">
-            <label class="text-sm font-medium text-text-secondary">Show Settings Info</label>
-            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_settings} />
-          </div>
-          <div class="flex items-center justify-between">
-            <label class="text-sm font-medium text-text-secondary">Show Active Terminals</label>
-            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_terminals} />
-          </div>
-          <div class="flex items-center justify-between">
             <div>
               <label class="text-sm font-medium text-text-secondary">Show Hotkey Hints</label>
               <p class="text-xs text-text-muted mt-0.5">Display keyboard shortcuts in the overlay while recording</p>
             </div>
             <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_hotkey_hints} />
-          </div>
-          <div class="border-t border-border pt-4 mt-4">
-            <div class="flex items-center justify-between">
-              <div>
-                <label class="text-sm font-medium text-text-secondary">Sessions Status Overlay</label>
-                <p class="text-xs text-text-muted mt-0.5">Show a small overlay with active sessions status</p>
-              </div>
-              <input type="checkbox" class="toggle" bind:checked={$settings.overlay.sessions_overlay_enabled} />
-            </div>
           </div>
         </div>
 

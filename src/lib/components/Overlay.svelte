@@ -2,7 +2,6 @@
   import { onMount, onDestroy } from 'svelte';
   import { recording, isRecording, isProcessing, type RecordingState } from '$lib/stores/recording';
   import { settings, activeRepo } from '$lib/stores/settings';
-  import { activeSessions, doneSessions, errorSessions } from '$lib/stores/sessionStats';
   import { overlay } from '$lib/stores/overlay';
   import StatusBadge from './StatusBadge.svelte';
   import Waveform from './Waveform.svelte';
@@ -16,10 +15,6 @@
   let unlistenSessionInfo: UnlistenFn | null = null;
   let unlistenMode: UnlistenFn | null = null;
 
-  $: showTranscript = $settings.overlay.show_transcript;
-  $: transcriptLines = $settings.overlay.transcript_lines;
-  $: showSettings = $settings.overlay.show_settings;
-  $: showTerminals = $settings.overlay.show_terminals;
   $: showHotkeyHints = $settings.overlay.show_hotkey_hints ?? true;
 
   // Parse hotkey string into display-friendly key labels
@@ -40,11 +35,6 @@
 
   $: sendHotkeyKeys = parseHotkey($settings.hotkeys.toggle_recording);
   $: transcribeHotkeyKeys = parseHotkey($settings.hotkeys.transcribe_to_input);
-
-  $: truncatedTranscript = $recording.transcript
-    .split('\n')
-    .slice(-transcriptLines)
-    .join('\n');
 
   // Use remote state if available, otherwise local state
   $: isRecordingActive = remoteRecordingState === 'recording' || $isRecording;
@@ -154,36 +144,13 @@
     </div>
 
     <div class="flex items-center gap-3">
-      {#if $activeRepo && showSettings && $overlay.mode !== 'paste'}
+      {#if $activeRepo && $overlay.mode !== 'paste'}
         <div class="flex items-center gap-2 text-xs">
           <span class="text-text-secondary truncate max-w-32">{$activeRepo.name}</span>
           <StatusBadge
             createBranch={$settings.git.create_branch}
             autoMerge={$settings.git.auto_merge}
           />
-        </div>
-      {/if}
-
-      {#if showTerminals && $overlay.mode !== 'paste'}
-        <div class="flex items-center gap-2 text-xs">
-          {#if $activeSessions > 0}
-            <div class="flex items-center gap-1 text-emerald-400">
-              <span class="w-2 h-2 bg-emerald-400 rounded-full"></span>
-              <span>{$activeSessions}</span>
-            </div>
-          {/if}
-          {#if $doneSessions > 0}
-            <div class="flex items-center gap-1 text-blue-400">
-              <span class="w-2 h-2 bg-blue-400 rounded-full"></span>
-              <span>{$doneSessions}</span>
-            </div>
-          {/if}
-          {#if $errorSessions > 0}
-            <div class="flex items-center gap-1 text-red-400">
-              <span class="w-2 h-2 bg-red-400 rounded-full"></span>
-              <span>{$errorSessions}</span>
-            </div>
-          {/if}
         </div>
       {/if}
 
@@ -214,12 +181,6 @@
           </div>
         {/if}
       </div>
-    </div>
-  {/if}
-
-  {#if showTranscript && $recording.transcript}
-    <div class="mt-2 p-2 bg-surface rounded text-sm text-text-secondary font-mono overflow-hidden">
-      <p class="line-clamp-3 whitespace-pre-wrap">{truncatedTranscript}</p>
     </div>
   {/if}
 

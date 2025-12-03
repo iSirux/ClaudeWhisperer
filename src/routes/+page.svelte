@@ -13,13 +13,11 @@
   import { settings, activeRepo } from '$lib/stores/settings';
   import { recording, isRecording } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
-  import { sessionsOverlay } from '$lib/stores/sessionsOverlay';
-  import { setupSessionStatsBroadcast } from '$lib/stores/sessionStats';
   import { loadSessionsFromDisk, saveSessionsToDisk, setupAutoSave, setupPeriodicAutoSave } from '$lib/stores/sessionPersistence';
   import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { get } from 'svelte/store';
 
   // System prompt for voice-transcribed sessions
   const VOICE_TRANSCRIPTION_SYSTEM_PROMPT =
@@ -72,10 +70,21 @@
   let isTogglingRecording = false;
   let wasAppFocusedOnRecordStart = true;
   let transcribeHotkeyRegistered = false;
+  let cycleRepoHotkeyRegistered = false;
+  let cycleModelHotkeyRegistered = false;
+  // Store the hotkey strings we registered with, so we can unregister them properly
+  let registeredCycleRepoHotkey: string | null = null;
+  let registeredCycleModelHotkey: string | null = null;
   let settingsInitialTab = $state('general');
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
-  let unlistenDiscardRecording: UnlistenFn | null = null;
+
+  // Model cycling order (must match model IDs in ModelSelector.svelte)
+  const MODEL_CYCLE = [
+    'claude-opus-4-5-20251101',
+    'claude-sonnet-4-5-20250929',
+    'claude-haiku-4-5-20251001'
+  ];
 
   function handleOpenSettings(event: CustomEvent<{ tab: string }>) {
     settingsInitialTab = event.detail.tab;
@@ -111,32 +120,17 @@
     cleanupAutoSave = setupAutoSave();
     cleanupPeriodicSave = setupPeriodicAutoSave();
 
-    // Start broadcasting session stats to other windows (like sessions-overlay)
-    setupSessionStatsBroadcast();
-
     await setupHotkeys();
 
     // Listen for session selection from SessionList
     window.addEventListener('switch-to-sessions', showSessionsView);
     // Listen for open-settings events from Start component
     window.addEventListener('open-settings', handleOpenSettings as EventListener);
-
-    // Listen for discard recording events from overlay
-    unlistenDiscardRecording = await listen('discard-recording', async () => {
-      await unregisterTranscribeHotkey();
-      recording.cancelRecording();
-      overlay.hide();
-      overlay.clearSessionInfo();
-      isRecordingForNewSession = false;
-    });
   });
 
   onDestroy(() => {
     window.removeEventListener('switch-to-sessions', showSessionsView);
     window.removeEventListener('open-settings', handleOpenSettings as EventListener);
-
-    // Cleanup event listeners
-    if (unlistenDiscardRecording) unlistenDiscardRecording();
 
     // Cleanup auto-save handlers
     if (cleanupAutoSave) cleanupAutoSave();
@@ -144,23 +138,6 @@
 
     // Save sessions one final time on destroy
     saveSessionsToDisk();
-  });
-
-  // Reactive logic to show/hide sessions overlay based on active sessions
-  $effect(() => {
-    if ($settings.overlay.sessions_overlay_enabled) {
-      const hasActiveSessions =
-        $sessions.some(s => s.status === 'Running' || s.status === 'Starting') ||
-        $sdkSessions.some(s => s.status === 'querying');
-
-      if (hasActiveSessions) {
-        sessionsOverlay.show();
-      } else {
-        sessionsOverlay.hide();
-      }
-    } else {
-      sessionsOverlay.hide();
-    }
   });
 
   async function sendTranscript() {
@@ -233,10 +210,152 @@
     }
   }
 
+  // Debounce flags for hotkeys that shouldn't repeat when held
+  let isCyclingRepo = false;
+  let isCyclingModel = false;
+
+  // Register the cycle-repo hotkey (only while recording/overlay is open)
+  async function registerCycleRepoHotkey() {
+    if (cycleRepoHotkeyRegistered) {
+      console.log('[Hotkey] Cycle repo hotkey already registered, skipping');
+      return;
+    }
+    const currentSettings = get(settings);
+    if (currentSettings.repos.length <= 1) {
+      console.log('[Hotkey] Only', currentSettings.repos.length, 'repo(s) configured, skipping cycle repo hotkey');
+      return;
+    }
+
+    const hotkeyString = currentSettings.hotkeys.cycle_repo;
+    console.log('[Hotkey] Registering cycle repo hotkey:', hotkeyString);
+    try {
+      await register(hotkeyString, async () => {
+        console.log('[Hotkey] Cycle repo hotkey pressed!');
+        // Debounce to prevent rapid firing when key is held
+        if (isCyclingRepo) {
+          console.log('[Hotkey] Debouncing cycle repo');
+          return;
+        }
+        isCyclingRepo = true;
+
+        try {
+          // Only works while recording
+          if (!get(isRecording)) {
+            console.log('[Hotkey] Not recording, ignoring cycle repo');
+            return;
+          }
+
+          const s = get(settings);
+          console.log('[Hotkey] Cycling repo from index', s.active_repo_index, 'to', (s.active_repo_index + 1) % s.repos.length);
+
+          // Cycle to next repo
+          const nextIndex = (s.active_repo_index + 1) % s.repos.length;
+          await settings.setActiveRepo(nextIndex);
+
+          // Update overlay with new repo info
+          const newRepo = s.repos[nextIndex];
+          if (newRepo) {
+            let branch: string | null = null;
+            try {
+              branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
+            } catch (e) {
+              console.error('Failed to get git branch:', e);
+            }
+            overlay.setSessionInfo(branch, get(settings).default_model, false);
+          }
+        } finally {
+          setTimeout(() => {
+            isCyclingRepo = false;
+          }, 200);
+        }
+      });
+      registeredCycleRepoHotkey = hotkeyString;
+      cycleRepoHotkeyRegistered = true;
+      console.log('[Hotkey] Successfully registered cycle repo hotkey:', hotkeyString);
+    } catch (error) {
+      console.error('Failed to register cycle repo hotkey:', error);
+    }
+  }
+
+  // Unregister the cycle-repo hotkey (when overlay closes)
+  async function unregisterCycleRepoHotkey() {
+    if (!cycleRepoHotkeyRegistered || !registeredCycleRepoHotkey) return;
+    try {
+      await unregister(registeredCycleRepoHotkey);
+      console.log('[Hotkey] Unregistered cycle repo hotkey:', registeredCycleRepoHotkey);
+      cycleRepoHotkeyRegistered = false;
+      registeredCycleRepoHotkey = null;
+    } catch (error) {
+      console.error('Failed to unregister cycle repo hotkey:', error);
+    }
+  }
+
+  // Register the cycle-model hotkey (only while recording/overlay is open)
+  async function registerCycleModelHotkey() {
+    if (cycleModelHotkeyRegistered) return;
+
+    const hotkeyString = get(settings).hotkeys.cycle_model;
+    try {
+      await register(hotkeyString, async () => {
+        // Debounce to prevent rapid firing when key is held
+        if (isCyclingModel) return;
+        isCyclingModel = true;
+
+        try {
+          // Only works while recording
+          if (!get(isRecording)) return;
+
+          const currentSettings = get(settings);
+          const currentOverlay = get(overlay);
+
+          // Find current model index and cycle to next
+          const currentIndex = MODEL_CYCLE.indexOf(currentSettings.default_model);
+          const nextIndex = (currentIndex + 1) % MODEL_CYCLE.length;
+          const nextModel = MODEL_CYCLE[nextIndex];
+
+          // Update the default model
+          settings.update(s => ({ ...s, default_model: nextModel }));
+          await settings.save({ ...currentSettings, default_model: nextModel });
+
+          // Update overlay with new model
+          overlay.setSessionInfo(currentOverlay.sessionInfo.branch, nextModel, false);
+        } finally {
+          setTimeout(() => {
+            isCyclingModel = false;
+          }, 200);
+        }
+      });
+      registeredCycleModelHotkey = hotkeyString;
+      cycleModelHotkeyRegistered = true;
+      console.log('[Hotkey] Registered cycle model hotkey:', hotkeyString);
+    } catch (error) {
+      console.error('Failed to register cycle model hotkey:', error);
+    }
+  }
+
+  // Unregister the cycle-model hotkey (when overlay closes)
+  async function unregisterCycleModelHotkey() {
+    if (!cycleModelHotkeyRegistered || !registeredCycleModelHotkey) return;
+    try {
+      await unregister(registeredCycleModelHotkey);
+      console.log('[Hotkey] Unregistered cycle model hotkey:', registeredCycleModelHotkey);
+      cycleModelHotkeyRegistered = false;
+      registeredCycleModelHotkey = null;
+    } catch (error) {
+      console.error('Failed to unregister cycle model hotkey:', error);
+    }
+  }
+
   async function setupHotkeys() {
     try {
+      console.log('[Hotkey] Unregistering all hotkeys...');
       await unregisterAll();
       transcribeHotkeyRegistered = false;
+      cycleRepoHotkeyRegistered = false;
+      cycleModelHotkeyRegistered = false;
+      registeredCycleRepoHotkey = null;
+      registeredCycleModelHotkey = null;
+      console.log('[Hotkey] All hotkeys unregistered, registering toggle_recording...');
 
       // Start Recording / Send hotkey
       // - If not recording: starts recording
@@ -248,8 +367,10 @@
 
         try {
           if ($isRecording) {
-            // Unregister transcribe hotkey so it passes through to other apps
+            // Unregister hotkeys so they pass through to other apps
             await unregisterTranscribeHotkey();
+            await unregisterCycleRepoHotkey();
+            await unregisterCycleModelHotkey();
             // Hide overlay immediately before processing starts
             await overlay.hide();
             overlay.clearSessionInfo();
@@ -281,8 +402,10 @@
 
             await recording.startRecording($settings.audio.device_id || undefined);
 
-            // Register transcribe hotkey now that we're recording
+            // Register hotkeys now that we're recording
             await registerTranscribeHotkey();
+            await registerCycleRepoHotkey();
+            await registerCycleModelHotkey();
 
             // Show overlay if app is not focused, or if show_when_focused is enabled
             if (!wasAppFocusedOnRecordStart || $settings.overlay.show_when_focused) {
@@ -297,12 +420,8 @@
         }
       });
 
-      await register($settings.hotkeys.switch_repo, () => {
-        showRepoSelector = !showRepoSelector;
-      });
-
-      // Note: transcribe_to_input hotkey is registered dynamically when recording starts
-      // and unregistered when recording stops, so it doesn't block other apps
+      // Note: transcribe_to_input, cycle_repo, and cycle_model hotkeys are registered dynamically when recording starts
+      // and unregistered when recording stops, so they don't block other apps
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
     }
@@ -352,8 +471,10 @@
 
     await recording.startRecording($settings.audio.device_id || undefined);
 
-    // Register transcribe hotkey now that we're recording
+    // Register hotkeys now that we're recording
     await registerTranscribeHotkey();
+    await registerCycleRepoHotkey();
+    await registerCycleModelHotkey();
 
     // Show overlay
     await overlay.show();
@@ -363,8 +484,10 @@
   async function stopRecordingNewSession() {
     if (!$isRecording) return;
 
-    // Unregister transcribe hotkey so it passes through to other apps
+    // Unregister hotkeys so they pass through to other apps
     await unregisterTranscribeHotkey();
+    await unregisterCycleRepoHotkey();
+    await unregisterCycleModelHotkey();
     // Hide overlay immediately before processing starts
     await overlay.hide();
     overlay.clearSessionInfo();
@@ -405,10 +528,8 @@
       <div class="relative">
         <button
           class="repo-selector flex items-center gap-2 px-3 py-1.5 bg-surface-elevated hover:bg-border rounded text-sm transition-colors"
-          class:ring-2={$isRecording}
-          class:ring-recording={$isRecording}
           onclick={() => showRepoSelector = !showRepoSelector}
-          title={$isRecording ? "Switch repository (recording in progress)" : "Select repository"}
+          title="Select repository"
         >
           {#if $activeRepo}
             <span class="text-text-primary">{$activeRepo.name}</span>
@@ -531,7 +652,15 @@
         onclick={showSessionsView}
       >
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
+          <div class="flex items-center gap-2">
+            <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
+            {#if $settings.mark_sessions_unread}
+              {@const unreadCount = $sdkSessions.filter(s => s.unread).length}
+              {#if unreadCount > 0}
+                <span class="px-1.5 py-0.5 text-[10px] font-medium bg-blue-500 text-white rounded-full">{unreadCount}</span>
+              {/if}
+            {/if}
+          </div>
           {#if $sessions.length + $sdkSessions.length > 0}
             {@const activeCount = [...$sessions, ...$sdkSessions].filter(s => {
               if ('status' in s && typeof s.status === 'string') {

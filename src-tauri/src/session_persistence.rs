@@ -55,7 +55,13 @@ pub struct PersistedSessions {
 
 impl PersistedSessions {
     fn sessions_path() -> PathBuf {
-        AppConfig::config_dir().join("sessions.json")
+        // Use separate sessions file for debug builds to avoid conflicts
+        #[cfg(debug_assertions)]
+        let filename = "sessions.dev.json";
+        #[cfg(not(debug_assertions))]
+        let filename = "sessions.json";
+
+        AppConfig::config_dir().join(filename)
     }
 
     /// Load persisted sessions from disk

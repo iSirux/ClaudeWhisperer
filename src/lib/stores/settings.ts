@@ -17,16 +17,12 @@ export interface GitConfig {
 
 export interface HotkeyConfig {
   toggle_recording: string;
-  switch_repo: string;
   transcribe_to_input: string;
+  cycle_repo: string;
+  cycle_model: string;
 }
 
 export interface OverlayConfig {
-  show_transcript: boolean;
-  transcript_lines: number;
-  show_settings: boolean;
-  show_terminals: boolean;
-  sessions_overlay_enabled: boolean;
   show_when_focused: boolean;
   show_hotkey_hints: boolean;
   position_x: number | null;
@@ -60,7 +56,16 @@ export interface RepoConfig {
 
 export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
 
-export type Theme = "Midnight" | "Slate" | "Snow" | "Sand";
+export type Theme =
+  | "Midnight"
+  | "Slate"
+  | "Snow"
+  | "Sand"
+  | "Ocean"
+  | "Forest"
+  | "Rose"
+  | "Mocha"
+  | "Torch";
 
 export type SessionSortOrder = "Chronological" | "StatusThenChronological";
 
@@ -101,15 +106,11 @@ const defaultConfig: AppConfig = {
   },
   hotkeys: {
     toggle_recording: "CommandOrControl+Shift+Space",
-    switch_repo: "CommandOrControl+Shift+R",
     transcribe_to_input: "CommandOrControl+Shift+T",
+    cycle_repo: "CommandOrControl+Shift+R",
+    cycle_model: "CommandOrControl+Shift+M",
   },
   overlay: {
-    show_transcript: true,
-    transcript_lines: 3,
-    show_settings: true,
-    show_terminals: true,
-    sessions_overlay_enabled: false,
     show_when_focused: true,
     show_hotkey_hints: true,
     position_x: null,
@@ -133,11 +134,11 @@ const defaultConfig: AppConfig = {
     start_minimized: false,
     autostart: false,
   },
-  show_branch_in_sessions: false,
+  show_branch_in_sessions: true,
   session_persistence: {
     enabled: true,
     max_sessions: 50,
-    restore_sessions: 10,
+    restore_sessions: 5,
   },
   session_sort_order: "Chronological",
   mark_sessions_unread: true,
@@ -218,6 +219,8 @@ function createSettingsStore() {
       try {
         await invoke("set_active_repo", { index });
         await this.load();
+        // Notify other windows (e.g., overlay) that settings changed
+        emit("settings-changed");
       } catch (error) {
         console.error("Failed to set active repo:", error);
         throw error;
