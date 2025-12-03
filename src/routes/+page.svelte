@@ -16,7 +16,7 @@
   import { sessionsOverlay } from '$lib/stores/sessionsOverlay';
   import { setupSessionStatsBroadcast } from '$lib/stores/sessionStats';
   import { loadSessionsFromDisk, saveSessionsToDisk, setupAutoSave, setupPeriodicAutoSave } from '$lib/stores/sessionPersistence';
-  import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
+  import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -33,6 +33,7 @@
   const DEFAULT_SIDEBAR_WIDTH = 256;
   let sidebarWidth = $state(DEFAULT_SIDEBAR_WIDTH);
   let isResizing = $state(false);
+  let sidebarWidthInitialized = false;
 
   function startResize(e: MouseEvent) {
     e.preventDefault();
@@ -55,6 +56,12 @@
     document.removeEventListener('mouseup', stopResize);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+
+    // Save the sidebar width to settings
+    if (sidebarWidthInitialized) {
+      settings.update(s => ({ ...s, sidebar_width: sidebarWidth }));
+      settings.save($settings);
+    }
   }
 
   // Flag to track if we're recording for a new session (header button)
@@ -64,6 +71,7 @@
   let showRepoSelector = $state(false);
   let isTogglingRecording = false;
   let wasAppFocusedOnRecordStart = true;
+  let transcribeHotkeyRegistered = false;
   let settingsInitialTab = $state('general');
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
@@ -73,6 +81,17 @@
     settingsInitialTab = event.detail.tab;
     showSettingsView();
   }
+
+  // Load sidebar width from settings after they're loaded
+  $effect(() => {
+    if (!sidebarWidthInitialized && $settings.sidebar_width) {
+      const savedWidth = $settings.sidebar_width;
+      if (savedWidth >= MIN_SIDEBAR_WIDTH && savedWidth <= MAX_SIDEBAR_WIDTH) {
+        sidebarWidth = savedWidth;
+      }
+      sidebarWidthInitialized = true;
+    }
+  });
 
   onMount(async () => {
     await settings.load();
@@ -103,7 +122,8 @@
     window.addEventListener('open-settings', handleOpenSettings as EventListener);
 
     // Listen for discard recording events from overlay
-    unlistenDiscardRecording = await listen('discard-recording', () => {
+    unlistenDiscardRecording = await listen('discard-recording', async () => {
+      await unregisterTranscribeHotkey();
       recording.cancelRecording();
       overlay.hide();
       overlay.clearSessionInfo();
@@ -168,10 +188,59 @@
     recording.clearTranscript();
   }
 
+  // Register the transcribe-to-input hotkey (only while recording/overlay is open)
+  async function registerTranscribeHotkey() {
+    if (transcribeHotkeyRegistered) return;
+    try {
+      await register($settings.hotkeys.transcribe_to_input, async () => {
+        // Only works while recording
+        if (!$isRecording) return;
+        if (isTogglingRecording) return;
+        isTogglingRecording = true;
+
+        try {
+          // Stop recording and paste
+          await unregisterTranscribeHotkey();
+          await overlay.hide();
+          overlay.clearSessionInfo();
+
+          const transcript = await recording.stopRecording(true);
+
+          if (transcript) {
+            // Paste the transcript into the currently focused app
+            await invoke('paste_text', { text: transcript });
+          }
+        } finally {
+          setTimeout(() => {
+            isTogglingRecording = false;
+          }, 200);
+        }
+      });
+      transcribeHotkeyRegistered = true;
+    } catch (error) {
+      console.error('Failed to register transcribe hotkey:', error);
+    }
+  }
+
+  // Unregister the transcribe-to-input hotkey (when overlay closes)
+  async function unregisterTranscribeHotkey() {
+    if (!transcribeHotkeyRegistered) return;
+    try {
+      await unregister($settings.hotkeys.transcribe_to_input);
+      transcribeHotkeyRegistered = false;
+    } catch (error) {
+      console.error('Failed to unregister transcribe hotkey:', error);
+    }
+  }
+
   async function setupHotkeys() {
     try {
       await unregisterAll();
+      transcribeHotkeyRegistered = false;
 
+      // Start Recording / Send hotkey
+      // - If not recording: starts recording
+      // - If recording: stops, transcribes, and sends to Claude
       await register($settings.hotkeys.toggle_recording, async () => {
         // Prevent multiple rapid fires
         if (isTogglingRecording) return;
@@ -179,6 +248,8 @@
 
         try {
           if ($isRecording) {
+            // Unregister transcribe hotkey so it passes through to other apps
+            await unregisterTranscribeHotkey();
             // Hide overlay immediately before processing starts
             await overlay.hide();
             overlay.clearSessionInfo();
@@ -205,9 +276,13 @@
             }
 
             // Set overlay info - session will be created after transcription completes
+            overlay.setMode('session');
             overlay.setSessionInfo(branch, model, false);
 
             await recording.startRecording($settings.audio.device_id || undefined);
+
+            // Register transcribe hotkey now that we're recording
+            await registerTranscribeHotkey();
 
             // Show overlay if app is not focused, or if show_when_focused is enabled
             if (!wasAppFocusedOnRecordStart || $settings.overlay.show_when_focused) {
@@ -222,48 +297,12 @@
         }
       });
 
-      await register($settings.hotkeys.send_prompt, async () => {
-        await sendTranscript();
-      });
-
       await register($settings.hotkeys.switch_repo, () => {
         showRepoSelector = !showRepoSelector;
       });
 
-      // Transcribe to input hotkey - records, transcribes, and pastes into current app
-      let isTranscribeToInput = false;
-      await register($settings.hotkeys.transcribe_to_input, async () => {
-        if (isTogglingRecording) return;
-        isTogglingRecording = true;
-
-        try {
-          if ($isRecording && isTranscribeToInput) {
-            // Stop recording and paste
-            await overlay.hide();
-            overlay.clearSessionInfo();
-            overlay.setMode('session');
-
-            const transcript = await recording.stopRecording(true);
-            isTranscribeToInput = false;
-
-            if (transcript) {
-              // Paste the transcript into the currently focused app
-              await invoke('paste_text', { text: transcript });
-            }
-          } else if (!$isRecording) {
-            // Start recording in paste mode
-            isTranscribeToInput = true;
-            overlay.setMode('paste');
-
-            await recording.startRecording($settings.audio.device_id || undefined);
-            await overlay.show();
-          }
-        } finally {
-          setTimeout(() => {
-            isTogglingRecording = false;
-          }, 200);
-        }
-      });
+      // Note: transcribe_to_input hotkey is registered dynamically when recording starts
+      // and unregistered when recording stops, so it doesn't block other apps
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
     }
@@ -289,6 +328,7 @@
   async function changeModel(newModel: string) {
     // Update the default model (only affects new sessions)
     settings.update(s => ({ ...s, default_model: newModel }));
+    await settings.save({ ...$settings, default_model: newModel });
   }
 
   // Start recording for a NEW session (header button)
@@ -312,6 +352,9 @@
 
     await recording.startRecording($settings.audio.device_id || undefined);
 
+    // Register transcribe hotkey now that we're recording
+    await registerTranscribeHotkey();
+
     // Show overlay
     await overlay.show();
   }
@@ -320,6 +363,8 @@
   async function stopRecordingNewSession() {
     if (!$isRecording) return;
 
+    // Unregister transcribe hotkey so it passes through to other apps
+    await unregisterTranscribeHotkey();
     // Hide overlay immediately before processing starts
     await overlay.hide();
     overlay.clearSessionInfo();

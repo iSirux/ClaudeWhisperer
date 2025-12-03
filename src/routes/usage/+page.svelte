@@ -1,27 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { usageStats, formatDuration, formatDate, formatRelativeTime, getWeeklyStats, getTotalForPeriod, formatTokens, formatCost } from '$lib/stores/usageStats';
-  import { activeSdkSession } from '$lib/stores/sdkSessions';
+  import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
   import { goto } from '$app/navigation';
 
-  // Current session usage
-  let sessionUsage = $derived($activeSdkSession?.usage);
-  let sessionInputTokens = $derived(
-    sessionUsage
-      ? sessionUsage.totalInputTokens + sessionUsage.progressiveInputTokens
-      : 0
+  // App session usage - cumulative across all SDK sessions since app launch
+  let appUsage = $derived($appSessionUsage);
+  let appInputTokens = $derived(
+    appUsage.totalInputTokens + appUsage.progressiveInputTokens
   );
-  let sessionOutputTokens = $derived(
-    sessionUsage
-      ? sessionUsage.totalOutputTokens + sessionUsage.progressiveOutputTokens
-      : 0
+  let appOutputTokens = $derived(
+    appUsage.totalOutputTokens + appUsage.progressiveOutputTokens
   );
-  let sessionTotalTokens = $derived(sessionInputTokens + sessionOutputTokens);
-  let sessionCost = $derived(sessionUsage?.totalCostUsd ?? 0);
-  let sessionCacheRead = $derived(sessionUsage?.cacheReadTokens ?? 0);
-  let sessionCacheCreation = $derived(sessionUsage?.cacheCreationTokens ?? 0);
-  let hasSessionUsage = $derived(sessionTotalTokens > 0 || sessionCost > 0);
+  let appTotalTokens = $derived(appInputTokens + appOutputTokens);
+  let appCost = $derived(appUsage.totalCostUsd);
+  let appCacheRead = $derived(appUsage.totalCacheReadTokens);
+  let appCacheCreation = $derived(appUsage.totalCacheCreationTokens);
+  let hasAppUsage = $derived(appTotalTokens > 0 || appCost > 0);
 
   let resettingStats = $state(false);
 
@@ -75,20 +71,20 @@
 
   <div class="flex-1 overflow-y-auto p-6">
     <div class="max-w-4xl mx-auto space-y-6">
-      <!-- Current Session Usage -->
-      {#if hasSessionUsage}
+      <!-- App Session Usage -->
+      {#if hasAppUsage}
         <div>
-          <h3 class="text-sm font-medium text-text-primary mb-3">Current Session</h3>
+          <h3 class="text-sm font-medium text-text-primary mb-3">This App Session</h3>
           <div class="p-4 bg-surface-elevated rounded-lg border border-accent/30">
-            <!-- Session Cost Banner -->
+            <!-- App Session Cost Banner -->
             <div class="flex items-center justify-between mb-4 pb-4 border-b border-border">
               <div>
-                <div class="text-3xl font-bold text-accent">{formatCost(sessionCost)}</div>
-                <div class="text-xs text-text-muted">Session Cost (USD)</div>
+                <div class="text-3xl font-bold text-accent">{formatCost(appCost)}</div>
+                <div class="text-xs text-text-muted">App Session Cost (USD)</div>
               </div>
               <div class="text-right">
-                <div class="text-xl font-bold text-text-primary">{formatTokens(sessionTotalTokens)}</div>
-                <div class="text-xs text-text-muted">Session Tokens</div>
+                <div class="text-xl font-bold text-text-primary">{formatTokens(appTotalTokens)}</div>
+                <div class="text-xs text-text-muted">App Session Tokens</div>
               </div>
             </div>
 
@@ -101,7 +97,7 @@
                   </svg>
                 </div>
                 <div>
-                  <div class="text-sm font-medium text-text-primary">{formatTokens(sessionInputTokens)}</div>
+                  <div class="text-sm font-medium text-text-primary">{formatTokens(appInputTokens)}</div>
                   <div class="text-xs text-text-muted">Input Tokens</div>
                 </div>
               </div>
@@ -112,14 +108,14 @@
                   </svg>
                 </div>
                 <div>
-                  <div class="text-sm font-medium text-text-primary">{formatTokens(sessionOutputTokens)}</div>
+                  <div class="text-sm font-medium text-text-primary">{formatTokens(appOutputTokens)}</div>
                   <div class="text-xs text-text-muted">Output Tokens</div>
                 </div>
               </div>
             </div>
 
             <!-- Cache Stats (if any) -->
-            {#if sessionCacheRead > 0 || sessionCacheCreation > 0}
+            {#if appCacheRead > 0 || appCacheCreation > 0}
               <div class="mt-4 pt-4 border-t border-border">
                 <div class="text-xs text-text-muted mb-2">Prompt Caching</div>
                 <div class="grid grid-cols-2 gap-4">
@@ -130,7 +126,7 @@
                       </svg>
                     </div>
                     <div>
-                      <div class="text-sm font-medium text-success">{formatTokens(sessionCacheRead)}</div>
+                      <div class="text-sm font-medium text-success">{formatTokens(appCacheRead)}</div>
                       <div class="text-xs text-text-muted">Cache Reads (90% savings)</div>
                     </div>
                   </div>
@@ -141,7 +137,7 @@
                       </svg>
                     </div>
                     <div>
-                      <div class="text-sm font-medium text-text-primary">{formatTokens(sessionCacheCreation)}</div>
+                      <div class="text-sm font-medium text-text-primary">{formatTokens(appCacheCreation)}</div>
                       <div class="text-xs text-text-muted">Cache Writes</div>
                     </div>
                   </div>

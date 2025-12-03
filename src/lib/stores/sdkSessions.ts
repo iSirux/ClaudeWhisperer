@@ -82,6 +82,50 @@ export interface SdkSession {
   unread?: boolean; // Whether the session has completed but user hasn't viewed it yet
 }
 
+// Message types for conversation history (sent to sidecar for restored sessions)
+// These match the Rust HistoryMessage enum
+export type HistoryMessage =
+  | { type: 'user'; content: string }
+  | { type: 'assistant'; content: string }
+  | { type: 'tool_use'; tool: string; input: unknown }
+  | { type: 'tool_result'; tool: string; output: string };
+
+/**
+ * Convert SDK messages to history messages for session restoration.
+ * This formats the frontend message history into a format the sidecar understands.
+ */
+function convertToHistoryMessages(messages: SdkMessage[]): HistoryMessage[] {
+  const history: HistoryMessage[] = [];
+
+  for (const msg of messages) {
+    switch (msg.type) {
+      case 'user':
+        if (msg.content) {
+          history.push({ type: 'user', content: msg.content });
+        }
+        break;
+      case 'text':
+        if (msg.content) {
+          history.push({ type: 'assistant', content: msg.content });
+        }
+        break;
+      case 'tool_start':
+        if (msg.tool && msg.input) {
+          history.push({ type: 'tool_use', tool: msg.tool, input: msg.input });
+        }
+        break;
+      case 'tool_result':
+        if (msg.tool && msg.output) {
+          history.push({ type: 'tool_result', tool: msg.tool, output: msg.output });
+        }
+        break;
+      // Skip 'done', 'error', 'subagent_start', 'subagent_stop' - they're not conversation content
+    }
+  }
+
+  return history;
+}
+
 function createSdkSessionsStore() {
   const { subscribe, set, update } = writable<SdkSession[]>([]);
   const listeners = new Map<string, UnlistenFn[]>();
@@ -800,18 +844,23 @@ function createSdkSessionsStore() {
 
       listeners.set(id, unlisteners);
 
-      // Register session with backend (without system prompt for restored sessions)
+      // Convert message history to the format expected by the sidecar
+      const historyMessages = convertToHistoryMessages(session.messages);
+      console.log('[sdkSessions] Converted', session.messages.length, 'messages to', historyMessages.length, 'history messages');
+
+      // Register session with backend, passing conversation history for restored sessions
       await invoke('create_sdk_session', {
         id,
         cwd: session.cwd,
         model: session.model,
-        systemPrompt: null
+        systemPrompt: null,
+        messages: historyMessages.length > 0 ? historyMessages : null,
       });
 
       // Mark session as live
       liveSessions.add(id);
 
-      console.log('[sdkSessions] Restored session reinitialized:', id);
+      console.log('[sdkSessions] Restored session reinitialized:', id, 'with', historyMessages.length, 'history messages');
     },
 
     async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
@@ -989,5 +1038,41 @@ export const activeSdkSession = derived(
   [sdkSessions, activeSdkSessionId],
   ([$sdkSessions, $activeSdkSessionId]) => {
     return $sdkSessions.find(s => s.id === $activeSdkSessionId) || null;
+  }
+);
+
+// App session usage - cumulative usage across all SDK sessions since app launch
+export const appSessionUsage = derived(
+  sdkSessions,
+  ($sdkSessions) => {
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheReadTokens = 0;
+    let totalCacheCreationTokens = 0;
+    let totalCostUsd = 0;
+    let progressiveInputTokens = 0;
+    let progressiveOutputTokens = 0;
+
+    for (const session of $sdkSessions) {
+      if (session.usage) {
+        totalInputTokens += session.usage.totalInputTokens;
+        totalOutputTokens += session.usage.totalOutputTokens;
+        totalCacheReadTokens += session.usage.totalCacheReadTokens;
+        totalCacheCreationTokens += session.usage.totalCacheCreationTokens;
+        totalCostUsd += session.usage.totalCostUsd;
+        progressiveInputTokens += session.usage.progressiveInputTokens;
+        progressiveOutputTokens += session.usage.progressiveOutputTokens;
+      }
+    }
+
+    return {
+      totalInputTokens,
+      totalOutputTokens,
+      totalCacheReadTokens,
+      totalCacheCreationTokens,
+      totalCostUsd,
+      progressiveInputTokens,
+      progressiveOutputTokens,
+    };
   }
 );

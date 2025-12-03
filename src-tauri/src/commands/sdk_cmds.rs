@@ -1,4 +1,4 @@
-use crate::sidecar::{ImageData, OutboundMessage, SidecarManager};
+use crate::sidecar::{HistoryMessage, ImageData, OutboundMessage, SidecarManager};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -17,11 +17,12 @@ pub fn create_sdk_session(
     cwd: String,
     model: String, // Per-session model (required)
     system_prompt: Option<String>, // Optional system prompt (e.g., for voice transcription context)
+    messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model), system_prompt })
+    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model), system_prompt, messages })
 }
 
 #[tauri::command]

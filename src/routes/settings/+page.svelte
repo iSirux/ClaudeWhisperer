@@ -211,15 +211,6 @@
             </div>
           </div>
           <div>
-            <label class="block text-sm font-medium text-text-secondary mb-1">Default Model</label>
-            <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.default_model}>
-              <option value="claude-opus-4-5">Opus 4.5</option>
-              <option value="claude-sonnet-4-5-20250929">Sonnet 4.5</option>
-              <option value="claude-sonnet-4-5-20250929-extended">Sonnet 4.5 (1M context)</option>
-              <option value="claude-haiku-4-5">Haiku 4.5</option>
-            </select>
-          </div>
-          <div>
             <label class="block text-sm font-medium text-text-secondary mb-1">Terminal Mode</label>
             <select class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent" bind:value={$settings.terminal_mode}>
               <option value="Interactive">Interactive</option>
@@ -236,13 +227,15 @@
               {/if}
             </p>
           </div>
-          <div class="flex items-center justify-between">
-            <div>
-              <label class="text-sm font-medium text-text-secondary">Skip Permissions</label>
-              <p class="text-xs text-text-muted">Use --dangerously-skip-permissions flag</p>
+          {#if $settings.terminal_mode === 'Interactive' || $settings.terminal_mode === 'Prompt'}
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-text-secondary">Skip Permissions</label>
+                <p class="text-xs text-text-muted">Use --dangerously-skip-permissions flag</p>
+              </div>
+              <input type="checkbox" class="toggle" bind:checked={$settings.skip_permissions} />
             </div>
-            <input type="checkbox" class="toggle" bind:checked={$settings.skip_permissions} />
-          </div>
+          {/if}
           <div class="flex items-center justify-between">
             <div>
               <label class="text-sm font-medium text-text-secondary">Show Branch in Sessions</label>
@@ -270,6 +263,48 @@
               <p class="text-xs text-text-muted">Highlight sessions that have completed until you click on them</p>
             </div>
             <input type="checkbox" class="toggle" bind:checked={$settings.mark_sessions_unread} />
+          </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Show Latest Message Preview</label>
+              <p class="text-xs text-text-muted">Display a snippet of the latest response in each SDK session</p>
+            </div>
+            <input type="checkbox" class="toggle" bind:checked={$settings.show_latest_message_preview} />
+          </div>
+          <div class="border-t border-border pt-4 mt-4">
+            <h3 class="text-sm font-medium text-text-primary mb-3">Session List Row Limits</h3>
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-text-secondary mb-1">User Prompt Rows</label>
+                <div class="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="1"
+                    max="6"
+                    step="1"
+                    class="flex-1 accent-accent"
+                    bind:value={$settings.session_prompt_rows}
+                  />
+                  <span class="text-sm text-text-primary w-8 text-right">{$settings.session_prompt_rows}</span>
+                </div>
+                <p class="text-xs text-text-muted mt-1">Maximum rows to show for user prompts in session list</p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-text-secondary mb-1">Agent Response Rows</label>
+                <div class="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="1"
+                    max="6"
+                    step="1"
+                    class="flex-1 accent-accent"
+                    bind:value={$settings.session_response_rows}
+                  />
+                  <span class="text-sm text-text-primary w-8 text-right">{$settings.session_response_rows}</span>
+                </div>
+                <p class="text-xs text-text-muted mt-1">Maximum rows to show for agent responses in session list</p>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -527,22 +562,29 @@
 
       {:else if activeTab === 'hotkeys'}
         <div class="space-y-4">
+          <div class="p-3 bg-surface-elevated rounded border border-border">
+            <p class="text-xs text-text-muted">
+              <strong class="text-text-secondary">Recording flow:</strong> Press the Record hotkey to start recording.
+              While recording, press either hotkey to stop:
+            </p>
+            <ul class="text-xs text-text-muted mt-1 ml-4 list-disc">
+              <li><strong>Record & Send</strong> — transcribes and sends to Claude</li>
+              <li><strong>Transcribe Only</strong> — transcribes and pastes to current app</li>
+            </ul>
+          </div>
           <div>
-            <label class="block text-sm font-medium text-text-secondary mb-1">Toggle Recording</label>
+            <label class="block text-sm font-medium text-text-secondary mb-1">Record & Send</label>
+            <p class="text-xs text-text-muted mb-2">Starts recording. Press again to transcribe and send to Claude.</p>
             <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.toggle_recording} />
           </div>
           <div>
-            <label class="block text-sm font-medium text-text-secondary mb-1">Send Prompt</label>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.send_prompt} />
+            <label class="block text-sm font-medium text-text-secondary mb-1">Transcribe Only</label>
+            <p class="text-xs text-text-muted mb-2">While recording, transcribes and pastes into current app (does not send to Claude)</p>
+            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.transcribe_to_input} />
           </div>
-          <div>
+          <div class="border-t border-border pt-4">
             <label class="block text-sm font-medium text-text-secondary mb-1">Switch Repository</label>
             <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.switch_repo} />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-text-secondary mb-1">Transcribe to Input</label>
-            <p class="text-xs text-text-muted mb-2">Record, transcribe, and paste into any application</p>
-            <input type="text" class="w-full px-3 py-2 bg-background border border-border rounded text-sm font-mono focus:outline-none focus:border-accent" bind:value={$settings.hotkeys.transcribe_to_input} />
           </div>
         </div>
 
@@ -562,6 +604,13 @@
           <div class="flex items-center justify-between">
             <label class="text-sm font-medium text-text-secondary">Show Active Terminals</label>
             <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_terminals} />
+          </div>
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="text-sm font-medium text-text-secondary">Show Hotkey Hints</label>
+              <p class="text-xs text-text-muted mt-0.5">Display keyboard shortcuts in the overlay while recording</p>
+            </div>
+            <input type="checkbox" class="toggle" bind:checked={$settings.overlay.show_hotkey_hints} />
           </div>
           <div class="border-t border-border pt-4 mt-4">
             <div class="flex items-center justify-between">

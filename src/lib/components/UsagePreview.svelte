@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { usageStats, formatTokens, formatCost } from '$lib/stores/usageStats';
-  import { activeSdkSession } from '$lib/stores/sdkSessions';
+  import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { goto } from '$app/navigation';
 
   onMount(() => {
@@ -12,27 +12,25 @@
     goto('/usage');
   }
 
-  // Current session usage
-  let sessionUsage = $derived($activeSdkSession?.usage);
-  let sessionTokens = $derived(
-    sessionUsage
-      ? sessionUsage.totalInputTokens + sessionUsage.totalOutputTokens +
-        sessionUsage.progressiveInputTokens + sessionUsage.progressiveOutputTokens
-      : 0
+  // App session usage - cumulative across all SDK sessions since app launch
+  let appUsage = $derived($appSessionUsage);
+  let appTokens = $derived(
+    appUsage.totalInputTokens + appUsage.totalOutputTokens +
+    appUsage.progressiveInputTokens + appUsage.progressiveOutputTokens
   );
-  let sessionCost = $derived(sessionUsage?.totalCostUsd ?? 0);
-  let hasSessionUsage = $derived(sessionTokens > 0 || sessionCost > 0);
+  let appCost = $derived(appUsage.totalCostUsd);
+  let hasAppUsage = $derived(appTokens > 0 || appCost > 0);
 </script>
 
 <button
   class="usage-preview"
   onclick={navigateToUsage}
-  title="View usage statistics"
+  title="App session usage - click for details"
 >
-  {#if hasSessionUsage}
+  {#if hasAppUsage}
     <div class="preview-content">
-      <span class="session-cost">{formatCost(sessionCost)}</span>
-      <span class="session-tokens">{formatTokens(sessionTokens)}</span>
+      <span class="app-cost">{formatCost(appCost)}</span>
+      <span class="app-tokens">{formatTokens(appTokens)}</span>
     </div>
   {:else}
     <div class="preview-content empty">
@@ -81,13 +79,13 @@
     opacity: 0.7;
   }
 
-  .session-cost {
+  .app-cost {
     color: var(--color-accent);
     font-weight: 600;
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 
-  .session-tokens {
+  .app-tokens {
     color: var(--color-text-secondary);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }

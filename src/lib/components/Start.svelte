@@ -68,9 +68,6 @@
     <div class="max-w-lg w-full space-y-8">
       <div class="text-center">
         <h2 class="text-2xl font-bold text-text-primary mb-2">Welcome</h2>
-        <p class="text-text-secondary">
-          Let's make sure everything is set up correctly.
-        </p>
       </div>
 
       <!-- Microphone Selection -->

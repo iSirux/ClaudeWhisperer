@@ -22,6 +22,16 @@ pub struct ImageData {
     pub height: Option<u32>,
 }
 
+/// A message from the conversation history for session restoration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HistoryMessage {
+    User { content: String },
+    Assistant { content: String },
+    ToolUse { tool: String, input: serde_json::Value },
+    ToolResult { tool: String, output: String },
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutboundMessage {
@@ -32,6 +42,8 @@ pub enum OutboundMessage {
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        messages: Option<Vec<HistoryMessage>>,
     },
     Query {
         id: String,

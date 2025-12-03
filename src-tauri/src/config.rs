@@ -41,7 +41,6 @@ impl Default for GitConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyConfig {
     pub toggle_recording: String,
-    pub send_prompt: String,
     pub switch_repo: String,
     #[serde(default = "default_transcribe_to_input")]
     pub transcribe_to_input: String,
@@ -55,7 +54,6 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             toggle_recording: "CommandOrControl+Shift+Space".to_string(),
-            send_prompt: "CommandOrControl+Enter".to_string(),
             switch_repo: "CommandOrControl+Shift+R".to_string(),
             transcribe_to_input: "CommandOrControl+Shift+T".to_string(),
         }
@@ -71,9 +69,19 @@ pub struct OverlayConfig {
     pub sessions_overlay_enabled: bool,
     #[serde(default = "default_show_when_focused")]
     pub show_when_focused: bool,
+    #[serde(default = "default_show_hotkey_hints")]
+    pub show_hotkey_hints: bool,
+    #[serde(default)]
+    pub position_x: Option<i32>,
+    #[serde(default)]
+    pub position_y: Option<i32>,
 }
 
 fn default_show_when_focused() -> bool {
+    true
+}
+
+fn default_show_hotkey_hints() -> bool {
     true
 }
 
@@ -86,6 +94,9 @@ impl Default for OverlayConfig {
             show_terminals: true,
             sessions_overlay_enabled: true,
             show_when_focused: true,
+            show_hotkey_hints: true,
+            position_x: None,
+            position_y: None,
         }
     }
 }
@@ -513,10 +524,34 @@ pub struct AppConfig {
     pub session_sort_order: SessionSortOrder,
     #[serde(default = "default_mark_sessions_unread")]
     pub mark_sessions_unread: bool,
+    #[serde(default = "default_show_latest_message_preview")]
+    pub show_latest_message_preview: bool,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u32,
+    #[serde(default = "default_session_prompt_rows")]
+    pub session_prompt_rows: usize,
+    #[serde(default = "default_session_response_rows")]
+    pub session_response_rows: usize,
 }
 
 fn default_mark_sessions_unread() -> bool {
     true
+}
+
+fn default_show_latest_message_preview() -> bool {
+    true
+}
+
+fn default_sidebar_width() -> u32 {
+    256
+}
+
+fn default_session_prompt_rows() -> usize {
+    2
+}
+
+fn default_session_response_rows() -> usize {
+    2
 }
 
 impl Default for AppConfig {
@@ -538,6 +573,10 @@ impl Default for AppConfig {
             session_persistence: SessionPersistenceConfig::default(),
             session_sort_order: SessionSortOrder::default(),
             mark_sessions_unread: true,
+            show_latest_message_preview: true,
+            sidebar_width: 256,
+            session_prompt_rows: 2,
+            session_response_rows: 2,
         }
     }
 }

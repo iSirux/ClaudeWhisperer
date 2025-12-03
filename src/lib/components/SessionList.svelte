@@ -4,6 +4,7 @@
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
+  import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
 
   async function createNewSession() {
     try {
@@ -106,6 +107,7 @@
     currentWorkStartedAt?: number;
     isFinished: boolean; // Whether the session is done/idle/error
     unread?: boolean; // Whether the session completed and user hasn't viewed it yet
+    latestMessage?: string; // Latest assistant text message snippet for SDK sessions
   }
 
   // Cache for git branches to avoid repeated calls
@@ -359,9 +361,16 @@
     }
   }
 
-  function truncatePrompt(prompt: string, maxLength: number = 100): string {
-    if (prompt.length <= maxLength) return prompt;
-    return prompt.slice(0, maxLength) + '...';
+  // Get the latest assistant text message from SDK messages
+  function getLatestTextMessage(messages: typeof $sdkSessions[0]['messages']): string | undefined {
+    // Find the last text message from the assistant
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type === 'text' && msg.content) {
+        return msg.content;
+      }
+    }
+    return undefined;
   }
 
   function getRepoName(path: string): string {
@@ -369,15 +378,6 @@
     return parts[parts.length - 1] || path;
   }
 
-  function getShortModelName(model: string): string {
-    // Convert model IDs to shorter display names
-    if (model.includes('opus')) return 'Opus';
-    if (model.includes('sonnet')) return 'Sonnet';
-    if (model.includes('haiku')) return 'Haiku';
-    // Return last part of model ID if no match
-    const parts = model.split('-');
-    return parts[parts.length - 1] || model;
-  }
 
   // Combine PTY and SDK sessions into unified list
   let allSessions = $state<DisplaySession[]>([]);
@@ -425,6 +425,7 @@
           currentWorkStartedAt: s.currentWorkStartedAt,
           isFinished,
           unread: s.unread,
+          latestMessage: getLatestTextMessage(s.messages),
         };
       })
     ];
@@ -523,7 +524,7 @@
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
             {#if session.type === 'sdk' && session.model}
-              <span class="px-1.5 py-0.5 text-[10px] font-medium bg-accent/20 text-accent rounded">{getShortModelName(session.model)}</span>
+              <span class="px-1.5 py-0.5 text-[10px] font-medium {getModelBadgeBgColor(session.model)} {getModelTextColor(session.model)} rounded">{getShortModelName(session.model)}</span>
             {/if}
             <div class="relative">
               <div class="w-2 h-2 rounded-full {getStatusBg(session.status)}"></div>
@@ -556,13 +557,28 @@
         </div>
 
         <!-- Prompt text -->
-        <p class="text-sm text-text-primary leading-snug mb-1.5 select-text" title={session.prompt || 'Interactive session'}>
+        <p
+          class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
+          style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {$settings.session_prompt_rows};"
+          title={session.prompt || 'Interactive session'}
+        >
           {#if session.prompt}
-            {truncatePrompt(session.prompt)}
+            {session.prompt}
           {:else}
             <span class="text-text-muted italic">{session.type === 'sdk' ? 'SDK Session' : 'Interactive session'}</span>
           {/if}
         </p>
+
+        <!-- Latest message preview (SDK sessions only) -->
+        {#if $settings.show_latest_message_preview && session.type === 'sdk' && session.latestMessage}
+          <p
+            class="text-xs text-text-muted leading-snug mb-1.5 italic overflow-hidden"
+            style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {$settings.session_response_rows};"
+            title={session.latestMessage}
+          >
+            {session.latestMessage}
+          </p>
+        {/if}
 
         <!-- Repo name, branch, and model -->
         <div class="flex items-center gap-1.5 text-text-muted">

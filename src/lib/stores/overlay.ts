@@ -92,7 +92,7 @@ function createOverlayStore() {
       try {
         const monitor = await primaryMonitor();
         if (monitor) {
-          const x = Math.round((monitor.size.width - 400) / 2);
+          const x = Math.round((monitor.size.width - 380) / 2);
           const y = 20;
           await this.setPosition(x, y);
         }
@@ -128,6 +128,13 @@ function createOverlayStore() {
     },
 
     setMode(mode: OverlayMode) {
+      update((s) => ({ ...s, mode }));
+      // Emit event to sync with overlay window
+      emit('overlay-mode', { mode });
+    },
+
+    // Update mode without emitting (used when receiving event from another window)
+    updateModeLocal(mode: OverlayMode) {
       update((s) => ({ ...s, mode }));
     },
   };

@@ -7,16 +7,39 @@
   import StatusBadge from './StatusBadge.svelte';
   import Waveform from './Waveform.svelte';
   import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
+  import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
+  import type { OverlayMode } from '$lib/stores/overlay';
 
   // Track remote recording state (from main window events)
   let remoteRecordingState: RecordingState = 'idle';
   let unlistenRecordingState: UnlistenFn | null = null;
   let unlistenSessionInfo: UnlistenFn | null = null;
+  let unlistenMode: UnlistenFn | null = null;
 
   $: showTranscript = $settings.overlay.show_transcript;
   $: transcriptLines = $settings.overlay.transcript_lines;
   $: showSettings = $settings.overlay.show_settings;
   $: showTerminals = $settings.overlay.show_terminals;
+  $: showHotkeyHints = $settings.overlay.show_hotkey_hints ?? true;
+
+  // Parse hotkey string into display-friendly key labels
+  function parseHotkey(hotkey: string): string[] {
+    return hotkey.split('+').map(key => {
+      const k = key.trim();
+      switch (k) {
+        case 'CommandOrControl': return navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
+        case 'Control': return 'Ctrl';
+        case 'Command': return '⌘';
+        case 'Shift': return 'Shift';
+        case 'Alt': return navigator.platform.includes('Mac') ? '⌥' : 'Alt';
+        case 'Space': return 'Space';
+        default: return k;
+      }
+    });
+  }
+
+  $: sendHotkeyKeys = parseHotkey($settings.hotkeys.toggle_recording);
+  $: transcribeHotkeyKeys = parseHotkey($settings.hotkeys.transcribe_to_input);
 
   $: truncatedTranscript = $recording.transcript
     .split('\n')
@@ -27,28 +50,40 @@
   $: isRecordingActive = remoteRecordingState === 'recording' || $isRecording;
   $: isProcessingActive = remoteRecordingState === 'processing' || $isProcessing;
 
-  // Format model name for display
-  const modelLabels: Record<string, string> = {
-    'claude-opus-4-5': 'Opus',
-    'claude-sonnet-4-5-20250929': 'Sonnet',
-    'claude-sonnet-4-5-20250929-extended': 'Sonnet 1M',
-    'claude-haiku-4-5': 'Haiku',
-  };
-
   function getModelLabel(model: string | null): string {
     if (!model) return '';
-    return modelLabels[model] || model;
+    return getShortModelName(model);
+  }
+
+  // Dispatch resize event to notify parent page
+  function notifyResize() {
+    console.log('[Overlay] notifyResize dispatching event');
+    window.dispatchEvent(new CustomEvent('overlay-content-changed'));
   }
 
   onMount(async () => {
+    console.log('[Overlay] onMount - setting up listeners');
+
     // Listen for recording state changes from main window
     unlistenRecordingState = await listen<{ state: RecordingState }>('recording-state', (event) => {
+      console.log('[Overlay] recording-state event received:', event.payload.state);
       remoteRecordingState = event.payload.state;
+      // Notify parent to resize after state change renders
+      setTimeout(notifyResize, 10);
+      setTimeout(notifyResize, 50);
+      setTimeout(notifyResize, 150);
     });
 
     // Listen for session info changes from main window (for model display)
     unlistenSessionInfo = await listen<{ branch: string | null; model: string | null; creatingSession: boolean }>('overlay-session-info', (event) => {
       overlay.updateSessionInfoLocal(event.payload.branch, event.payload.model, event.payload.creatingSession);
+      setTimeout(notifyResize, 10);
+    });
+
+    // Listen for mode changes from main window
+    unlistenMode = await listen<{ mode: OverlayMode }>('overlay-mode', (event) => {
+      overlay.updateModeLocal(event.payload.mode);
+      setTimeout(notifyResize, 10);
     });
   });
 
@@ -59,13 +94,10 @@
     if (unlistenSessionInfo) {
       unlistenSessionInfo();
     }
-  });
-
-  function handleClick() {
-    if (isRecordingActive) {
-      recording.stopRecording();
+    if (unlistenMode) {
+      unlistenMode();
     }
-  }
+  });
 
   function handleDiscard(event: MouseEvent) {
     event.stopPropagation();
@@ -79,15 +111,11 @@
 </script>
 
 <div
-  class="overlay-window p-3 h-full"
-  class:clickable={isRecordingActive}
-  onclick={handleClick}
-  role={isRecordingActive ? 'button' : undefined}
-  tabindex={isRecordingActive ? 0 : undefined}
+  class="overlay-window px-3 pt-3 pb-2"
 >
   <!-- Waveform visualization when recording -->
   {#if isRecordingActive}
-    <div class="mb-3">
+    <div class="mb-2">
       <Waveform height={40} barWidth={2} barGap={1} color="#ef4444" useEvents={true} />
     </div>
   {/if}
@@ -104,7 +132,7 @@
         {:else}
           <span class="text-sm font-medium text-recording">Recording</span>
           {#if $overlay.sessionInfo.model}
-            <span class="text-xs text-text-muted px-1.5 py-0.5 bg-surface rounded">
+            <span class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor($overlay.sessionInfo.model)} {getModelTextColor($overlay.sessionInfo.model)}">
               {getModelLabel($overlay.sessionInfo.model)}
             </span>
           {/if}
@@ -126,16 +154,6 @@
     </div>
 
     <div class="flex items-center gap-3">
-      {#if isRecordingActive}
-        <button
-          class="discard-btn px-2 py-1 text-xs font-medium bg-error/20 hover:bg-error/30 text-error border border-error/30 rounded transition-colors"
-          onclick={handleDiscard}
-          title="Discard recording"
-        >
-          Discard
-        </button>
-      {/if}
-
       {#if $activeRepo && showSettings && $overlay.mode !== 'paste'}
         <div class="flex items-center gap-2 text-xs">
           <span class="text-text-secondary truncate max-w-32">{$activeRepo.name}</span>
@@ -168,11 +186,21 @@
           {/if}
         </div>
       {/if}
+
+      {#if isRecordingActive}
+        <button
+          class="discard-btn px-2 py-1 text-xs font-medium bg-error/20 hover:bg-error/30 text-error border border-error/30 rounded transition-colors"
+          onclick={handleDiscard}
+          title="Discard recording"
+        >
+          Discard
+        </button>
+      {/if}
     </div>
   </div>
 
   <!-- Show SDK session info when available (only show branch here, model is shown inline when recording) -->
-  {#if $overlay.sessionInfo.branch && !isRecordingActive}
+  {#if $overlay.sessionInfo.branch && !isRecordingActive && $overlay.mode !== 'paste'}
     <div class="mt-2 p-2 bg-surface rounded text-xs text-text-secondary">
       <div class="flex items-center gap-3">
         <div class="flex items-center gap-1">
@@ -182,7 +210,7 @@
         {#if $overlay.sessionInfo.model}
           <div class="flex items-center gap-1">
             <span class="text-text-muted">Model:</span>
-            <span class="font-medium text-text-primary">{getModelLabel($overlay.sessionInfo.model)}</span>
+            <span class="font-medium px-1.5 py-0.5 rounded {getModelBadgeBgColor($overlay.sessionInfo.model)} {getModelTextColor($overlay.sessionInfo.model)}">{getModelLabel($overlay.sessionInfo.model)}</span>
           </div>
         {/if}
       </div>
@@ -200,9 +228,39 @@
       {$recording.error}
     </div>
   {/if}
+
+  <!-- Hotkey hints at bottom -->
+  {#if isRecordingActive && showHotkeyHints}
+    <div class="hotkey-hints mt-3 pt-2 border-t border-border/50 flex gap-4 justify-center">
+      <div class="hotkey-hint flex items-center gap-2">
+        <div class="keys flex items-center gap-0.5">
+          {#each sendHotkeyKeys as key}
+            <kbd class="key">{key}</kbd>
+          {/each}
+        </div>
+        <span class="action text-xs text-text-secondary">Claude</span>
+      </div>
+      <div class="hotkey-hint flex items-center gap-2">
+        <div class="keys flex items-center gap-0.5">
+          {#each transcribeHotkeyKeys as key}
+            <kbd class="key">{key}</kbd>
+          {/each}
+        </div>
+        <span class="action text-xs text-text-secondary">Transcribe</span>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
+  .overlay-window {
+    width: 380px;
+    display: inline-block;
+    background: var(--color-surface);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
   .line-clamp-3 {
     display: -webkit-box;
     -webkit-line-clamp: 3;
@@ -210,16 +268,28 @@
     overflow: hidden;
   }
 
-  .clickable {
-    cursor: pointer;
-    user-select: none;
+  /* Keyboard key styling */
+  .key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    padding: 0.125rem 0.375rem;
+    font-size: 0.65rem;
+    font-weight: 500;
+    font-family: system-ui, -apple-system, sans-serif;
+    color: var(--color-text-primary);
+    background: linear-gradient(180deg, var(--color-surface-elevated) 0%, var(--color-surface) 100%);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
-  .clickable:hover {
+  .hotkey-hint {
     opacity: 0.9;
   }
 
-  .clickable:active {
+  .hotkey-hint .action {
     opacity: 0.8;
   }
 </style>

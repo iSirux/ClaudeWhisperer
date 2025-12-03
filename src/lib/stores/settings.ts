@@ -1,5 +1,6 @@
 import { writable, derived } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 
 export interface WhisperConfig {
   endpoint: string;
@@ -16,7 +17,6 @@ export interface GitConfig {
 
 export interface HotkeyConfig {
   toggle_recording: string;
-  send_prompt: string;
   switch_repo: string;
   transcribe_to_input: string;
 }
@@ -28,6 +28,9 @@ export interface OverlayConfig {
   show_terminals: boolean;
   sessions_overlay_enabled: boolean;
   show_when_focused: boolean;
+  show_hotkey_hints: boolean;
+  position_x: number | null;
+  position_y: number | null;
 }
 
 export interface AudioConfig {
@@ -78,6 +81,10 @@ export interface AppConfig {
   session_persistence: SessionPersistenceConfig;
   session_sort_order: SessionSortOrder;
   mark_sessions_unread: boolean;
+  show_latest_message_preview: boolean;
+  session_prompt_rows: number;
+  session_response_rows: number;
+  sidebar_width: number;
 }
 
 const defaultConfig: AppConfig = {
@@ -94,7 +101,6 @@ const defaultConfig: AppConfig = {
   },
   hotkeys: {
     toggle_recording: "CommandOrControl+Shift+Space",
-    send_prompt: "CommandOrControl+Enter",
     switch_repo: "CommandOrControl+Shift+R",
     transcribe_to_input: "CommandOrControl+Shift+T",
   },
@@ -105,6 +111,9 @@ const defaultConfig: AppConfig = {
     show_terminals: true,
     sessions_overlay_enabled: false,
     show_when_focused: true,
+    show_hotkey_hints: true,
+    position_x: null,
+    position_y: null,
   },
   audio: {
     device_id: null,
@@ -115,7 +124,7 @@ const defaultConfig: AppConfig = {
   },
   repos: [],
   active_repo_index: 0,
-  default_model: "claude-opus-4-5",
+  default_model: "claude-opus-4-5-20251101",
   terminal_mode: "Interactive",
   skip_permissions: false,
   theme: "Midnight",
@@ -132,6 +141,10 @@ const defaultConfig: AppConfig = {
   },
   session_sort_order: "Chronological",
   mark_sessions_unread: true,
+  show_latest_message_preview: true,
+  session_prompt_rows: 2,
+  session_response_rows: 2,
+  sidebar_width: 256,
 };
 
 function createSettingsStore() {
@@ -155,6 +168,8 @@ function createSettingsStore() {
       try {
         await invoke("save_config", { newConfig: config });
         set(config);
+        // Notify other windows (e.g., overlay) that settings changed
+        emit("settings-changed");
       } catch (error) {
         console.error("Failed to save config:", error);
         throw error;
@@ -162,10 +177,17 @@ function createSettingsStore() {
     },
 
     async addRepo(path: string, name: string) {
-      console.log("[settings.addRepo] Invoking backend add_repo with path:", path, "name:", name);
+      console.log(
+        "[settings.addRepo] Invoking backend add_repo with path:",
+        path,
+        "name:",
+        name
+      );
       try {
         await invoke("add_repo", { path, name });
-        console.log("[settings.addRepo] Backend add_repo succeeded, reloading config...");
+        console.log(
+          "[settings.addRepo] Backend add_repo succeeded, reloading config..."
+        );
         await this.load();
         console.log("[settings.addRepo] Config reloaded successfully");
       } catch (error) {
@@ -175,10 +197,15 @@ function createSettingsStore() {
     },
 
     async removeRepo(index: number) {
-      console.log("[settings.removeRepo] Invoking backend remove_repo with index:", index);
+      console.log(
+        "[settings.removeRepo] Invoking backend remove_repo with index:",
+        index
+      );
       try {
         await invoke("remove_repo", { index });
-        console.log("[settings.removeRepo] Backend remove_repo succeeded, reloading config...");
+        console.log(
+          "[settings.removeRepo] Backend remove_repo succeeded, reloading config..."
+        );
         await this.load();
         console.log("[settings.removeRepo] Config reloaded successfully");
       } catch (error) {

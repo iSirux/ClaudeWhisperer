@@ -1,6 +1,31 @@
 import { query, type Query, type Options, type SDKMessage, type SubagentStartHookInput, type SubagentStopHookInput } from '@anthropic-ai/claude-agent-sdk';
 import * as readline from 'readline';
 
+// Message types for conversation history restoration
+interface HistoryUserMessage {
+  type: 'user';
+  content: string;
+}
+
+interface HistoryAssistantMessage {
+  type: 'assistant';
+  content: string;
+}
+
+interface HistoryToolUseMessage {
+  type: 'tool_use';
+  tool: string;
+  input: unknown;
+}
+
+interface HistoryToolResultMessage {
+  type: 'tool_result';
+  tool: string;
+  output: string;
+}
+
+type HistoryMessage = HistoryUserMessage | HistoryAssistantMessage | HistoryToolUseMessage | HistoryToolResultMessage;
+
 // Types for IPC messages
 interface CreateMessage {
   type: 'create';
@@ -8,6 +33,7 @@ interface CreateMessage {
   cwd: string;
   model?: string;
   system_prompt?: string;
+  messages?: HistoryMessage[]; // Conversation history for restored sessions
   options?: Partial<Options>;
 }
 
@@ -49,6 +75,7 @@ interface Session {
   abortController?: AbortController;
   queryIterator?: Query; // The active query iterator for interrupt()
   sdkSessionId?: string; // Track the SDK's internal session ID for resume
+  conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions
 }
 
 const sessions = new Map<string, Session>();
@@ -121,44 +148,120 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     ...msg.options,
   };
 
-  sessions.set(msg.id, { cwd: msg.cwd, options });
+  sessions.set(msg.id, {
+    cwd: msg.cwd,
+    options,
+    conversationHistory: msg.messages, // Store conversation history for restored sessions
+  });
+
+  if (msg.messages && msg.messages.length > 0) {
+    send({ type: 'debug', id: msg.id, message: `Session created with ${msg.messages.length} history messages` });
+  }
+
   send({ type: 'created', id: msg.id });
 }
 
-// Content block types for multimodal prompts
+// Content block types for multimodal prompts (matching Anthropic API format)
 type TextBlock = { type: 'text'; text: string };
 type ImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
 type ContentBlock = TextBlock | ImageBlock;
 
-// Build content blocks for multimodal prompts (text + images)
-function buildPromptContent(prompt: string, images?: ImageData[]): string | ContentBlock[] {
-  // If no images, just return the string prompt (simpler path)
-  if (!images || images.length === 0) {
-    return prompt;
+// SDKUserMessage type for streaming input (matches SDK types)
+interface SDKUserMessageForInput {
+  type: 'user';
+  message: {
+    role: 'user';
+    content: string | ContentBlock[];
+  };
+  parent_tool_use_id: null;
+  session_id: string;
+}
+
+/**
+ * Format conversation history into a context string for the prompt.
+ * This allows Claude to understand what happened before in the conversation.
+ */
+function formatConversationHistory(messages: HistoryMessage[]): string {
+  if (!messages || messages.length === 0) return '';
+
+  const parts: string[] = [];
+  parts.push('<conversation_history>');
+  parts.push('The following is the history of our previous conversation. Please continue from where we left off:');
+  parts.push('');
+
+  for (const msg of messages) {
+    switch (msg.type) {
+      case 'user':
+        parts.push(`[User]: ${msg.content}`);
+        break;
+      case 'assistant':
+        parts.push(`[Assistant]: ${msg.content}`);
+        break;
+      case 'tool_use':
+        parts.push(`[Assistant used tool "${msg.tool}"]: ${JSON.stringify(msg.input)}`);
+        break;
+      case 'tool_result':
+        // Truncate very long tool outputs
+        const output = msg.output.length > 500 ? msg.output.slice(0, 500) + '...[truncated]' : msg.output;
+        parts.push(`[Tool "${msg.tool}" result]: ${output}`);
+        break;
+    }
   }
 
-  // Build content blocks array with images first, then text
+  parts.push('');
+  parts.push('</conversation_history>');
+  parts.push('');
+  parts.push('Continue the conversation based on the history above. Here is the new request:');
+  parts.push('');
+
+  return parts.join('\n');
+}
+
+// Build content blocks for multimodal prompts (text + images)
+function buildContentBlocks(prompt: string, images?: ImageData[]): ContentBlock[] {
   const contentBlocks: ContentBlock[] = [];
 
-  // Add image blocks
-  for (const img of images) {
-    contentBlocks.push({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: img.mediaType,
-        data: img.base64Data,
-      },
-    });
+  // Add image blocks first
+  if (images) {
+    for (const img of images) {
+      contentBlocks.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: img.mediaType,
+          data: img.base64Data,
+        },
+      });
+    }
   }
 
-  // Add text block
-  contentBlocks.push({
-    type: 'text',
-    text: prompt,
-  });
+  // Only add text block if there's actual text content
+  // Empty text blocks with cache_control cause API errors
+  const trimmedPrompt = prompt.trim();
+  if (trimmedPrompt) {
+    contentBlocks.push({
+      type: 'text',
+      text: trimmedPrompt,
+    });
+  }
+  // If no text and no images, contentBlocks will be empty - caller should handle
 
   return contentBlocks;
+}
+
+// Create an async iterable that yields a single SDKUserMessage for multimodal prompts
+async function* createUserMessageStream(prompt: string, images: ImageData[], sessionId: string): AsyncGenerator<SDKUserMessageForInput> {
+  const contentBlocks = buildContentBlocks(prompt, images);
+
+  yield {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: contentBlocks,
+    },
+    parent_tool_use_id: null,
+    session_id: sessionId,
+  };
 }
 
 async function handleQuery(msg: QueryMessage): Promise<void> {
@@ -169,7 +272,8 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   }
 
   const hasImages = msg.images && msg.images.length > 0;
-  send({ type: 'debug', id: msg.id, message: `Starting query with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0})` });
+  const hasHistory = session.conversationHistory && session.conversationHistory.length > 0 && !session.sdkSessionId;
+  send({ type: 'debug', id: msg.id, message: `Starting query with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0}, history: ${session.conversationHistory?.length ?? 0})` });
 
   try {
     // Create abort controller for this query
@@ -179,43 +283,61 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     send({ type: 'debug', id: msg.id, message: `Calling SDK query()... resume=${session.sdkSessionId || 'none'}` });
     send({ type: 'debug', id: msg.id, message: `Options: cwd=${session.options.cwd}, pathToClaudeCodeExecutable=${session.options.pathToClaudeCodeExecutable}` });
 
-    // Build the prompt - either string or content blocks with images
-    const promptContent = buildPromptContent(msg.prompt, msg.images);
-    if (hasImages) {
-      send({ type: 'debug', id: msg.id, message: `Built multimodal prompt with ${msg.images!.length} image(s)` });
+    // If this is a restored session without an SDK session ID, prepend conversation history
+    // (After first query, we'll have an sdkSessionId and can use the SDK's built-in resume)
+    let promptToSend = msg.prompt;
+    if (hasHistory) {
+      const historyContext = formatConversationHistory(session.conversationHistory!);
+      promptToSend = historyContext + msg.prompt;
+      send({ type: 'debug', id: msg.id, message: `Prepended ${session.conversationHistory!.length} history messages to prompt` });
     }
+
+    // Build the prompt - for images we need to use AsyncIterable<SDKUserMessage>
+    // For text-only prompts we can use a simple string
+    let promptInput: string | AsyncGenerator<SDKUserMessageForInput>;
+    if (hasImages) {
+      // Use the session ID if we have one, otherwise use the message ID as placeholder
+      const sessionId = session.sdkSessionId || msg.id;
+      promptInput = createUserMessageStream(promptToSend, msg.images!, sessionId);
+      send({ type: 'debug', id: msg.id, message: `Built multimodal prompt stream with ${msg.images!.length} image(s)` });
+    } else {
+      promptInput = promptToSend;
+    }
+
+    // Common options for both text and multimodal queries
+    const queryOptions = {
+      ...session.options,
+      abortController,
+      // Resume from previous session if we have one
+      resume: session.sdkSessionId,
+      // Capture stderr for debugging
+      stderr: (data: string) => {
+        send({ type: 'debug', id: msg.id, message: `[stderr] ${data}` });
+      },
+      // Hook callbacks for subagent lifecycle events
+      hooks: {
+        SubagentStart: [{
+          hooks: [async (input: SubagentStartHookInput) => {
+            sendSubagentStart(msg.id, input.agent_id, input.agent_type);
+            return { continue: true };
+          }],
+        }],
+        SubagentStop: [{
+          hooks: [async (input: SubagentStopHookInput) => {
+            sendSubagentStop(msg.id, input.agent_id, input.agent_transcript_path);
+            return { continue: true };
+          }],
+        }],
+      },
+    };
 
     // Use the query function from the SDK
     let queryIterator;
     try {
-      // The SDK accepts either a string or content blocks array for prompt
+      // The SDK accepts either a string or AsyncIterable<SDKUserMessage> for prompt
       queryIterator = query({
-        prompt: promptContent as string, // Type assertion - SDK accepts both
-        options: {
-          ...session.options,
-          abortController,
-          // Resume from previous session if we have one
-          resume: session.sdkSessionId,
-          // Capture stderr for debugging
-          stderr: (data: string) => {
-            send({ type: 'debug', id: msg.id, message: `[stderr] ${data}` });
-          },
-          // Hook callbacks for subagent lifecycle events
-          hooks: {
-            SubagentStart: [{
-              hooks: [async (input: SubagentStartHookInput) => {
-                sendSubagentStart(msg.id, input.agent_id, input.agent_type);
-                return { continue: true };
-              }],
-            }],
-            SubagentStop: [{
-              hooks: [async (input: SubagentStopHookInput) => {
-                sendSubagentStop(msg.id, input.agent_id, input.agent_transcript_path);
-                return { continue: true };
-              }],
-            }],
-          },
-        },
+        prompt: promptInput as string, // Type assertion - SDK accepts both
+        options: queryOptions,
       });
     } catch (spawnError) {
       send({ type: 'debug', id: msg.id, message: `Failed to create query: ${spawnError}` });
