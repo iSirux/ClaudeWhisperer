@@ -25,6 +25,7 @@ export interface HotkeyConfig {
   toggle_open_mic: string;
   send_prompt: string;
   switch_repo: string;
+  transcribe_to_input: string;
 }
 
 export interface OverlayConfig {
@@ -33,6 +34,7 @@ export interface OverlayConfig {
   show_settings: boolean;
   show_terminals: boolean;
   sessions_overlay_enabled: boolean;
+  show_when_focused: boolean;
 }
 
 export interface AudioConfig {
@@ -42,12 +44,18 @@ export interface AudioConfig {
   use_voice_command: boolean;
   use_hotkey: boolean;
   play_sound_on_completion: boolean;
+  recording_linger_ms: number;
 }
 
 export interface SystemConfig {
   minimize_to_tray: boolean;
   start_minimized: boolean;
   autostart: boolean;
+}
+
+export interface SessionPersistenceConfig {
+  enabled: boolean;
+  max_sessions: number;
 }
 
 export interface RepoConfig {
@@ -74,6 +82,7 @@ export interface AppConfig {
   theme: Theme;
   system: SystemConfig;
   show_branch_in_sessions: boolean;
+  session_persistence: SessionPersistenceConfig;
 }
 
 const defaultConfig: AppConfig = {
@@ -98,6 +107,7 @@ const defaultConfig: AppConfig = {
     toggle_open_mic: "CommandOrControl+Shift+M",
     send_prompt: "CommandOrControl+Enter",
     switch_repo: "CommandOrControl+Shift+R",
+    transcribe_to_input: "CommandOrControl+Shift+T",
   },
   overlay: {
     show_transcript: true,
@@ -105,6 +115,7 @@ const defaultConfig: AppConfig = {
     show_settings: true,
     show_terminals: true,
     sessions_overlay_enabled: false,
+    show_when_focused: true,
   },
   audio: {
     device_id: null,
@@ -113,6 +124,7 @@ const defaultConfig: AppConfig = {
     use_voice_command: false,
     use_hotkey: true,
     play_sound_on_completion: false,
+    recording_linger_ms: 500,
   },
   repos: [],
   active_repo_index: 0,
@@ -126,6 +138,10 @@ const defaultConfig: AppConfig = {
     autostart: false,
   },
   show_branch_in_sessions: false,
+  session_persistence: {
+    enabled: true,
+    max_sessions: 50,
+  },
 };
 
 function createSettingsStore() {

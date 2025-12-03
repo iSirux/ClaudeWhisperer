@@ -64,6 +64,20 @@ function sendDone(id: string): void {
   send({ type: 'done', id });
 }
 
+function sendUsage(id: string, usage: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalCostUsd: number;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  contextWindow: number;
+}): void {
+  send({ type: 'usage', id, ...usage });
+}
+
 function sendError(id: string, message: string): void {
   send({ type: 'error', id, message });
 }
@@ -175,8 +189,41 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       break;
 
     case 'result':
-      // Final result message - only send if error (assistant message already has the content)
-      if (message.subtype === 'error' || message.subtype === 'error_tool_use') {
+      // Final result message - send usage data and handle errors
+      if (message.subtype === 'success') {
+        // Extract usage data from successful result
+        const modelUsageValues = Object.values(message.modelUsage || {});
+        const contextWindow = modelUsageValues.length > 0 ? modelUsageValues[0].contextWindow : 200000;
+
+        sendUsage(id, {
+          inputTokens: message.usage?.input_tokens || 0,
+          outputTokens: message.usage?.output_tokens || 0,
+          cacheReadTokens: message.usage?.cache_read_input_tokens || 0,
+          cacheCreationTokens: message.usage?.cache_creation_input_tokens || 0,
+          totalCostUsd: message.total_cost_usd || 0,
+          durationMs: message.duration_ms || 0,
+          durationApiMs: message.duration_api_ms || 0,
+          numTurns: message.num_turns || 0,
+          contextWindow,
+        });
+      } else if (message.subtype === 'error' || message.subtype === 'error_tool_use') {
+        // Still send usage data even for errors (if available)
+        if (message.usage) {
+          const modelUsageValues = Object.values(message.modelUsage || {});
+          const contextWindow = modelUsageValues.length > 0 ? modelUsageValues[0].contextWindow : 200000;
+
+          sendUsage(id, {
+            inputTokens: message.usage?.input_tokens || 0,
+            outputTokens: message.usage?.output_tokens || 0,
+            cacheReadTokens: message.usage?.cache_read_input_tokens || 0,
+            cacheCreationTokens: message.usage?.cache_creation_input_tokens || 0,
+            totalCostUsd: message.total_cost_usd || 0,
+            durationMs: message.duration_ms || 0,
+            durationApiMs: message.duration_api_ms || 0,
+            numTurns: message.num_turns || 0,
+            contextWindow,
+          });
+        }
         sendError(id, message.error || 'Unknown error');
       }
       // Don't send result.result as text - it duplicates the assistant message content

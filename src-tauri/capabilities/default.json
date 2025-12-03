@@ -21,6 +21,9 @@
     "global-shortcut:allow-unregister-all",
     "shell:default",
     "dialog:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "clipboard-manager:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text"
   ]
 }

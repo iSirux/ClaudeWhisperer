@@ -10,7 +10,8 @@
       "WebFetch(domain:github.com)",
       "Bash(npm run build:*)",
       "Bash(npm run sidecar:build:*)",
-      "Bash(npm ls:*)"
+      "Bash(npm ls:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []

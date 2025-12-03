@@ -4,8 +4,13 @@
   import { recording, isRecording, isProcessing } from '$lib/stores/recording';
   import { settings } from '$lib/stores/settings';
   import { renderMarkdown } from '$lib/utils/markdown';
+  import { formatTokens, formatCost } from '$lib/stores/usageStats';
 
   let { sessionId }: { sessionId: string } = $props();
+
+  // Copy button state
+  let copiedMessageId = $state<number | null>(null);
+  let copiedAll = $state(false);
 
   let prompt = $state('');
   let messagesEl: HTMLDivElement;
@@ -42,13 +47,28 @@
     unsubscribe?.();
   });
 
-  // Auto-scroll on new messages
+  // Auto-scroll on new messages, but only if user is near the bottom
+  let prevMessageCount = $state(0);
+  let userIsNearBottom = $state(true);
+
+  function checkIfNearBottom() {
+    if (!messagesEl) return;
+    const threshold = 100; // pixels from bottom
+    const distanceFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    userIsNearBottom = distanceFromBottom < threshold;
+  }
+
   $effect(() => {
-    if (messages.length && messagesEl) {
+    const currentCount = messages.length;
+    const hasNewMessages = currentCount > prevMessageCount;
+
+    if (hasNewMessages && userIsNearBottom && messagesEl) {
       tick().then(() => {
         messagesEl.scrollTop = messagesEl.scrollHeight;
       });
     }
+
+    prevMessageCount = currentCount;
   });
 
   async function sendPrompt() {
@@ -162,13 +182,18 @@
   }
 
   let sessionStartTime = $derived(formatSessionTime(session?.createdAt));
+  let usage = $derived(session?.usage);
+  let hasUsageData = $derived(!!usage && (usage.totalInputTokens > 0 || usage.totalOutputTokens > 0));
 
   let textareaEl: HTMLTextAreaElement;
 
   function autoResize() {
     if (textareaEl) {
       textareaEl.style.height = 'auto';
-      textareaEl.style.height = textareaEl.scrollHeight + 'px';
+      const maxHeight = 200;
+      const newHeight = Math.min(textareaEl.scrollHeight, maxHeight);
+      textareaEl.style.height = newHeight + 'px';
+      textareaEl.style.overflowY = textareaEl.scrollHeight > maxHeight ? 'auto' : 'hidden';
     }
   }
 
@@ -177,6 +202,52 @@
     prompt;
     autoResize();
   });
+
+  // Copy functions
+  function getMessageText(msg: SdkMessage): string {
+    switch (msg.type) {
+      case 'user':
+        return msg.content ?? '';
+      case 'text':
+        return msg.content ?? '';
+      case 'error':
+        return `Error: ${msg.content ?? ''}`;
+      case 'tool_start':
+        return `[Tool: ${msg.tool}]\nInput: ${formatInput(msg.input)}`;
+      case 'tool_result':
+        return `[Tool: ${msg.tool} completed]\nOutput: ${msg.output ?? ''}`;
+      default:
+        return '';
+    }
+  }
+
+  function formatChatForCopy(): string {
+    return messages
+      .filter(msg => msg.type !== 'done')
+      .map(msg => {
+        const prefix = msg.type === 'user' ? 'User: ' : msg.type === 'text' ? 'Claude: ' : '';
+        return prefix + getMessageText(msg);
+      })
+      .join('\n\n');
+  }
+
+  async function copyMessage(msg: SdkMessage) {
+    const text = msg.type === 'user' ? msg.content ?? '' : getMessageText(msg);
+    await navigator.clipboard.writeText(text);
+    copiedMessageId = msg.timestamp;
+    setTimeout(() => {
+      copiedMessageId = null;
+    }, 2000);
+  }
+
+  async function copyAllMessages() {
+    const text = formatChatForCopy();
+    await navigator.clipboard.writeText(text);
+    copiedAll = true;
+    setTimeout(() => {
+      copiedAll = false;
+    }, 2000);
+  }
 
   // Recording for current session (not creating new session)
   let isRecordingForCurrentSession = $state(false);
@@ -200,23 +271,121 @@
 
 <div class="sdk-view">
   <div class="session-header">
-    {#if sessionStartTime}
-      <span class="session-time">{sessionStartTime}</span>
-    {/if}
-    {#if truncatedPrompt}
-      <span class="prompt-label">Prompt:</span>
-      <span class="prompt-text">{truncatedPrompt}</span>
+    <div class="header-top">
+      {#if sessionStartTime}
+        <span class="session-time">{sessionStartTime}</span>
+      {/if}
+      {#if truncatedPrompt}
+        <span class="prompt-label">Prompt:</span>
+        <span class="prompt-text">{truncatedPrompt}</span>
+      {/if}
+      <button
+        class="copy-all-button"
+        class:copied={copiedAll}
+        onclick={copyAllMessages}
+        title="Copy entire chat"
+        disabled={messages.length === 0}
+      >
+        {#if copiedAll}
+          <svg class="copy-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+          </svg>
+          Copied!
+        {:else}
+          <svg class="copy-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" />
+            <path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" />
+          </svg>
+          Copy All
+        {/if}
+      </button>
+    </div>
+    {#if hasUsageData && usage}
+      <div class="usage-bar">
+        <div class="usage-stats">
+          <span class="usage-stat" title="Input tokens">
+            <svg class="usage-icon" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 8a.5.5 0 0 1 .5-.5h5.793L8.146 5.354a.5.5 0 1 1 .708-.708l3 3a.5.5 0 0 1 0 .708l-3 3a.5.5 0 0 1-.708-.708L10.293 8.5H4.5A.5.5 0 0 1 4 8z"/>
+            </svg>
+            {formatTokens(usage.totalInputTokens)}
+          </span>
+          <span class="usage-stat" title="Output tokens">
+            <svg class="usage-icon" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M12 8a.5.5 0 0 1-.5.5H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5a.5.5 0 0 1 .5.5z"/>
+            </svg>
+            {formatTokens(usage.totalOutputTokens)}
+          </span>
+          {#if usage.totalCacheReadTokens > 0}
+            <span class="usage-stat cache" title="Cache read tokens (reduced cost)">
+              <svg class="usage-icon" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>
+              </svg>
+              {formatTokens(usage.totalCacheReadTokens)}
+            </span>
+          {/if}
+          <span class="usage-stat cost" title="Total cost">
+            {formatCost(usage.totalCostUsd)}
+          </span>
+        </div>
+        <div class="context-bar-container" title="Context usage: {usage.contextUsagePercent.toFixed(1)}% of {formatTokens(usage.contextWindow)}">
+          <div class="context-bar-bg">
+            <div
+              class="context-bar-fill"
+              class:warning={usage.contextUsagePercent > 70}
+              class:danger={usage.contextUsagePercent > 90}
+              style="width: {Math.min(100, usage.contextUsagePercent)}%"
+            ></div>
+          </div>
+          <span class="context-percent">{usage.contextUsagePercent.toFixed(0)}%</span>
+        </div>
+      </div>
     {/if}
   </div>
-  <div class="messages" bind:this={messagesEl}>
+  <div class="messages" bind:this={messagesEl} onscroll={checkIfNearBottom}>
     {#each messages as msg (msg.timestamp)}
       <div class="message message-{msg.type}">
         {#if msg.type === 'user'}
           <div class="user-message">
             <pre class="user-content">{msg.content}</pre>
+            <button
+              class="copy-message-button"
+              class:copied={copiedMessageId === msg.timestamp}
+              onclick={() => copyMessage(msg)}
+              title="Copy message"
+            >
+              {#if copiedMessageId === msg.timestamp}
+                <svg viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                </svg>
+              {:else}
+                <svg viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                </svg>
+              {/if}
+            </button>
           </div>
         {:else if msg.type === 'text'}
-          <div class="text-content markdown-body">{@html renderMarkdown(msg.content ?? '')}</div>
+          <div class="text-message-container">
+            <div class="text-content markdown-body">{@html renderMarkdown(msg.content ?? '')}</div>
+            <button
+              class="copy-message-button"
+              class:copied={copiedMessageId === msg.timestamp}
+              onclick={() => copyMessage(msg)}
+              title="Copy message"
+            >
+              {#if copiedMessageId === msg.timestamp}
+                <svg viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                </svg>
+              {:else}
+                <svg viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                </svg>
+              {/if}
+            </button>
+          </div>
         {:else if msg.type === 'tool_start'}
           <div class="tool-call">
             <div class="tool-header">
@@ -267,8 +436,23 @@
   </div>
 
   <div class="input-area">
-    <!-- Record button for current session -->
-    <div class="record-button-container">
+    <textarea
+      bind:this={textareaEl}
+      bind:value={prompt}
+      oninput={autoResize}
+      onkeydown={handleKeydown}
+      placeholder="Enter your prompt... (Enter to send, Shift+Enter for newline)"
+      rows="1"
+    ></textarea>
+    <div class="button-group">
+      {#if isQuerying}
+        <button onclick={stopQuery} class="stop-button" title="Stop current query">
+          <svg class="stop-icon" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+        </button>
+      {/if}
+      <!-- Record button for current session -->
       {#if $isRecording && isRecordingForCurrentSession}
         <button
           class="record-button recording"
@@ -288,23 +472,6 @@
         >
           <svg class="mic-icon" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-          </svg>
-        </button>
-      {/if}
-    </div>
-    <textarea
-      bind:this={textareaEl}
-      bind:value={prompt}
-      oninput={autoResize}
-      onkeydown={handleKeydown}
-      placeholder="Enter your prompt... (Enter to send, Shift+Enter for newline)"
-      rows="1"
-    ></textarea>
-    <div class="button-group">
-      {#if isQuerying}
-        <button onclick={stopQuery} class="stop-button" title="Stop current query">
-          <svg class="stop-icon" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="6" width="12" height="12" rx="2" />
           </svg>
         </button>
       {/if}
@@ -358,9 +525,94 @@
     background: #1e293b;
     border-bottom: 1px solid #334155;
     display: flex;
-    align-items: baseline;
+    flex-direction: column;
     gap: 0.5rem;
     font-size: 0.85rem;
+  }
+
+  .header-top {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  .usage-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid #334155;
+    margin-top: 0.25rem;
+  }
+
+  .usage-stats {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+  }
+
+  .usage-stat {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: #94a3b8;
+    font-size: 0.75rem;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  .usage-stat.cache {
+    color: #22c55e;
+  }
+
+  .usage-stat.cost {
+    color: #f59e0b;
+    font-weight: 600;
+  }
+
+  .usage-icon {
+    width: 12px;
+    height: 12px;
+    opacity: 0.7;
+  }
+
+  .context-bar-container {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .context-bar-bg {
+    flex: 1;
+    height: 6px;
+    background: #334155;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .context-bar-fill {
+    height: 100%;
+    background: #3b82f6;
+    border-radius: 3px;
+    transition: width 0.3s ease, background 0.3s ease;
+  }
+
+  .context-bar-fill.warning {
+    background: #f59e0b;
+  }
+
+  .context-bar-fill.danger {
+    background: #ef4444;
+  }
+
+  .context-percent {
+    font-size: 0.7rem;
+    color: #64748b;
+    font-weight: 500;
+    min-width: 32px;
+    text-align: right;
   }
 
   .session-time {
@@ -384,6 +636,45 @@
     overflow: hidden;
     text-overflow: ellipsis;
     user-select: text;
+    flex: 1;
+  }
+
+  .copy-all-button {
+    margin-left: auto;
+    background: #374151;
+    color: #9ca3af;
+    border: none;
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
+    min-width: unset;
+  }
+
+  .copy-all-button:hover:not(:disabled) {
+    background: #4b5563;
+    color: #e5e7eb;
+  }
+
+  .copy-all-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .copy-all-button.copied {
+    background: #065f46;
+    color: #10b981;
+  }
+
+  .copy-all-button .copy-icon {
+    width: 14px;
+    height: 14px;
   }
 
   .user-message {
@@ -391,6 +682,53 @@
     background: #1e293b;
     border-radius: 8px;
     border-left: 3px solid #3b82f6;
+    position: relative;
+  }
+
+  .user-message:hover .copy-message-button {
+    opacity: 1;
+  }
+
+  .text-message-container {
+    position: relative;
+  }
+
+  .text-message-container:hover .copy-message-button {
+    opacity: 1;
+  }
+
+  .copy-message-button {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    background: #374151;
+    color: #9ca3af;
+    border: none;
+    border-radius: 4px;
+    padding: 0.35rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    opacity: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: unset;
+  }
+
+  .copy-message-button:hover {
+    background: #4b5563;
+    color: #e5e7eb;
+  }
+
+  .copy-message-button.copied {
+    background: #065f46;
+    color: #10b981;
+    opacity: 1;
+  }
+
+  .copy-message-button svg {
+    width: 14px;
+    height: 14px;
   }
 
   .user-content {
@@ -720,6 +1058,7 @@
 
   .input-area {
     display: flex;
+    align-items: flex-end;
     gap: 0.75rem;
     padding: 1rem;
     border-top: 1px solid #2a2a2a;
@@ -739,7 +1078,13 @@
     line-height: 1.4;
     min-height: unset;
     max-height: 200px;
-    overflow-y: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  textarea::-webkit-scrollbar {
+    display: none;
   }
 
   textarea:focus {
@@ -758,7 +1103,7 @@
 
   .button-group {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     gap: 0.5rem;
   }
 
@@ -816,11 +1161,6 @@
     to {
       transform: rotate(360deg);
     }
-  }
-
-  .record-button-container {
-    display: flex;
-    align-items: flex-end;
   }
 
   .record-button {

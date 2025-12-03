@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { sessions } from './sessions';
 import { sdkSessions, type SdkSession } from './sdkSessions';
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 // Session stats that get broadcast across windows
 export interface SessionStatsData {
@@ -106,6 +106,13 @@ export const sessionStats = derived(
 let lastBroadcast: SessionStatsData = { active: 0, done: 0, error: 0, total: 0 };
 
 export function setupSessionStatsBroadcast() {
+  // Listen for stats request from overlay windows
+  listen('request-session-stats', () => {
+    const stats = lastBroadcast;
+    // Send to sessions-overlay window directly
+    emitTo('sessions-overlay', 'session-stats-update', stats).catch(console.error);
+  });
+
   sessionStats.subscribe((stats) => {
     // Only broadcast if changed
     if (
@@ -115,7 +122,8 @@ export function setupSessionStatsBroadcast() {
       stats.total !== lastBroadcast.total
     ) {
       lastBroadcast = stats;
-      emit('session-stats-update', stats).catch(console.error);
+      // Use emitTo to target specific windows for reliability
+      emitTo('sessions-overlay', 'session-stats-update', stats).catch(console.error);
     }
   });
 }
@@ -137,6 +145,8 @@ function createRemoteSessionStats() {
       unlisten = await listen<SessionStatsData>('session-stats-update', (event) => {
         set(event.payload);
       });
+      // Request current stats from main window
+      emitTo('main', 'request-session-stats', {}).catch(console.error);
     },
     cleanup() {
       unlisten?.();

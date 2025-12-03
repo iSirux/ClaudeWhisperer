@@ -3,9 +3,12 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
 
+export type OverlayMode = 'session' | 'paste';
+
 interface OverlayStore {
   visible: boolean;
   position: { x: number; y: number };
+  mode: OverlayMode;
   sessionInfo: {
     branch: string | null;
     model: string | null;
@@ -21,6 +24,7 @@ function createOverlayStore() {
   const { subscribe, set, update } = writable<OverlayStore>({
     visible: false,
     position: { x: 0, y: 0 },
+    mode: 'session',
     sessionInfo: {
       branch: null,
       model: null,
@@ -36,7 +40,7 @@ function createOverlayStore() {
         const overlayWindow = await getOverlayWindow();
         if (overlayWindow) {
           await overlayWindow.show();
-          await overlayWindow.setFocus();
+          // Don't steal focus - let user continue working in their current app
         }
         update((s) => ({ ...s, visible: true }));
       } catch (error) {
@@ -108,6 +112,10 @@ function createOverlayStore() {
         ...s,
         sessionInfo: { branch: null, model: null, creatingSession: false },
       }));
+    },
+
+    setMode(mode: OverlayMode) {
+      update((s) => ({ ...s, mode }));
     },
   };
 }

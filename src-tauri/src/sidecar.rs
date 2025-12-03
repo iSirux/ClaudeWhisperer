@@ -58,6 +58,27 @@ pub enum InboundMessage {
     Done {
         id: String,
     },
+    Usage {
+        id: String,
+        #[serde(rename = "inputTokens")]
+        input_tokens: u64,
+        #[serde(rename = "outputTokens")]
+        output_tokens: u64,
+        #[serde(rename = "cacheReadTokens")]
+        cache_read_tokens: u64,
+        #[serde(rename = "cacheCreationTokens")]
+        cache_creation_tokens: u64,
+        #[serde(rename = "totalCostUsd")]
+        total_cost_usd: f64,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+        #[serde(rename = "durationApiMs")]
+        duration_api_ms: u64,
+        #[serde(rename = "numTurns")]
+        num_turns: u64,
+        #[serde(rename = "contextWindow")]
+        context_window: u64,
+    },
     ModelUpdated {
         id: String,
         model: String,
@@ -266,6 +287,37 @@ impl SidecarManager {
                 if let Err(e) = result {
                     eprintln!("[sidecar] Failed to emit done event: {}", e);
                 }
+            }
+            InboundMessage::Usage {
+                id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                total_cost_usd,
+                duration_ms,
+                duration_api_ms,
+                num_turns,
+                context_window,
+            } => {
+                println!(
+                    "[sidecar] Emitting sdk-usage-{}: {} input, {} output, ${:.4}",
+                    id, input_tokens, output_tokens, total_cost_usd
+                );
+                let _ = app.emit(
+                    &format!("sdk-usage-{}", id),
+                    serde_json::json!({
+                        "inputTokens": input_tokens,
+                        "outputTokens": output_tokens,
+                        "cacheReadTokens": cache_read_tokens,
+                        "cacheCreationTokens": cache_creation_tokens,
+                        "totalCostUsd": total_cost_usd,
+                        "durationMs": duration_ms,
+                        "durationApiMs": duration_api_ms,
+                        "numTurns": num_turns,
+                        "contextWindow": context_window,
+                    }),
+                );
             }
             InboundMessage::ModelUpdated { id, model } => {
                 println!("[sidecar] Model updated for {}: {}", id, model);

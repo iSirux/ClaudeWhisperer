@@ -5,6 +5,7 @@
   import SessionList from '$lib/components/SessionList.svelte';
   import SessionHeader from '$lib/components/SessionHeader.svelte';
   import Settings from './settings/+page.svelte';
+  import Start from '$lib/components/Start.svelte';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
@@ -13,21 +14,58 @@
   import { overlay } from '$lib/stores/overlay';
   import { sessionsOverlay } from '$lib/stores/sessionsOverlay';
   import { setupSessionStatsBroadcast } from '$lib/stores/sessionStats';
+  import { loadSessionsFromDisk, saveSessionsToDisk, setupAutoSave, setupPeriodicAutoSave } from '$lib/stores/sessionPersistence';
   import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-  // Track whether we're in SDK mode for the active session
-  $: isSdkMode = $settings.terminal_mode === 'Sdk';
+  // Sidebar resize state
+  const MIN_SIDEBAR_WIDTH = 200;
+  const MAX_SIDEBAR_WIDTH = 600;
+  const DEFAULT_SIDEBAR_WIDTH = 256;
+  let sidebarWidth = $state(DEFAULT_SIDEBAR_WIDTH);
+  let isResizing = $state(false);
+
+  function startResize(e: MouseEvent) {
+    e.preventDefault();
+    isResizing = true;
+    document.addEventListener('mousemove', handleResize);
+    document.addEventListener('mouseup', stopResize);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }
+
+  function handleResize(e: MouseEvent) {
+    if (!isResizing) return;
+    const newWidth = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, e.clientX));
+    sidebarWidth = newWidth;
+  }
+
+  function stopResize() {
+    isResizing = false;
+    document.removeEventListener('mousemove', handleResize);
+    document.removeEventListener('mouseup', stopResize);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
 
   // Flag to track if we're recording for a new session (header button)
-  let isRecordingForNewSession = false;
+  let isRecordingForNewSession = $state(false);
 
-  let currentView: 'sessions' | 'settings' = 'sessions';
-  let showRepoSelector = false;
+  let currentView = $state<'sessions' | 'settings' | 'start'>('sessions');
+  let showRepoSelector = $state(false);
   let isTogglingRecording = false;
   let wasAppFocusedOnRecordStart = true;
-  let settingsInitialTab = 'general';
+  let settingsInitialTab = $state('general');
+  let cleanupAutoSave: (() => void) | null = null;
+  let cleanupPeriodicSave: (() => void) | null = null;
+  let unlistenDiscardRecording: UnlistenFn | null = null;
+
+  function handleOpenSettings(event: CustomEvent<{ tab: string }>) {
+    settingsInitialTab = event.detail.tab;
+    showSettingsView();
+  }
 
   onMount(async () => {
     await settings.load();
@@ -38,6 +76,15 @@
     await sessions.load();
     sessions.setupListeners();
 
+    // Load persisted sessions if enabled
+    if ($settings.session_persistence.enabled) {
+      await loadSessionsFromDisk();
+    }
+
+    // Setup auto-save for session persistence
+    cleanupAutoSave = setupAutoSave();
+    cleanupPeriodicSave = setupPeriodicAutoSave();
+
     // Start broadcasting session stats to other windows (like sessions-overlay)
     setupSessionStatsBroadcast();
 
@@ -45,14 +92,35 @@
 
     // Listen for session selection from SessionList
     window.addEventListener('switch-to-sessions', showSessionsView);
+    // Listen for open-settings events from Start component
+    window.addEventListener('open-settings', handleOpenSettings as EventListener);
+
+    // Listen for discard recording events from overlay
+    unlistenDiscardRecording = await listen('discard-recording', () => {
+      recording.cancelRecording();
+      overlay.hide();
+      overlay.clearSessionInfo();
+      isRecordingForNewSession = false;
+    });
   });
 
   onDestroy(() => {
     window.removeEventListener('switch-to-sessions', showSessionsView);
+    window.removeEventListener('open-settings', handleOpenSettings as EventListener);
+
+    // Cleanup event listeners
+    if (unlistenDiscardRecording) unlistenDiscardRecording();
+
+    // Cleanup auto-save handlers
+    if (cleanupAutoSave) cleanupAutoSave();
+    if (cleanupPeriodicSave) cleanupPeriodicSave();
+
+    // Save sessions one final time on destroy
+    saveSessionsToDisk();
   });
 
   // Reactive logic to show/hide sessions overlay based on active sessions
-  $: {
+  $effect(() => {
     if ($settings.overlay.sessions_overlay_enabled) {
       const hasActiveSessions =
         $sessions.some(s => s.status === 'Running' || s.status === 'Starting') ||
@@ -66,7 +134,7 @@
     } else {
       sessionsOverlay.hide();
     }
-  }
+  });
 
   async function sendTranscript() {
     if (!$recording.transcript) return;
@@ -106,9 +174,10 @@
 
         try {
           if ($isRecording) {
-            await recording.stopRecording();
+            // Hide overlay immediately before processing starts
             await overlay.hide();
             overlay.clearSessionInfo();
+            await recording.stopRecording();
 
             // Auto-send transcript if app wasn't focused when recording started
             if (!wasAppFocusedOnRecordStart && $recording.transcript) {
@@ -119,19 +188,19 @@
             const mainWindow = getCurrentWindow();
             wasAppFocusedOnRecordStart = await mainWindow.isFocused();
 
+            const repoPath = $activeRepo?.path || '.';
+            const model = $settings.default_model;
+
+            // Get current git branch for overlay display
+            let branch: string | null = null;
+            try {
+              branch = await invoke<string>('get_git_branch', { repoPath });
+            } catch (e) {
+              console.error('Failed to get git branch:', e);
+            }
+
             // If app not focused and in SDK mode, start a new SDK session
             if (!wasAppFocusedOnRecordStart && $settings.terminal_mode === 'Sdk') {
-              const repoPath = $activeRepo?.path || '.';
-              const model = $settings.default_model;
-
-              // Get current git branch
-              let branch: string | null = null;
-              try {
-                branch = await invoke<string>('get_git_branch', { repoPath });
-              } catch (e) {
-                console.error('Failed to get git branch:', e);
-              }
-
               // Set overlay to show we're creating a session
               overlay.setSessionInfo(branch, model, true);
 
@@ -141,12 +210,15 @@
 
               // Update overlay to show session is created
               overlay.setSessionInfo(branch, model, false);
+            } else {
+              // Set overlay info without creating session (for focused app or non-SDK mode)
+              overlay.setSessionInfo(branch, model, false);
             }
 
             await recording.startRecording($settings.audio.device_id || undefined);
 
-            // Only show overlay if app is not focused
-            if (!wasAppFocusedOnRecordStart) {
+            // Show overlay if app is not focused, or if show_when_focused is enabled
+            if (!wasAppFocusedOnRecordStart || $settings.overlay.show_when_focused) {
               await overlay.show();
             }
           }
@@ -165,6 +237,41 @@
       await register($settings.hotkeys.switch_repo, () => {
         showRepoSelector = !showRepoSelector;
       });
+
+      // Transcribe to input hotkey - records, transcribes, and pastes into current app
+      let isTranscribeToInput = false;
+      await register($settings.hotkeys.transcribe_to_input, async () => {
+        if (isTogglingRecording) return;
+        isTogglingRecording = true;
+
+        try {
+          if ($isRecording && isTranscribeToInput) {
+            // Stop recording and paste
+            await overlay.hide();
+            overlay.clearSessionInfo();
+            overlay.setMode('session');
+
+            const transcript = await recording.stopRecording(true);
+            isTranscribeToInput = false;
+
+            if (transcript) {
+              // Paste the transcript into the currently focused app
+              await invoke('paste_text', { text: transcript });
+            }
+          } else if (!$isRecording) {
+            // Start recording in paste mode
+            isTranscribeToInput = true;
+            overlay.setMode('paste');
+
+            await recording.startRecording($settings.audio.device_id || undefined);
+            await overlay.show();
+          }
+        } finally {
+          setTimeout(() => {
+            isTogglingRecording = false;
+          }, 200);
+        }
+      });
     } catch (error) {
       console.error('Failed to register hotkeys:', error);
     }
@@ -176,6 +283,10 @@
 
   function showSessionsView() {
     currentView = 'sessions';
+  }
+
+  function showStartView() {
+    currentView = 'start';
   }
 
   async function selectRepo(index: number) {
@@ -317,14 +428,14 @@
         </button>
       {:else if !$isRecording}
         <button
-          class="px-3 py-1.5 text-sm bg-accent hover:bg-accent-hover text-white rounded transition-colors flex items-center gap-2"
+          class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
           onclick={startRecordingNewSession}
-          title="Record and create new session"
+          title="Record and start new session"
         >
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
           </svg>
-          New Session
+          Record and Start New Session
         </button>
       {/if}
       <button
@@ -342,7 +453,7 @@
   </header>
 
   <div class="main-content flex-1 flex overflow-hidden">
-    <aside class="sidebar w-64 border-r border-border bg-surface flex flex-col">
+    <aside class="sidebar border-r border-border bg-surface flex flex-col relative" style="width: {sidebarWidth}px; min-width: {MIN_SIDEBAR_WIDTH}px; max-width: {MAX_SIDEBAR_WIDTH}px;">
       <button
         class="p-3 border-b border-border text-left hover:bg-surface-elevated transition-colors"
         class:bg-surface-elevated={currentView === 'sessions'}
@@ -393,21 +504,31 @@
       <div class="flex-1 overflow-hidden">
         <SessionList {currentView} />
       </div>
-      <button
-        class="sidebar-settings p-3 border-t border-border text-left hover:bg-surface-elevated transition-colors flex items-center gap-2"
-        class:bg-surface-elevated={currentView === 'settings'}
-        onclick={showSettingsView}
-      >
-        <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-        <span class="text-sm font-medium text-text-secondary">Settings</span>
-      </button>
+      <div class="border-t border-border">
+        <button
+          class="w-full p-3 text-left hover:bg-surface-elevated transition-colors flex items-center gap-2"
+          class:bg-surface-elevated={currentView === 'start'}
+          onclick={showStartView}
+        >
+          <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span class="text-sm font-medium text-text-secondary">Start</span>
+        </button>
+      </div>
+      <!-- Resize handle -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="resize-handle absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-accent/50 transition-colors"
+        class:bg-accent={isResizing}
+        onmousedown={startResize}
+      ></div>
     </aside>
 
     <main class="flex-1 flex flex-col overflow-hidden">
-      {#if currentView === 'settings'}
+      {#if currentView === 'start'}
+        <Start />
+      {:else if currentView === 'settings'}
         <Settings initialTab={settingsInitialTab} />
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
@@ -478,5 +599,27 @@
 
   .terminal-wrapper {
     min-height: 0;
+  }
+
+  .resize-handle {
+    /* Extend the clickable area beyond the visible 4px width */
+    padding-left: 3px;
+    padding-right: 3px;
+    margin-right: -3px;
+    background-clip: content-box;
+  }
+
+  .resize-handle:hover,
+  .resize-handle.bg-accent {
+    background-color: var(--color-accent);
+    opacity: 0.5;
+  }
+
+  .resize-handle.bg-accent {
+    opacity: 1;
+  }
+
+  .sidebar {
+    flex-shrink: 0;
   }
 </style>

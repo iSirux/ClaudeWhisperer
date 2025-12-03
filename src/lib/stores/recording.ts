@@ -1,6 +1,8 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
+import { usageStats } from './usageStats';
+import { settings } from './settings';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
 
@@ -26,6 +28,7 @@ function createRecordingStore() {
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let visualizationAnimationId: number | null = null;
+  let recordingStartTime: number | null = null;
 
   function startVisualizationBroadcast(stream: MediaStream) {
     try {
@@ -93,6 +96,7 @@ function createRecordingStore() {
         };
 
         mediaRecorder.start(100);
+        recordingStartTime = Date.now();
 
         // Start broadcasting audio visualization data to all windows
         startVisualizationBroadcast(stream);
@@ -113,18 +117,25 @@ function createRecordingStore() {
     },
 
     async stopRecording(autoTranscribe: boolean = true): Promise<string | null> {
-      // Stop visualization broadcast immediately
-      stopVisualizationBroadcast();
-
       return new Promise((resolve, reject) => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+          stopVisualizationBroadcast();
           emit('recording-state', { state: 'idle' });
           resolve(null);
           return;
         }
 
         mediaRecorder.onstop = async () => {
+          // Stop visualization broadcast after recording has stopped
+          stopVisualizationBroadcast();
           try {
+            // Track recording duration
+            if (recordingStartTime) {
+              const duration = Date.now() - recordingStartTime;
+              usageStats.trackRecording(duration);
+              recordingStartTime = null;
+            }
+
             const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
             const arrayBuffer = await audioBlob.arrayBuffer();
             const audioData = new Uint8Array(arrayBuffer);
@@ -136,6 +147,9 @@ function createRecordingStore() {
               const transcript = await invoke<string>('transcribe_audio', {
                 audioData: Array.from(audioData),
               });
+
+              // Track transcription
+              usageStats.trackTranscription();
 
               update((s) => ({
                 ...s,
@@ -173,7 +187,15 @@ function createRecordingStore() {
           }
         };
 
-        mediaRecorder.stop();
+        // Add a small delay before stopping to prevent audio cutoff
+        const lingerMs = get(settings).audio.recording_linger_ms;
+        if (lingerMs > 0) {
+          setTimeout(() => {
+            mediaRecorder?.stop();
+          }, lingerMs);
+        } else {
+          mediaRecorder.stop();
+        }
       });
     },
 
@@ -201,6 +223,9 @@ function createRecordingStore() {
         const transcript = await invoke<string>('transcribe_audio', {
           audioData: Array.from(currentAudioData),
         });
+
+        // Track transcription
+        usageStats.trackTranscription();
 
         update((s) => ({
           ...s,

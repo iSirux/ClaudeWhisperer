@@ -1,6 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { usageStats } from './usageStats';
 
 export type SessionStatus = 'Starting' | 'Running' | 'Completed' | 'Failed';
 
@@ -36,6 +37,10 @@ function createSessionsStore() {
         console.log('Backend returned session ID:', sessionId);
         await this.load();
         console.log('Sessions reloaded');
+
+        // Track PTY session for usage stats
+        usageStats.trackSession('pty', 'claude-cli', undefined);
+
         return sessionId;
       } catch (error) {
         console.error('Failed to create session:', error);
@@ -49,6 +54,10 @@ function createSessionsStore() {
         const sessionId = await invoke<string>('create_interactive_session');
         console.log('Backend returned interactive session ID:', sessionId);
         await this.load();
+
+        // Track interactive PTY session for usage stats
+        usageStats.trackSession('pty', 'claude-cli-interactive', undefined);
+
         return sessionId;
       } catch (error) {
         console.error('Failed to create interactive session:', error);

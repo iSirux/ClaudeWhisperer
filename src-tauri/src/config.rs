@@ -61,6 +61,12 @@ pub struct HotkeyConfig {
     pub toggle_open_mic: String,
     pub send_prompt: String,
     pub switch_repo: String,
+    #[serde(default = "default_transcribe_to_input")]
+    pub transcribe_to_input: String,
+}
+
+fn default_transcribe_to_input() -> String {
+    "CommandOrControl+Shift+T".to_string()
 }
 
 impl Default for HotkeyConfig {
@@ -70,6 +76,7 @@ impl Default for HotkeyConfig {
             toggle_open_mic: "CommandOrControl+Shift+M".to_string(),
             send_prompt: "CommandOrControl+Enter".to_string(),
             switch_repo: "CommandOrControl+Shift+R".to_string(),
+            transcribe_to_input: "CommandOrControl+Shift+T".to_string(),
         }
     }
 }
@@ -81,6 +88,12 @@ pub struct OverlayConfig {
     pub show_settings: bool,
     pub show_terminals: bool,
     pub sessions_overlay_enabled: bool,
+    #[serde(default = "default_show_when_focused")]
+    pub show_when_focused: bool,
+}
+
+fn default_show_when_focused() -> bool {
+    true
 }
 
 impl Default for OverlayConfig {
@@ -91,6 +104,7 @@ impl Default for OverlayConfig {
             show_settings: true,
             show_terminals: true,
             sessions_overlay_enabled: true,
+            show_when_focused: true,
         }
     }
 }
@@ -113,6 +127,317 @@ impl Default for SystemConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPersistenceConfig {
+    pub enabled: bool,
+    pub max_sessions: usize,
+}
+
+impl Default for SessionPersistenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_sessions: 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionStats {
+    pub total_sessions: u64,
+    pub total_pty_sessions: u64,
+    pub total_sdk_sessions: u64,
+    pub total_prompts: u64,
+    pub total_tool_calls: u64,
+    pub total_recordings: u64,
+    pub total_recording_duration_ms: u64,
+    pub total_transcriptions: u64,
+    pub first_session_at: Option<u64>,
+    pub last_session_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenStats {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelUsageStats {
+    pub opus_sessions: u64,
+    pub sonnet_sessions: u64,
+    pub haiku_sessions: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RepoUsageStats {
+    pub repo_path: String,
+    pub session_count: u64,
+    pub prompt_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DailyStats {
+    pub date: String, // YYYY-MM-DD format
+    pub sessions: u64,
+    pub prompts: u64,
+    pub recordings: u64,
+    pub tool_calls: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageStats {
+    pub session_stats: SessionStats,
+    #[serde(default)]
+    pub token_stats: TokenStats,
+    pub model_usage: ModelUsageStats,
+    pub repo_usage: Vec<RepoUsageStats>,
+    pub daily_stats: Vec<DailyStats>,
+    pub streak_days: u32,
+    pub longest_streak: u32,
+    pub average_session_duration_ms: u64,
+    pub average_prompts_per_session: f64,
+    pub most_used_tools: Vec<(String, u64)>,
+}
+
+impl Default for UsageStats {
+    fn default() -> Self {
+        Self {
+            session_stats: SessionStats::default(),
+            token_stats: TokenStats::default(),
+            model_usage: ModelUsageStats::default(),
+            repo_usage: Vec::new(),
+            daily_stats: Vec::new(),
+            streak_days: 0,
+            longest_streak: 0,
+            average_session_duration_ms: 0,
+            average_prompts_per_session: 0.0,
+            most_used_tools: Vec::new(),
+        }
+    }
+}
+
+impl UsageStats {
+    pub fn stats_path() -> PathBuf {
+        AppConfig::config_dir().join("usage_stats.json")
+    }
+
+    pub fn load() -> Self {
+        let path = Self::stats_path();
+        if path.exists() {
+            match fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(stats) => return stats,
+                    Err(e) => eprintln!("Failed to parse usage stats: {}", e),
+                },
+                Err(e) => eprintln!("Failed to read usage stats: {}", e),
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let dir = AppConfig::config_dir();
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+
+        let path = Self::stats_path();
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize usage stats: {}", e))?;
+
+        fs::write(&path, &content).map_err(|e| format!("Failed to write usage stats: {}", e))?;
+        Ok(())
+    }
+
+    fn get_today() -> String {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    }
+
+    fn ensure_today_stats(&mut self) {
+        let today = Self::get_today();
+        if self.daily_stats.last().map(|d| &d.date) != Some(&today) {
+            self.daily_stats.push(DailyStats {
+                date: today,
+                sessions: 0,
+                prompts: 0,
+                recordings: 0,
+                tool_calls: 0,
+            });
+            // Keep only last 90 days
+            if self.daily_stats.len() > 90 {
+                self.daily_stats.remove(0);
+            }
+        }
+    }
+
+    pub fn track_session(&mut self, session_type: &str, model: &str, repo_path: Option<&str>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        self.session_stats.total_sessions += 1;
+
+        if session_type == "pty" {
+            self.session_stats.total_pty_sessions += 1;
+        } else if session_type == "sdk" {
+            self.session_stats.total_sdk_sessions += 1;
+        }
+
+        if self.session_stats.first_session_at.is_none() {
+            self.session_stats.first_session_at = Some(now);
+        }
+        self.session_stats.last_session_at = Some(now);
+
+        // Track model usage
+        let model_lower = model.to_lowercase();
+        if model_lower.contains("opus") {
+            self.model_usage.opus_sessions += 1;
+        } else if model_lower.contains("sonnet") {
+            self.model_usage.sonnet_sessions += 1;
+        } else if model_lower.contains("haiku") {
+            self.model_usage.haiku_sessions += 1;
+        }
+
+        // Track repo usage
+        if let Some(path) = repo_path {
+            if let Some(repo_stats) = self.repo_usage.iter_mut().find(|r| r.repo_path == path) {
+                repo_stats.session_count += 1;
+            } else {
+                self.repo_usage.push(RepoUsageStats {
+                    repo_path: path.to_string(),
+                    session_count: 1,
+                    prompt_count: 0,
+                });
+            }
+        }
+
+        // Update daily stats
+        self.ensure_today_stats();
+        if let Some(today) = self.daily_stats.last_mut() {
+            today.sessions += 1;
+        }
+
+        // Update streak
+        self.update_streak();
+    }
+
+    pub fn track_prompt(&mut self, repo_path: Option<&str>) {
+        self.session_stats.total_prompts += 1;
+
+        if let Some(path) = repo_path {
+            if let Some(repo_stats) = self.repo_usage.iter_mut().find(|r| r.repo_path == path) {
+                repo_stats.prompt_count += 1;
+            }
+        }
+
+        self.ensure_today_stats();
+        if let Some(today) = self.daily_stats.last_mut() {
+            today.prompts += 1;
+        }
+    }
+
+    pub fn track_tool_call(&mut self, tool_name: &str) {
+        self.session_stats.total_tool_calls += 1;
+
+        // Update most used tools
+        if let Some(tool) = self.most_used_tools.iter_mut().find(|(name, _)| name == tool_name) {
+            tool.1 += 1;
+        } else {
+            self.most_used_tools.push((tool_name.to_string(), 1));
+        }
+
+        // Sort by count and keep top 20
+        self.most_used_tools.sort_by(|a, b| b.1.cmp(&a.1));
+        self.most_used_tools.truncate(20);
+
+        self.ensure_today_stats();
+        if let Some(today) = self.daily_stats.last_mut() {
+            today.tool_calls += 1;
+        }
+    }
+
+    pub fn track_recording(&mut self, duration_ms: u64) {
+        self.session_stats.total_recordings += 1;
+        self.session_stats.total_recording_duration_ms += duration_ms;
+
+        self.ensure_today_stats();
+        if let Some(today) = self.daily_stats.last_mut() {
+            today.recordings += 1;
+        }
+    }
+
+    pub fn track_transcription(&mut self) {
+        self.session_stats.total_transcriptions += 1;
+    }
+
+    pub fn track_token_usage(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_creation_tokens: u64,
+        cost_usd: f64,
+    ) {
+        self.token_stats.total_input_tokens += input_tokens;
+        self.token_stats.total_output_tokens += output_tokens;
+        self.token_stats.total_cache_read_tokens += cache_read_tokens;
+        self.token_stats.total_cache_creation_tokens += cache_creation_tokens;
+        self.token_stats.total_cost_usd += cost_usd;
+    }
+
+    fn update_streak(&mut self) {
+        let today = Self::get_today();
+        let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // Check if we already have an entry for today
+        let has_today = self.daily_stats.iter().any(|d| d.date == today && d.sessions > 0);
+        let had_yesterday = self.daily_stats.iter().any(|d| d.date == yesterday && d.sessions > 0);
+
+        if has_today {
+            if had_yesterday {
+                // Continue streak - but don't double-count if we already incremented today
+                // The streak is counted by looking back at consecutive days
+            }
+
+            // Calculate actual streak from daily_stats
+            let mut streak = 0u32;
+            let mut check_date = chrono::Local::now().date_naive();
+
+            for day_stats in self.daily_stats.iter().rev() {
+                let expected_date = check_date.format("%Y-%m-%d").to_string();
+                if day_stats.date == expected_date && day_stats.sessions > 0 {
+                    streak += 1;
+                    check_date -= chrono::Duration::days(1);
+                } else if day_stats.date != expected_date {
+                    // Skip if dates don't match (gap in data)
+                    break;
+                }
+            }
+
+            self.streak_days = streak;
+            if streak > self.longest_streak {
+                self.longest_streak = streak;
+            }
+        }
+    }
+
+    pub fn update_averages(&mut self, total_session_duration_ms: u64, total_prompts: u64, session_count: u64) {
+        if session_count > 0 {
+            self.average_session_duration_ms = total_session_duration_ms / session_count;
+            self.average_prompts_per_session = total_prompts as f64 / session_count as f64;
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub device_id: Option<String>,
     pub open_mic: bool,
@@ -121,6 +446,12 @@ pub struct AudioConfig {
     pub use_hotkey: bool,
     #[serde(default)]
     pub play_sound_on_completion: bool,
+    #[serde(default = "default_recording_linger_ms")]
+    pub recording_linger_ms: u32,
+}
+
+fn default_recording_linger_ms() -> u32 {
+    500
 }
 
 impl Default for AudioConfig {
@@ -132,6 +463,7 @@ impl Default for AudioConfig {
             use_voice_command: true,
             use_hotkey: true,
             play_sound_on_completion: false,
+            recording_linger_ms: 500,
         }
     }
 }
@@ -180,6 +512,8 @@ pub struct AppConfig {
     pub system: SystemConfig,
     #[serde(default)]
     pub show_branch_in_sessions: bool,
+    #[serde(default)]
+    pub session_persistence: SessionPersistenceConfig,
 }
 
 impl Default for AppConfig {
@@ -199,6 +533,7 @@ impl Default for AppConfig {
             theme: Theme::default(),
             system: SystemConfig::default(),
             show_branch_in_sessions: false,
+            session_persistence: SessionPersistenceConfig::default(),
         }
     }
 }

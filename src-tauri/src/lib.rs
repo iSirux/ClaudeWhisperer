@@ -2,12 +2,13 @@ mod commands;
 mod config;
 mod git;
 mod haiku;
+mod session_persistence;
 mod sidecar;
 mod terminal;
 mod whisper;
 
-use commands::{audio_cmds, sdk_cmds, settings_cmds, terminal_cmds};
-use config::AppConfig;
+use commands::{audio_cmds, input_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds};
+use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
 use sidecar::SidecarManager;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ fn toggle_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = AppConfig::load();
+    let usage_stats = UsageStats::load();
     let start_minimized = config.system.start_minimized;
     let terminal_manager = Arc::new(TerminalManager::new());
     let sidecar_manager = Arc::new(SidecarManager::new());
@@ -59,7 +61,9 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
         ))
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Mutex::new(config))
+        .manage(Mutex::new(usage_stats))
         .manage(terminal_manager)
         .manage(sidecar_manager)
         .setup(move |app| {
@@ -165,8 +169,20 @@ pub fn run() {
             sdk_cmds::stop_sdk_query,
             sdk_cmds::update_sdk_model,
             sdk_cmds::close_sdk_session,
+            session_cmds::get_persisted_sessions,
+            session_cmds::save_persisted_sessions,
+            session_cmds::clear_persisted_sessions,
+            usage_cmds::get_usage_stats,
+            usage_cmds::track_session,
+            usage_cmds::track_prompt,
+            usage_cmds::track_tool_call,
+            usage_cmds::track_recording,
+            usage_cmds::track_transcription,
+            usage_cmds::track_token_usage,
+            usage_cmds::reset_usage_stats,
             get_autostart_enabled,
             toggle_autostart,
+            input_cmds::paste_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

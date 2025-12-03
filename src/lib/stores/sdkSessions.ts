@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
 import { playCompletionSound } from '$lib/utils/sound';
+import { usageStats } from './usageStats';
 
 export interface SdkMessage {
   type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error';
@@ -13,6 +14,35 @@ export interface SdkMessage {
   timestamp: number;
 }
 
+export interface SdkUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalCostUsd: number;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  contextWindow: number;
+}
+
+export interface SdkSessionUsage {
+  // Cumulative totals for the session
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
+  totalCostUsd: number;
+  totalDurationMs: number;
+  totalDurationApiMs: number;
+  totalTurns: number;
+  contextWindow: number;
+  // For context usage percentage
+  contextUsagePercent: number;
+  // Per-query history
+  queryUsage: SdkUsage[];
+}
+
 export interface SdkSession {
   id: string;
   cwd: string;
@@ -21,6 +51,7 @@ export interface SdkSession {
   status: 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   startedAt?: number; // Timestamp when first prompt was sent
+  usage?: SdkSessionUsage; // Token usage tracking
 }
 
 function createSdkSessionsStore() {
@@ -30,6 +61,7 @@ function createSdkSessionsStore() {
 
   return {
     subscribe,
+    set,
 
     async ensureSidecarStarted(): Promise<void> {
       if (sidecarStarted) return;
@@ -96,6 +128,9 @@ function createSdkSessionsStore() {
         await listen<{ tool: string; input: Record<string, unknown> }>(
           `sdk-tool-start-${id}`,
           (e) => {
+            // Track tool usage for stats
+            usageStats.trackToolCall(e.payload.tool);
+
             update(sessions =>
               sessions.map(s =>
                 s.id === id
@@ -185,6 +220,67 @@ function createSdkSessionsStore() {
         })
       );
 
+      // Usage tracking listener
+      unlisteners.push(
+        await listen<SdkUsage>(`sdk-usage-${id}`, (e) => {
+          console.log('[sdkSessions] Received usage event:', e.payload);
+          const queryUsage = e.payload;
+
+          // Track token usage in usage stats
+          usageStats.trackTokenUsage(
+            queryUsage.inputTokens,
+            queryUsage.outputTokens,
+            queryUsage.cacheReadTokens,
+            queryUsage.cacheCreationTokens,
+            queryUsage.totalCostUsd
+          );
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const prevUsage = s.usage || {
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCostUsd: 0,
+                totalDurationMs: 0,
+                totalDurationApiMs: 0,
+                totalTurns: 0,
+                contextWindow: queryUsage.contextWindow,
+                contextUsagePercent: 0,
+                queryUsage: [],
+              };
+
+              // Calculate cumulative totals
+              const totalInputTokens = prevUsage.totalInputTokens + queryUsage.inputTokens;
+              const totalOutputTokens = prevUsage.totalOutputTokens + queryUsage.outputTokens;
+              const totalTokens = totalInputTokens + totalOutputTokens;
+              const contextWindow = queryUsage.contextWindow || prevUsage.contextWindow || 200000;
+              const contextUsagePercent = Math.min(100, (totalTokens / contextWindow) * 100);
+
+              return {
+                ...s,
+                usage: {
+                  totalInputTokens,
+                  totalOutputTokens,
+                  totalCacheReadTokens: prevUsage.totalCacheReadTokens + queryUsage.cacheReadTokens,
+                  totalCacheCreationTokens: prevUsage.totalCacheCreationTokens + queryUsage.cacheCreationTokens,
+                  totalCostUsd: prevUsage.totalCostUsd + queryUsage.totalCostUsd,
+                  totalDurationMs: prevUsage.totalDurationMs + queryUsage.durationMs,
+                  totalDurationApiMs: prevUsage.totalDurationApiMs + queryUsage.durationApiMs,
+                  totalTurns: prevUsage.totalTurns + queryUsage.numTurns,
+                  contextWindow,
+                  contextUsagePercent,
+                  queryUsage: [...prevUsage.queryUsage, queryUsage],
+                },
+              };
+            })
+          );
+        })
+      );
+
       listeners.set(id, unlisteners);
 
       // Create the session on the backend
@@ -192,11 +288,25 @@ function createSdkSessionsStore() {
       await invoke('create_sdk_session', { id, cwd, model });
       console.log('[sdkSessions] Session created');
 
+      // Track session creation for usage stats
+      usageStats.trackSession('sdk', model, cwd);
+
       return id;
     },
 
     async sendPrompt(id: string, prompt: string): Promise<void> {
       console.log('[sdkSessions] sendPrompt called for session:', id, 'prompt:', prompt.slice(0, 50));
+
+      // Get session cwd for tracking
+      let sessionCwd: string | undefined;
+      subscribe(sessions => {
+        const session = sessions.find(s => s.id === id);
+        sessionCwd = session?.cwd;
+      })();
+
+      // Track prompt for usage stats
+      usageStats.trackPrompt(sessionCwd);
+
       update(sessions =>
         sessions.map(s =>
           s.id === id

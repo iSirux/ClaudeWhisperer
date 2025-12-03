@@ -33,13 +33,14 @@
         "alwaysOnTop": true,
         "visible": false,
         "skipTaskbar": true,
-        "resizable": false
+        "resizable": false,
+        "focus": false
       },
       {
         "label": "sessions-overlay",
         "title": "Sessions",
         "url": "/sessions-overlay",
-        "width": 180,
+        "width": 200,
         "height": 32,
         "center": false,
         "decorations": false,

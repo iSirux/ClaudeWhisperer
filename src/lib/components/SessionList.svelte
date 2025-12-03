@@ -174,8 +174,29 @@
     window.dispatchEvent(new CustomEvent('switch-to-sessions'));
   }
 
+  // Check if a session status indicates it's actively working
+  function isActivelyWorking(status: string): boolean {
+    const activeStatuses = ['Starting', 'Running', 'querying', 'tool', 'thinking', 'responding'];
+    return activeStatuses.includes(status);
+  }
+
+  // State for confirmation dialog
+  let confirmDialog = $state<{
+    show: boolean;
+    sessionId: string;
+    sessionType: 'pty' | 'sdk';
+  }>({ show: false, sessionId: '', sessionType: 'pty' });
+
   function closePtySession(id: string, event: MouseEvent) {
     event.stopPropagation();
+
+    // Check if session is actively working
+    const session = $sessions.find(s => s.id === id);
+    if (session && isActivelyWorking(session.status)) {
+      confirmDialog = { show: true, sessionId: id, sessionType: 'pty' };
+      return;
+    }
+
     sessions.closeSession(id);
     if ($activeSessionId === id) {
       activeSessionId.set(null);
@@ -184,10 +205,40 @@
 
   function closeSdkSession(id: string, event: MouseEvent) {
     event.stopPropagation();
+
+    // Check if session is actively working
+    const session = $sdkSessions.find(s => s.id === id);
+    if (session) {
+      const smartStatus = getSdkSmartStatus(session);
+      if (isActivelyWorking(smartStatus.status)) {
+        confirmDialog = { show: true, sessionId: id, sessionType: 'sdk' };
+        return;
+      }
+    }
+
     sdkSessions.closeSession(id);
     if ($activeSdkSessionId === id) {
       activeSdkSessionId.set(null);
     }
+  }
+
+  function confirmClose() {
+    if (confirmDialog.sessionType === 'pty') {
+      sessions.closeSession(confirmDialog.sessionId);
+      if ($activeSessionId === confirmDialog.sessionId) {
+        activeSessionId.set(null);
+      }
+    } else {
+      sdkSessions.closeSession(confirmDialog.sessionId);
+      if ($activeSdkSessionId === confirmDialog.sessionId) {
+        activeSdkSessionId.set(null);
+      }
+    }
+    confirmDialog = { show: false, sessionId: '', sessionType: 'pty' };
+  }
+
+  function cancelClose() {
+    confirmDialog = { show: false, sessionId: '', sessionType: 'pty' };
   }
 
   function getStatusColor(status: string): string {
@@ -225,7 +276,7 @@
     }
   }
 
-  function truncatePrompt(prompt: string, maxLength: number = 60): string {
+  function truncatePrompt(prompt: string, maxLength: number = 100): string {
     if (prompt.length <= maxLength) return prompt;
     return prompt.slice(0, maxLength) + '...';
   }
@@ -318,7 +369,7 @@
   });
 
   interface Props {
-    currentView?: 'sessions' | 'settings';
+    currentView?: 'sessions' | 'settings' | 'start';
   }
 
   let { currentView = 'sessions' }: Props = $props();
@@ -431,6 +482,51 @@
     {/each}
   {/if}
 </div>
+
+<!-- Confirmation Dialog -->
+{#if confirmDialog.show}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    onclick={cancelClose}
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="bg-surface border border-border rounded-lg shadow-xl p-5 max-w-sm mx-4"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-start gap-3 mb-4">
+        <div class="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-500/20 flex items-center justify-center">
+          <svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-lg font-semibold text-text-primary mb-1">Close active session?</h3>
+          <p class="text-sm text-text-muted">
+            This session is still working. Are you sure you want to close it?
+          </p>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2">
+        <button
+          class="px-4 py-2 text-sm font-medium text-text-muted hover:text-text-primary hover:bg-surface-elevated rounded-md transition-colors"
+          onclick={cancelClose}
+        >
+          Cancel
+        </button>
+        <button
+          class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+          onclick={confirmClose}
+        >
+          Close session
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .session-list {
