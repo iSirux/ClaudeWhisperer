@@ -2,10 +2,27 @@ import { writable, derived } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 
+
+export type WhisperProvider = "Local" | "OpenAI" | "Groq" | "Custom";
+
+export type DockerComputeType = "CPU" | "GPU";
+
+export interface DockerConfig {
+  /** Whether to use GPU (CUDA) or CPU */
+  compute_type: DockerComputeType;
+  /** Start container automatically when Docker daemon starts */
+  auto_restart: boolean;
+  /** Custom container name */
+  container_name: string;
+}
+
 export interface WhisperConfig {
+  provider: WhisperProvider;
   endpoint: string;
   model: string;
   language: string;
+  api_key: string | null;
+  docker: DockerConfig;
 }
 
 export interface GitConfig {
@@ -52,6 +69,10 @@ export interface SessionPersistenceConfig {
 export interface RepoConfig {
   path: string;
   name: string;
+  /** Auto-generated description of the repository for auto-selection */
+  description?: string;
+  /** Domain-specific keywords for matching prompts to this repository */
+  keywords?: string[];
 }
 
 export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
@@ -69,6 +90,66 @@ export type Theme =
 
 export type SessionSortOrder = "Chronological" | "StatusThenChronological";
 
+// Sessions view layout options
+export type SessionsViewLayout = "list" | "grid";
+export type SessionsGridSize = "small" | "medium" | "large";
+
+export interface SessionsViewConfig {
+  layout: SessionsViewLayout;
+  grid_columns: number;
+  card_size: SessionsGridSize;
+}
+
+// Thinking level for extended thinking mode (matches Claude Code)
+export type ThinkingLevel = "off" | "think" | "megathink" | "ultrathink";
+
+export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Local" | "Custom";
+// Alias for backwards compatibility
+export type GeminiProvider = LlmProvider;
+
+// Model selection priority for LLM provider
+// Speed: prioritizes 2.5 Flash-Lite -> 2.5 Flash -> 2.0 Flash
+// Accuracy: prioritizes 2.5 Flash -> 2.5 Flash-Lite -> 2.0 Flash
+export type LlmModelPriority = "speed" | "accuracy";
+// Alias for backwards compatibility
+export type GeminiModelPriority = LlmModelPriority;
+
+// Minimum confidence level required for auto-selecting a repository
+// high: Only auto-select when LLM is highly confident
+// medium: Auto-select when LLM has medium or high confidence
+// low: Auto-select for any confidence level
+export type RepoAutoSelectConfidence = "high" | "medium" | "low";
+
+export interface LlmFeaturesConfig {
+  auto_name_sessions: boolean;
+  detect_interaction_needed: boolean;
+  clean_transcription: boolean;
+  recommend_model: boolean;
+  /** Auto-select repository based on prompt content */
+  auto_select_repo: boolean;
+}
+// Alias for backwards compatibility
+export type GeminiFeaturesConfig = LlmFeaturesConfig;
+
+export interface LlmConfig {
+  enabled: boolean;
+  provider: LlmProvider;
+  /** Model name (varies by provider) - used when auto_model is false */
+  model: string;
+  endpoint: string | null;
+  /** When enabled for Gemini provider, automatically select model with fallbacks */
+  auto_model: boolean;
+  /** Model priority when auto_model is enabled (Speed or Accuracy) */
+  model_priority: LlmModelPriority;
+  features: LlmFeaturesConfig;
+  /** When enabled, Claude will question the repo selection if it seems wrong */
+  confirm_repo_selection: boolean;
+  /** Minimum confidence level required for auto-selecting a repository */
+  min_auto_select_confidence: RepoAutoSelectConfidence;
+}
+// Alias for backwards compatibility
+export type GeminiConfig = LlmConfig;
+
 export interface AppConfig {
   whisper: WhisperConfig;
   git: GitConfig;
@@ -77,7 +158,11 @@ export interface AppConfig {
   audio: AudioConfig;
   repos: RepoConfig[];
   active_repo_index: number;
+  /** When true, repo is auto-selected based on prompt content */
+  auto_repo_mode: boolean;
   default_model: string;
+  default_thinking_level: ThinkingLevel;
+  enabled_models: string[];
   terminal_mode: TerminalMode;
   skip_permissions: boolean;
   theme: Theme;
@@ -90,13 +175,24 @@ export interface AppConfig {
   session_prompt_rows: number;
   session_response_rows: number;
   sidebar_width: number;
+  sessions_view: SessionsViewConfig;
+  llm: LlmConfig;
+  /** @deprecated Use llm instead */
+  gemini?: LlmConfig;
 }
 
 const defaultConfig: AppConfig = {
   whisper: {
+    provider: "Local",
     endpoint: "http://localhost:8000/v1/audio/transcriptions",
-    model: "distil-medium.en",
+    model: "Systran/faster-whisper-large-v3-turbo",
     language: "en",
+    api_key: null,
+    docker: {
+      compute_type: "CPU",
+      auto_restart: false,
+      container_name: "whisper",
+    },
   },
   git: {
     create_branch: false,
@@ -125,7 +221,15 @@ const defaultConfig: AppConfig = {
   },
   repos: [],
   active_repo_index: 0,
+  auto_repo_mode: false,
   default_model: "claude-opus-4-5-20251101",
+  default_thinking_level: "off",
+  enabled_models: [
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-5-20250929[1m]",
+    "claude-haiku-4-5-20251001",
+  ],
   terminal_mode: "Interactive",
   skip_permissions: false,
   theme: "Midnight",
@@ -146,6 +250,28 @@ const defaultConfig: AppConfig = {
   session_prompt_rows: 2,
   session_response_rows: 2,
   sidebar_width: 256,
+  sessions_view: {
+    layout: "list",
+    grid_columns: 3,
+    card_size: "medium",
+  },
+  llm: {
+    enabled: false,
+    provider: "Gemini",
+    model: "gemini-2.0-flash",
+    endpoint: null,
+    auto_model: true,
+    model_priority: "speed",
+    features: {
+      auto_name_sessions: true,
+      detect_interaction_needed: true,
+      clean_transcription: false,
+      recommend_model: false,
+      auto_select_repo: false,
+    },
+    confirm_repo_selection: false,
+    min_auto_select_confidence: "high",
+  },
 };
 
 function createSettingsStore() {
@@ -226,11 +352,32 @@ function createSettingsStore() {
         throw error;
       }
     },
+
+    async setAutoRepoMode(enabled: boolean) {
+      try {
+        await invoke("set_auto_repo_mode", { enabled });
+        await this.load();
+        // Notify other windows (e.g., overlay) that settings changed
+        emit("settings-changed");
+      } catch (error) {
+        console.error("Failed to set auto repo mode:", error);
+        throw error;
+      }
+    },
   };
 }
 
 export const settings = createSettingsStore();
 
 export const activeRepo = derived(settings, ($settings) => {
+  // If auto repo mode is enabled, return null (repo will be determined per-prompt)
+  if ($settings.auto_repo_mode) {
+    return null;
+  }
   return $settings.repos[$settings.active_repo_index] || null;
+});
+
+// Check if auto repo selection is currently active
+export const isAutoRepoSelected = derived(settings, ($settings) => {
+  return $settings.auto_repo_mode;
 });

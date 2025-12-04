@@ -4,6 +4,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { settings } from './settings';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
+import { saveSessionsToDisk } from './sessionPersistence';
+import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled } from '$lib/utils/llm';
+import { isAutoModel, resolveModelForApi } from '$lib/utils/models';
 
 export interface SdkImageContent {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
@@ -67,12 +70,96 @@ export interface SdkSessionUsage {
   progressiveCacheCreationTokens: number;
 }
 
+// AI-generated session metadata (from LLM)
+export interface SessionAiMetadata {
+  name?: string; // Generated immediately when prompt is sent
+  category?: string; // feature, bugfix, refactor, research, question, other
+  outcome?: string; // Generated when session completes - the result/answer
+  needsInteraction?: boolean;
+  interactionReason?: string;
+  interactionUrgency?: string; // low, medium, high
+  waitingFor?: string; // approval, clarification, input, review, decision
+}
+
+// Thinking mode levels matching Claude Code's implementation
+// null = off, numbers represent token budgets
+export type ThinkingLevel = null | 'think' | 'megathink' | 'ultrathink';
+
+// Settings format uses "off" string instead of null
+export type SettingsThinkingLevel = 'off' | 'think' | 'megathink' | 'ultrathink';
+
+// Convert from settings format to store format
+export function settingsToStoreThinking(level: SettingsThinkingLevel): ThinkingLevel {
+  return level === 'off' ? null : level;
+}
+
+// Convert from store format to settings format
+export function storeToSettingsThinking(level: ThinkingLevel): SettingsThinkingLevel {
+  return level === null ? 'off' : level;
+}
+
+// Token budgets for each thinking level (matching Claude Code)
+export const THINKING_BUDGETS: Record<Exclude<ThinkingLevel, null>, number> = {
+  think: 4000,
+  megathink: 10000,
+  ultrathink: 31999,
+};
+
+// Pending action info for sessions waiting on user input
+export interface PendingRepoSelection {
+  transcript: string;
+  recommendedIndex: number | null;
+  reasoning: string;
+  confidence: string;
+}
+
+// Sub-status for pending_transcription state
+export type PendingTranscriptionStatus = 'recording' | 'transcribing' | 'processing';
+
+// Info about the recording/transcription phase
+export interface PendingTranscriptionInfo {
+  status: PendingTranscriptionStatus;
+  // Audio visualization data (frequency array from recording)
+  audioVisualizationHistory?: number[][]; // Array of frequency snapshots for waveform display
+  // Recording timing
+  recordingStartedAt?: number; // timestamp when recording started
+  recordingDurationMs?: number; // final duration in milliseconds
+  // Original audio data for retry capability
+  audioData?: Uint8Array;
+  // Transcription result (set when transcription completes)
+  transcript?: string;
+  transcriptionError?: string;
+  // LLM processing results
+  cleanedTranscript?: string;
+  wasCleanedUp?: boolean;
+  modelRecommendation?: {
+    modelId: string;
+    reasoning: string;
+    thinkingLevel?: string;
+  };
+  repoRecommendation?: {
+    repoIndex: number;
+    repoName: string;
+    reasoning: string;
+    confidence: string;
+  };
+}
+
 export interface SdkSession {
   id: string;
   cwd: string;
   model: string; // Per-session model (can differ from global default_model)
+  thinkingLevel: ThinkingLevel; // Per-session thinking mode (null = off)
   messages: SdkMessage[];
-  status: 'idle' | 'querying' | 'done' | 'error';
+  // Session status:
+  // - 'pending_transcription': recording/transcribing voice input
+  // - 'pending_repo': waiting for user to select repository
+  // - 'initializing': setting up SDK session after repo selection
+  // - 'idle': ready for input
+  // - 'querying': LLM query in progress
+  // - 'done': query completed (transitions to idle)
+  // - 'error': an error occurred
+  status: 'pending_transcription' | 'pending_repo' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   startedAt?: number; // Timestamp when first prompt was sent (deprecated, kept for compatibility)
   // Timer-based duration tracking (survives session restore)
@@ -80,6 +167,13 @@ export interface SdkSession {
   currentWorkStartedAt?: number; // Timestamp when current work period started (undefined when idle)
   usage?: SdkSessionUsage; // Token usage tracking
   unread?: boolean; // Whether the session has completed but user hasn't viewed it yet
+  // AI-generated metadata (Gemini)
+  aiMetadata?: SessionAiMetadata;
+  // Pending user actions
+  pendingRepoSelection?: PendingRepoSelection; // Info for repo selection UI when status='pending_repo'
+  pendingPrompt?: string; // The prompt waiting to be sent after initialization
+  // Pending transcription info (when status='pending_transcription')
+  pendingTranscription?: PendingTranscriptionInfo;
 }
 
 // Message types for conversation history (sent to sidecar for restored sessions)
@@ -149,7 +243,7 @@ function createSdkSessionsStore() {
       }
     },
 
-    async createSession(cwd: string, model: string, systemPrompt?: string): Promise<string> {
+    async createSession(cwd: string, model: string, thinkingLevel: ThinkingLevel = null, systemPrompt?: string): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
@@ -158,6 +252,7 @@ function createSdkSessionsStore() {
         id,
         cwd,
         model,
+        thinkingLevel,
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
@@ -258,9 +353,14 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen(`sdk-done-${id}`, () => {
+        await listen(`sdk-done-${id}`, async () => {
           console.log('[sdkSessions] Received done event for session:', id);
           const currentSettings = get(settings);
+
+          // Get session messages for Gemini analysis
+          let sessionMessages: SdkMessage[] = [];
+          let needsAiAnalysis = false;
+
           update(sessions =>
             sessions.map(s => {
               if (s.id !== id) return s;
@@ -269,13 +369,19 @@ function createSdkSessionsStore() {
               const now = Date.now();
               const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
 
+              const updatedMessages = [...s.messages, { type: 'done' as const, timestamp: now }];
+              sessionMessages = updatedMessages;
+
+              // Analyze completion if no outcome yet or if interaction detection is needed
+              needsAiAnalysis = isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+
               return {
                 ...s,
                 status: 'idle' as const,
                 // Accumulate the work time and reset the current work timer
                 accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
                 currentWorkStartedAt: undefined,
-                messages: [...s.messages, { type: 'done' as const, timestamp: now }],
+                messages: updatedMessages,
                 // Mark as unread if the setting is enabled
                 unread: currentSettings.mark_sessions_unread ? true : s.unread,
               };
@@ -285,6 +391,24 @@ function createSdkSessionsStore() {
           // Play completion sound if enabled
           if (currentSettings.audio.play_sound_on_completion) {
             playCompletionSound();
+          }
+
+          // Run LLM analysis asynchronously to get outcome and interaction detection (don't block the UI)
+          if (needsAiAnalysis && sessionMessages.length > 0) {
+            analyzeSessionCompletion(sessionMessages).then(aiMetadata => {
+              if (Object.keys(aiMetadata).length > 0) {
+                update(sessions =>
+                  sessions.map(s =>
+                    s.id === id
+                      ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } }
+                      : s
+                  )
+                );
+                console.log('[sdkSessions] AI completion metadata updated:', aiMetadata);
+              }
+            }).catch(err => {
+              console.error('[sdkSessions] Failed to analyze session completion:', err);
+            });
           }
         })
       );
@@ -355,12 +479,16 @@ function createSdkSessionsStore() {
                 progressiveCacheCreationTokens: 0,
               };
 
-              // Calculate cumulative totals
+              // Calculate cumulative totals (for cost/stats tracking)
               const totalInputTokens = prevUsage.totalInputTokens + queryUsage.inputTokens;
               const totalOutputTokens = prevUsage.totalOutputTokens + queryUsage.outputTokens;
-              const totalTokens = totalInputTokens + totalOutputTokens;
               const contextWindow = queryUsage.contextWindow || prevUsage.contextWindow || 200000;
-              const contextUsagePercent = Math.min(100, (totalTokens / contextWindow) * 100);
+              // Context usage should be based on the CURRENT query's tokens only, not cumulative totals.
+              // The input_tokens from the API already includes all conversation history (system prompt +
+              // previous messages), so adding cumulative totals would double/triple count tokens.
+              // The actual context usage is: current input tokens + current output tokens
+              const currentContextTokens = queryUsage.inputTokens + queryUsage.outputTokens;
+              const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
               return {
                 ...s,
@@ -419,11 +547,12 @@ function createSdkSessionsStore() {
               const progressiveInputTokens = prevUsage.progressiveInputTokens + progressiveUsage.inputTokens;
               const progressiveOutputTokens = prevUsage.progressiveOutputTokens + progressiveUsage.outputTokens;
 
-              // Calculate live context usage (cumulative + progressive)
-              const liveInputTokens = prevUsage.totalInputTokens + progressiveInputTokens;
-              const liveOutputTokens = prevUsage.totalOutputTokens + progressiveOutputTokens;
-              const liveTotalTokens = liveInputTokens + liveOutputTokens;
-              const contextUsagePercent = Math.min(100, (liveTotalTokens / prevUsage.contextWindow) * 100);
+              // Calculate live context usage for the CURRENT query only
+              // Progressive tokens represent the current query's usage as it streams in
+              // We don't add prevUsage.totalInputTokens because that would double-count
+              // (the API's input_tokens already includes all conversation history)
+              const liveCurrentTokens = progressiveInputTokens + progressiveOutputTokens;
+              const contextUsagePercent = Math.min(100, (liveCurrentTokens / prevUsage.contextWindow) * 100);
 
               return {
                 ...s,
@@ -493,16 +622,38 @@ function createSdkSessionsStore() {
 
       listeners.set(id, unlisteners);
 
+      // Resolve "auto" model to a valid model before sending to backend
+      const currentSettings = get(settings);
+      const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
+      if (resolvedModel !== model) {
+        console.log('[sdkSessions] Resolved auto model to:', resolvedModel);
+        // Update the session's model to the resolved value
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, model: resolvedModel }
+              : s
+          )
+        );
+      }
+
       // Create the session on the backend
-      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', model, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
-      await invoke('create_sdk_session', { id, cwd, model, systemPrompt: systemPrompt ?? null });
+      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', resolvedModel, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
+      await invoke('create_sdk_session', { id, cwd, model: resolvedModel, systemPrompt: systemPrompt ?? null });
       console.log('[sdkSessions] Session created');
 
       // Mark session as live (registered with backend and has listeners)
       liveSessions.add(id);
 
+      // Apply initial thinking level if set
+      if (thinkingLevel) {
+        const maxThinkingTokens = THINKING_BUDGETS[thinkingLevel];
+        console.log('[sdkSessions] Applying initial thinking level:', thinkingLevel, '(', maxThinkingTokens, 'tokens)');
+        await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+      }
+
       // Track session creation for usage stats
-      usageStats.trackSession('sdk', model, cwd);
+      usageStats.trackSession('sdk', resolvedModel, cwd);
 
       return id;
     },
@@ -619,9 +770,14 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen(`sdk-done-${id}`, () => {
+        await listen(`sdk-done-${id}`, async () => {
           console.log('[sdkSessions] Received done event for session:', id);
           const currentSettings = get(settings);
+
+          // Get session messages for Gemini analysis
+          let sessionMessages: SdkMessage[] = [];
+          let needsAiAnalysis = false;
+
           update(sessions =>
             sessions.map(s => {
               if (s.id !== id) return s;
@@ -630,13 +786,19 @@ function createSdkSessionsStore() {
               const now = Date.now();
               const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
 
+              const updatedMessages = [...s.messages, { type: 'done' as const, timestamp: now }];
+              sessionMessages = updatedMessages;
+
+              // Analyze completion if no outcome yet or if interaction detection is needed
+              needsAiAnalysis = isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+
               return {
                 ...s,
                 status: 'idle' as const,
                 // Accumulate the work time and reset the current work timer
                 accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
                 currentWorkStartedAt: undefined,
-                messages: [...s.messages, { type: 'done' as const, timestamp: now }],
+                messages: updatedMessages,
                 // Mark as unread if the setting is enabled
                 unread: currentSettings.mark_sessions_unread ? true : s.unread,
               };
@@ -645,6 +807,24 @@ function createSdkSessionsStore() {
 
           if (currentSettings.audio.play_sound_on_completion) {
             playCompletionSound();
+          }
+
+          // Run LLM analysis asynchronously to get outcome and interaction detection (don't block the UI)
+          if (needsAiAnalysis && sessionMessages.length > 0) {
+            analyzeSessionCompletion(sessionMessages).then(aiMetadata => {
+              if (Object.keys(aiMetadata).length > 0) {
+                update(sessions =>
+                  sessions.map(s =>
+                    s.id === id
+                      ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } }
+                      : s
+                  )
+                );
+                console.log('[sdkSessions] AI completion metadata updated:', aiMetadata);
+              }
+            }).catch(err => {
+              console.error('[sdkSessions] Failed to analyze session completion:', err);
+            });
           }
         })
       );
@@ -715,9 +895,11 @@ function createSdkSessionsStore() {
 
               const totalInputTokens = prevUsage.totalInputTokens + queryUsage.inputTokens;
               const totalOutputTokens = prevUsage.totalOutputTokens + queryUsage.outputTokens;
-              const totalTokens = totalInputTokens + totalOutputTokens;
               const contextWindow = queryUsage.contextWindow || prevUsage.contextWindow || 200000;
-              const contextUsagePercent = Math.min(100, (totalTokens / contextWindow) * 100);
+              // Context usage should be based on the CURRENT query's tokens only, not cumulative totals.
+              // The input_tokens from the API already includes all conversation history.
+              const currentContextTokens = queryUsage.inputTokens + queryUsage.outputTokens;
+              const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
               return {
                 ...s,
@@ -773,10 +955,10 @@ function createSdkSessionsStore() {
               const progressiveInputTokens = prevUsage.progressiveInputTokens + progressiveUsage.inputTokens;
               const progressiveOutputTokens = prevUsage.progressiveOutputTokens + progressiveUsage.outputTokens;
 
-              const liveInputTokens = prevUsage.totalInputTokens + progressiveInputTokens;
-              const liveOutputTokens = prevUsage.totalOutputTokens + progressiveOutputTokens;
-              const liveTotalTokens = liveInputTokens + liveOutputTokens;
-              const contextUsagePercent = Math.min(100, (liveTotalTokens / prevUsage.contextWindow) * 100);
+              // Calculate live context usage for the CURRENT query only
+              // Progressive tokens represent the current query's usage as it streams in
+              const liveCurrentTokens = progressiveInputTokens + progressiveOutputTokens;
+              const contextUsagePercent = Math.min(100, (liveCurrentTokens / prevUsage.contextWindow) * 100);
 
               return {
                 ...s,
@@ -848,17 +1030,39 @@ function createSdkSessionsStore() {
       const historyMessages = convertToHistoryMessages(session.messages);
       console.log('[sdkSessions] Converted', session.messages.length, 'messages to', historyMessages.length, 'history messages');
 
+      // Resolve "auto" model to a valid model before sending to backend
+      const currentSettings = get(settings);
+      const resolvedModel = resolveModelForApi(session.model, currentSettings.enabled_models);
+      if (resolvedModel !== session.model) {
+        console.log('[sdkSessions] Resolved auto model to:', resolvedModel);
+        // Update the session's model to the resolved value
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, model: resolvedModel }
+              : s
+          )
+        );
+      }
+
       // Register session with backend, passing conversation history for restored sessions
       await invoke('create_sdk_session', {
         id,
         cwd: session.cwd,
-        model: session.model,
+        model: resolvedModel,
         systemPrompt: null,
         messages: historyMessages.length > 0 ? historyMessages : null,
       });
 
       // Mark session as live
       liveSessions.add(id);
+
+      // Apply thinking level if set on the restored session
+      if (session.thinkingLevel) {
+        const maxThinkingTokens = THINKING_BUDGETS[session.thinkingLevel];
+        console.log('[sdkSessions] Applying thinking level for restored session:', session.thinkingLevel, '(', maxThinkingTokens, 'tokens)');
+        await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+      }
 
       console.log('[sdkSessions] Restored session reinitialized:', id, 'with', historyMessages.length, 'history messages');
     },
@@ -869,32 +1073,14 @@ function createSdkSessionsStore() {
       // Ensure session is live (handles restored sessions that need reinitialization)
       await this.ensureSessionLive(id);
 
-      // Check if there's already a query in progress - if so, stop it first
-      // This prevents race conditions where the old query's 'done' event overwrites our new 'querying' status
-      let isCurrentlyQuerying = false;
-      subscribe(sessions => {
-        const session = sessions.find(s => s.id === id);
-        if (session && session.status === 'querying') {
-          isCurrentlyQuerying = true;
-        }
-      })();
-
-      if (isCurrentlyQuerying) {
-        console.log('[sdkSessions] Previous query still in progress, stopping it first');
-        try {
-          await invoke('stop_sdk_query', { id });
-          console.log('[sdkSessions] Previous query stopped');
-        } catch (error) {
-          console.warn('[sdkSessions] Failed to stop previous query:', error);
-          // Continue anyway - the new query will proceed
-        }
-      }
-
-      // Get session cwd for tracking
+      // Get session info for tracking and name generation
       let sessionCwd: string | undefined;
+      let needsNameGeneration = false;
       subscribe(sessions => {
         const session = sessions.find(s => s.id === id);
         sessionCwd = session?.cwd;
+        // Generate name if this is the first user message and no name exists
+        needsNameGeneration = !session?.aiMetadata?.name && session?.messages.filter(m => m.type === 'user').length === 0;
       })();
 
       // Track prompt for usage stats
@@ -920,6 +1106,24 @@ function createSdkSessionsStore() {
             : s
         )
       );
+
+      // Generate session name from prompt asynchronously (don't block)
+      if (needsNameGeneration && isLlmEnabled()) {
+        generateSessionNameFromPrompt(prompt).then(aiMetadata => {
+          if (aiMetadata.name) {
+            update(sessions =>
+              sessions.map(s =>
+                s.id === id
+                  ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } }
+                  : s
+              )
+            );
+            console.log('[sdkSessions] Session name generated:', aiMetadata.name);
+          }
+        }).catch(err => {
+          console.error('[sdkSessions] Failed to generate session name:', err);
+        });
+      }
 
       try {
         console.log('[sdkSessions] Invoking send_sdk_prompt');
@@ -1003,6 +1207,9 @@ function createSdkSessionsStore() {
       liveSessions.delete(id);
 
       update(sessions => sessions.filter(s => s.id !== id));
+
+      // Save to disk so the closed session is removed from persistence
+      await saveSessionsToDisk();
     },
 
     getSession(id: string): SdkSession | undefined {
@@ -1014,11 +1221,21 @@ function createSdkSessionsStore() {
     },
 
     async updateSessionModel(id: string, model: string): Promise<void> {
+      // Resolve "auto" model to a valid model if session is live
+      // (For non-live sessions, we store "auto" and resolve on reinitialization)
+      const currentSettings = get(settings);
+      const shouldResolve = liveSessions.has(id) && isAutoModel(model);
+      const resolvedModel = shouldResolve ? resolveModelForApi(model, currentSettings.enabled_models) : model;
+
+      if (shouldResolve && resolvedModel !== model) {
+        console.log('[sdkSessions] Resolved auto model to:', resolvedModel);
+      }
+
       // Update the model in the local state immediately for responsive UI
       update(sessions =>
         sessions.map(s =>
           s.id === id
-            ? { ...s, model }
+            ? { ...s, model: resolvedModel }
             : s
         )
       );
@@ -1032,10 +1249,39 @@ function createSdkSessionsStore() {
 
       // Send the model update to the backend
       try {
-        await invoke('update_sdk_model', { id, model });
-        console.log('[sdkSessions] Model updated to:', model);
+        await invoke('update_sdk_model', { id, model: resolvedModel });
+        console.log('[sdkSessions] Model updated to:', resolvedModel);
       } catch (error) {
         console.error('Failed to update SDK model:', error);
+      }
+    },
+
+    async updateSessionThinking(id: string, thinkingLevel: ThinkingLevel): Promise<void> {
+      // Update the thinking level in the local state immediately for responsive UI
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, thinkingLevel }
+            : s
+        )
+      );
+
+      // Calculate the token budget (null for off)
+      const maxThinkingTokens = thinkingLevel ? THINKING_BUDGETS[thinkingLevel] : null;
+
+      // Only send to backend if session is live
+      // For restored sessions, the thinking level will be used when session is reinitialized
+      if (!liveSessions.has(id)) {
+        console.log('[sdkSessions] Session not live, thinking update stored locally:', thinkingLevel);
+        return;
+      }
+
+      // Send the thinking update to the backend
+      try {
+        await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+        console.log('[sdkSessions] Thinking updated to:', thinkingLevel, '(', maxThinkingTokens, 'tokens)');
+      } catch (error) {
+        console.error('Failed to update SDK thinking:', error);
       }
     },
 
@@ -1044,6 +1290,696 @@ function createSdkSessionsStore() {
         sessions.map(s =>
           s.id === id
             ? { ...s, unread: false }
+            : s
+        )
+      );
+    },
+
+    /**
+     * Create a pending transcription session.
+     * This session is created immediately when recording starts, before transcription.
+     */
+    createPendingTranscriptionSession(
+      model: string,
+      thinkingLevel: ThinkingLevel
+    ): string {
+      const id = crypto.randomUUID();
+
+      const session: SdkSession = {
+        id,
+        cwd: '', // Will be set after repo determination
+        model,
+        thinkingLevel,
+        messages: [],
+        status: 'pending_transcription',
+        createdAt: Date.now(),
+        accumulatedDurationMs: 0,
+        pendingTranscription: {
+          status: 'recording',
+          audioVisualizationHistory: [],
+          recordingStartedAt: Date.now(),
+        },
+      };
+
+      update(sessions => [...sessions, session]);
+
+      return id;
+    },
+
+    /**
+     * Update the pending transcription status and info.
+     */
+    updatePendingTranscription(
+      id: string,
+      updates: Partial<PendingTranscriptionInfo>
+    ): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.pendingTranscription) return s;
+
+          // If status is changing from 'recording' to something else, calculate duration
+          let finalUpdates = { ...updates };
+          if (
+            updates.status &&
+            updates.status !== 'recording' &&
+            s.pendingTranscription.status === 'recording' &&
+            s.pendingTranscription.recordingStartedAt
+          ) {
+            finalUpdates.recordingDurationMs =
+              Date.now() - s.pendingTranscription.recordingStartedAt;
+          }
+
+          return {
+            ...s,
+            pendingTranscription: {
+              ...s.pendingTranscription,
+              ...finalUpdates,
+            },
+          };
+        })
+      );
+    },
+
+    /**
+     * Add audio visualization snapshot to the session's history.
+     */
+    addAudioVisualizationSnapshot(id: string, data: number[]): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id && s.pendingTranscription
+            ? {
+                ...s,
+                pendingTranscription: {
+                  ...s.pendingTranscription,
+                  audioVisualizationHistory: [
+                    ...(s.pendingTranscription.audioVisualizationHistory || []),
+                    data,
+                  ].slice(-100), // Keep last 100 snapshots (~10 seconds at 10fps)
+                },
+              }
+            : s
+        )
+      );
+    },
+
+    /**
+     * Store the audio data for retry capability.
+     */
+    storeAudioData(id: string, audioData: Uint8Array): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id && s.pendingTranscription
+            ? {
+                ...s,
+                pendingTranscription: {
+                  ...s.pendingTranscription,
+                  audioData,
+                },
+              }
+            : s
+        )
+      );
+    },
+
+    /**
+     * Transition from pending_transcription to the next state.
+     * If repo auto-select returns low confidence, transition to pending_repo.
+     * Otherwise, transition to initializing and start the SDK session.
+     */
+    async completePendingTranscription(
+      id: string,
+      cwd: string,
+      transcript: string,
+      systemPrompt?: string,
+      pendingRepoSelection?: PendingRepoSelection
+    ): Promise<void> {
+      // Get session info
+      let session: SdkSession | undefined;
+      subscribe(sessions => {
+        session = sessions.find(s => s.id === id);
+      })();
+
+      if (!session) {
+        throw new Error(`Session ${id} not found`);
+      }
+
+      if (session.status !== 'pending_transcription') {
+        console.warn('[sdkSessions] Session is not pending transcription:', session.status);
+        return;
+      }
+
+      if (pendingRepoSelection) {
+        // Need user to select repo - transition to pending_repo
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  status: 'pending_repo' as const,
+                  pendingRepoSelection,
+                  pendingPrompt: transcript,
+                  // Keep pendingTranscription for display purposes
+                }
+              : s
+          )
+        );
+      } else {
+        // Have repo, transition to initializing
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  cwd,
+                  status: 'initializing' as const,
+                  pendingPrompt: transcript,
+                }
+              : s
+          )
+        );
+
+        // Initialize the SDK session
+        await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, transcript);
+      }
+    },
+
+    /**
+     * Cancel a pending transcription session (e.g., user cancelled recording).
+     */
+    cancelPendingTranscription(id: string): void {
+      update(sessions => sessions.filter(s => s.id !== id));
+    },
+
+    /**
+     * Create a pending session that's waiting for repo selection.
+     * The session is created immediately but the SDK isn't initialized yet.
+     */
+    createPendingRepoSession(
+      model: string,
+      thinkingLevel: ThinkingLevel,
+      pendingRepoSelection: PendingRepoSelection
+    ): string {
+      const id = crypto.randomUUID();
+
+      const session: SdkSession = {
+        id,
+        cwd: '', // Will be set after repo selection
+        model,
+        thinkingLevel,
+        messages: [],
+        status: 'pending_repo',
+        createdAt: Date.now(),
+        accumulatedDurationMs: 0,
+        pendingRepoSelection,
+        pendingPrompt: pendingRepoSelection.transcript,
+      };
+
+      update(sessions => [...sessions, session]);
+
+      return id;
+    },
+
+    /**
+     * Create an initializing session (repo already selected, SDK being set up).
+     * Used when we know the repo but SDK session creation is in progress.
+     */
+    createInitializingSession(
+      cwd: string,
+      model: string,
+      thinkingLevel: ThinkingLevel,
+      pendingPrompt: string
+    ): string {
+      const id = crypto.randomUUID();
+
+      const session: SdkSession = {
+        id,
+        cwd,
+        model,
+        thinkingLevel,
+        messages: [],
+        status: 'initializing',
+        createdAt: Date.now(),
+        accumulatedDurationMs: 0,
+        pendingPrompt,
+      };
+
+      update(sessions => [...sessions, session]);
+
+      return id;
+    },
+
+    /**
+     * Complete repo selection for a pending session and initialize the SDK.
+     * This transitions the session from 'pending_repo' → 'initializing' → 'querying'.
+     * @param cleanedTranscript - Optional cleaned transcript to use instead of the raw pendingPrompt
+     */
+    async completeRepoSelection(
+      id: string,
+      cwd: string,
+      systemPrompt?: string,
+      cleanedTranscript?: string
+    ): Promise<void> {
+      // Get session info
+      let session: SdkSession | undefined;
+      subscribe(sessions => {
+        session = sessions.find(s => s.id === id);
+      })();
+
+      if (!session) {
+        throw new Error(`Session ${id} not found`);
+      }
+
+      if (session.status !== 'pending_repo') {
+        console.warn('[sdkSessions] Session is not pending repo selection:', session.status);
+        return;
+      }
+
+      // Use cleaned transcript if provided, otherwise fall back to pending prompt
+      const pendingPrompt = cleanedTranscript || session.pendingPrompt;
+
+      // Update to initializing state with the selected cwd and update pendingPrompt if cleaned
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                cwd,
+                status: 'initializing' as const,
+                pendingRepoSelection: undefined,
+                pendingPrompt: pendingPrompt,
+              }
+            : s
+        )
+      );
+
+      // Now initialize the SDK session
+      await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, pendingPrompt);
+    },
+
+    /**
+     * Initialize a session that was created in initializing state.
+     * Sets up listeners, creates backend session, and sends the pending prompt.
+     */
+    async initializeSession(
+      id: string,
+      cwd: string,
+      model: string,
+      thinkingLevel: ThinkingLevel,
+      systemPrompt?: string,
+      pendingPrompt?: string
+    ): Promise<void> {
+      await this.ensureSidecarStarted();
+
+      // Set up event listeners for this session
+      const unlisteners: UnlistenFn[] = [];
+
+      const textEventName = `sdk-text-${id}`;
+      console.log('[sdkSessions] Setting up listener for:', textEventName);
+      unlisteners.push(
+        await listen<string>(textEventName, (e) => {
+          console.log('[sdkSessions] Text event callback invoked for:', textEventName);
+          console.log('[sdkSessions] Payload:', e.payload?.substring(0, 100));
+          try {
+            update(sessions => {
+              console.log('[sdkSessions] Running update, current sessions:', sessions.length);
+              return sessions.map(s =>
+                s.id === id
+                  ? {
+                      ...s,
+                      startedAt: s.startedAt || Date.now(),
+                      currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
+                      messages: [
+                        ...s.messages,
+                        { type: 'text' as const, content: e.payload, timestamp: Date.now() },
+                      ],
+                    }
+                  : s
+              );
+            });
+            console.log('[sdkSessions] Update completed');
+          } catch (err) {
+            console.error('[sdkSessions] Error in update:', err);
+          }
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ tool: string; input: Record<string, unknown> }>(
+          `sdk-tool-start-${id}`,
+          (e) => {
+            usageStats.trackToolCall(e.payload.tool);
+            update(sessions =>
+              sessions.map(s =>
+                s.id === id
+                  ? {
+                      ...s,
+                      startedAt: s.startedAt || Date.now(),
+                      currentWorkStartedAt: s.currentWorkStartedAt || Date.now(),
+                      messages: [
+                        ...s.messages,
+                        {
+                          type: 'tool_start' as const,
+                          tool: e.payload.tool,
+                          input: e.payload.input,
+                          timestamp: Date.now(),
+                        },
+                      ],
+                    }
+                  : s
+              )
+            );
+          }
+        )
+      );
+
+      unlisteners.push(
+        await listen<{ tool: string; output: string }>(`sdk-tool-result-${id}`, (e) => {
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'tool_result' as const,
+                        tool: e.payload.tool,
+                        output: e.payload.output,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen(`sdk-done-${id}`, async () => {
+          console.log('[sdkSessions] Received done event for session:', id);
+          const currentSettings = get(settings);
+
+          let sessionMessages: SdkMessage[] = [];
+          let needsAiAnalysis = false;
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const now = Date.now();
+              const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
+
+              const updatedMessages = [...s.messages, { type: 'done' as const, timestamp: now }];
+              sessionMessages = updatedMessages;
+
+              // Analyze completion if no outcome yet or if interaction detection is needed
+              needsAiAnalysis = isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+
+              return {
+                ...s,
+                status: 'idle' as const,
+                accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
+                currentWorkStartedAt: undefined,
+                messages: updatedMessages,
+                unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              };
+            })
+          );
+
+          if (currentSettings.audio.play_sound_on_completion) {
+            playCompletionSound();
+          }
+
+          // Run LLM analysis asynchronously to get outcome and interaction detection (don't block the UI)
+          if (needsAiAnalysis && sessionMessages.length > 0) {
+            analyzeSessionCompletion(sessionMessages).then(aiMetadata => {
+              if (Object.keys(aiMetadata).length > 0) {
+                update(sessions =>
+                  sessions.map(s =>
+                    s.id === id
+                      ? { ...s, aiMetadata: { ...s.aiMetadata, ...aiMetadata } }
+                      : s
+                  )
+                );
+                console.log('[sdkSessions] AI completion metadata updated:', aiMetadata);
+              }
+            }).catch(err => {
+              console.error('[sdkSessions] Failed to analyze session completion:', err);
+            });
+          }
+        })
+      );
+
+      unlisteners.push(
+        await listen<string>(`sdk-error-${id}`, (e) => {
+          const currentSettings = get(settings);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const now = Date.now();
+              const workPeriodMs = s.currentWorkStartedAt ? now - s.currentWorkStartedAt : 0;
+
+              return {
+                ...s,
+                status: 'error' as const,
+                accumulatedDurationMs: s.accumulatedDurationMs + workPeriodMs,
+                currentWorkStartedAt: undefined,
+                messages: [
+                  ...s.messages,
+                  { type: 'error' as const, content: e.payload, timestamp: now },
+                ],
+                unread: currentSettings.mark_sessions_unread ? true : s.unread,
+              };
+            })
+          );
+        })
+      );
+
+      // Usage tracking listener
+      unlisteners.push(
+        await listen<SdkUsage>(`sdk-usage-${id}`, (e) => {
+          console.log('[sdkSessions] Received usage event:', e.payload);
+          const queryUsage = e.payload;
+
+          usageStats.trackTokenUsage(
+            queryUsage.inputTokens,
+            queryUsage.outputTokens,
+            queryUsage.cacheReadTokens,
+            queryUsage.cacheCreationTokens,
+            queryUsage.totalCostUsd
+          );
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const prevUsage = s.usage || {
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCostUsd: 0,
+                totalDurationMs: 0,
+                totalDurationApiMs: 0,
+                totalTurns: 0,
+                contextWindow: queryUsage.contextWindow,
+                contextUsagePercent: 0,
+                queryUsage: [],
+                progressiveInputTokens: 0,
+                progressiveOutputTokens: 0,
+                progressiveCacheReadTokens: 0,
+                progressiveCacheCreationTokens: 0,
+              };
+
+              const totalInputTokens = prevUsage.totalInputTokens + queryUsage.inputTokens;
+              const totalOutputTokens = prevUsage.totalOutputTokens + queryUsage.outputTokens;
+              const contextWindow = queryUsage.contextWindow || prevUsage.contextWindow || 200000;
+              const currentContextTokens = queryUsage.inputTokens + queryUsage.outputTokens;
+              const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
+
+              return {
+                ...s,
+                usage: {
+                  totalInputTokens,
+                  totalOutputTokens,
+                  totalCacheReadTokens: prevUsage.totalCacheReadTokens + queryUsage.cacheReadTokens,
+                  totalCacheCreationTokens: prevUsage.totalCacheCreationTokens + queryUsage.cacheCreationTokens,
+                  totalCostUsd: prevUsage.totalCostUsd + queryUsage.totalCostUsd,
+                  totalDurationMs: prevUsage.totalDurationMs + queryUsage.durationMs,
+                  totalDurationApiMs: prevUsage.totalDurationApiMs + queryUsage.durationApiMs,
+                  totalTurns: prevUsage.totalTurns + queryUsage.numTurns,
+                  contextWindow,
+                  contextUsagePercent,
+                  queryUsage: [...prevUsage.queryUsage, queryUsage],
+                  progressiveInputTokens: 0,
+                  progressiveOutputTokens: 0,
+                  progressiveCacheReadTokens: 0,
+                  progressiveCacheCreationTokens: 0,
+                },
+              };
+            })
+          );
+        })
+      );
+
+      // Progressive usage listener
+      unlisteners.push(
+        await listen<SdkProgressiveUsage>(`sdk-progressive-usage-${id}`, (e) => {
+          const progressiveUsage = e.payload;
+
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+
+              const prevUsage = s.usage || {
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCostUsd: 0,
+                totalDurationMs: 0,
+                totalDurationApiMs: 0,
+                totalTurns: 0,
+                contextWindow: 200000,
+                contextUsagePercent: 0,
+                queryUsage: [],
+                progressiveInputTokens: 0,
+                progressiveOutputTokens: 0,
+                progressiveCacheReadTokens: 0,
+                progressiveCacheCreationTokens: 0,
+              };
+
+              const progressiveInputTokens = prevUsage.progressiveInputTokens + progressiveUsage.inputTokens;
+              const progressiveOutputTokens = prevUsage.progressiveOutputTokens + progressiveUsage.outputTokens;
+
+              const liveCurrentTokens = progressiveInputTokens + progressiveOutputTokens;
+              const contextUsagePercent = Math.min(100, (liveCurrentTokens / prevUsage.contextWindow) * 100);
+
+              return {
+                ...s,
+                usage: {
+                  ...prevUsage,
+                  contextUsagePercent,
+                  progressiveInputTokens,
+                  progressiveOutputTokens,
+                  progressiveCacheReadTokens: prevUsage.progressiveCacheReadTokens + progressiveUsage.cacheReadTokens,
+                  progressiveCacheCreationTokens: prevUsage.progressiveCacheCreationTokens + progressiveUsage.cacheCreationTokens,
+                },
+              };
+            })
+          );
+        })
+      );
+
+      // Subagent listeners
+      unlisteners.push(
+        await listen<{ agentId: string; agentType: string }>(`sdk-subagent-start-${id}`, (e) => {
+          console.log('[sdkSessions] Subagent started:', e.payload.agentType, 'id:', e.payload.agentId);
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'subagent_start' as const,
+                        agentId: e.payload.agentId,
+                        agentType: e.payload.agentType,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ agentId: string; transcriptPath: string }>(`sdk-subagent-stop-${id}`, (e) => {
+          console.log('[sdkSessions] Subagent stopped:', e.payload.agentId);
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'subagent_stop' as const,
+                        agentId: e.payload.agentId,
+                        transcriptPath: e.payload.transcriptPath,
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      listeners.set(id, unlisteners);
+
+      // Resolve "auto" model to a valid model before sending to backend
+      const currentSettings = get(settings);
+      const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
+      if (resolvedModel !== model) {
+        console.log('[sdkSessions] Resolved auto model to:', resolvedModel);
+        // Update the session's model to the resolved value
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, model: resolvedModel }
+              : s
+          )
+        );
+      }
+
+      // Create the session on the backend
+      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', resolvedModel, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
+      await invoke('create_sdk_session', { id, cwd, model: resolvedModel, systemPrompt: systemPrompt ?? null });
+      console.log('[sdkSessions] Session created');
+
+      // Mark session as live
+      liveSessions.add(id);
+
+      // Apply initial thinking level if set
+      if (thinkingLevel) {
+        const maxThinkingTokens = THINKING_BUDGETS[thinkingLevel];
+        console.log('[sdkSessions] Applying initial thinking level:', thinkingLevel, '(', maxThinkingTokens, 'tokens)');
+        await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+      }
+
+      // Track session creation for usage stats
+      usageStats.trackSession('sdk', resolvedModel, cwd);
+
+      // If there's a pending prompt, send it
+      if (pendingPrompt) {
+        await this.sendPrompt(id, pendingPrompt);
+      } else {
+        // Just transition to idle if no pending prompt
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'idle' as const, pendingPrompt: undefined }
+              : s
+          )
+        );
+      }
+    },
+
+    /**
+     * Update session status.
+     */
+    updateStatus(id: string, status: SdkSession['status']): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, status }
             : s
         )
       );

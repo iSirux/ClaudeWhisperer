@@ -67,7 +67,13 @@ interface UpdateModelMessage {
   model: string;
 }
 
-type InboundMessage = CreateMessage | QueryMessage | CloseMessage | StopMessage | UpdateModelMessage;
+interface UpdateThinkingMessage {
+  type: 'update_thinking';
+  id: string;
+  maxThinkingTokens: number | null;
+}
+
+type InboundMessage = CreateMessage | QueryMessage | CloseMessage | StopMessage | UpdateModelMessage | UpdateThinkingMessage;
 
 interface Session {
   cwd: string;
@@ -76,6 +82,8 @@ interface Session {
   queryIterator?: Query; // The active query iterator for interrupt()
   sdkSessionId?: string; // Track the SDK's internal session ID for resume
   conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions
+  maxThinkingTokens?: number; // Extended thinking budget (null/undefined = off)
+  currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
 }
 
 const sessions = new Map<string, Session>();
@@ -271,6 +279,10 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     return;
   }
 
+  // Generate a unique query ID to track this specific query
+  // This prevents stale done/error events from affecting newer queries
+  const queryId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   // If there's already a query in progress, interrupt it first
   // This prevents race conditions where the old query's 'done' event arrives after the new query starts
   if (session.queryIterator) {
@@ -289,9 +301,12 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     session.abortController = undefined;
   }
 
+  // Set this as the current query BEFORE starting
+  session.currentQueryId = queryId;
+
   const hasImages = msg.images && msg.images.length > 0;
   const hasHistory = session.conversationHistory && session.conversationHistory.length > 0 && !session.sdkSessionId;
-  send({ type: 'debug', id: msg.id, message: `Starting query with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0}, history: ${session.conversationHistory?.length ?? 0})` });
+  send({ type: 'debug', id: msg.id, message: `Starting query ${queryId} with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0}, history: ${session.conversationHistory?.length ?? 0})` });
 
   try {
     // Create abort controller for this query
@@ -384,16 +399,32 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       }
     }
 
-    send({ type: 'debug', id: msg.id, message: `Query complete, received ${messageCount} messages` });
-    sendDone(msg.id);
+    send({ type: 'debug', id: msg.id, message: `Query ${queryId} complete, received ${messageCount} messages` });
+
+    // Only emit done if this query is still the current one
+    // This prevents stale done events from affecting newer queries
+    if (session.currentQueryId === queryId) {
+      sendDone(msg.id);
+    } else {
+      send({ type: 'debug', id: msg.id, message: `Query ${queryId} was superseded by ${session.currentQueryId}, not emitting done` });
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : '';
-    send({ type: 'debug', id: msg.id, message: `Query error: ${errorMessage}\n${errorStack}` });
-    sendError(msg.id, errorMessage);
+    send({ type: 'debug', id: msg.id, message: `Query ${queryId} error: ${errorMessage}\n${errorStack}` });
+
+    // Only emit error if this query is still the current one
+    if (session.currentQueryId === queryId) {
+      sendError(msg.id, errorMessage);
+    } else {
+      send({ type: 'debug', id: msg.id, message: `Query ${queryId} was superseded, not emitting error` });
+    }
   } finally {
-    session.abortController = undefined;
-    session.queryIterator = undefined;
+    // Only clear the iterator/controller if this is still the current query
+    if (session.currentQueryId === queryId) {
+      session.abortController = undefined;
+      session.queryIterator = undefined;
+    }
   }
 }
 
@@ -542,6 +573,37 @@ async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
   send({ type: 'model_updated', id: msg.id, model: msg.model });
 }
 
+async function handleUpdateThinking(msg: UpdateThinkingMessage): Promise<void> {
+  const session = sessions.get(msg.id);
+  if (!session) {
+    sendError(msg.id, 'Session not found');
+    return;
+  }
+
+  // Update the thinking tokens in the session
+  // null means thinking is off, a number sets the budget
+  session.maxThinkingTokens = msg.maxThinkingTokens ?? undefined;
+
+  // Also update the options for future queries
+  if (msg.maxThinkingTokens) {
+    session.options.maxThinkingTokens = msg.maxThinkingTokens;
+  } else {
+    delete session.options.maxThinkingTokens;
+  }
+
+  // If there's an active query, use setMaxThinkingTokens to update it dynamically
+  if (session.queryIterator) {
+    try {
+      await session.queryIterator.setMaxThinkingTokens(msg.maxThinkingTokens);
+      send({ type: 'debug', id: msg.id, message: `Updated thinking tokens on active query: ${msg.maxThinkingTokens}` });
+    } catch (err) {
+      send({ type: 'debug', id: msg.id, message: `Failed to update thinking on active query: ${err}` });
+    }
+  }
+
+  send({ type: 'thinking_updated', id: msg.id, maxThinkingTokens: msg.maxThinkingTokens });
+}
+
 async function handleClose(msg: CloseMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (session) {
@@ -573,6 +635,9 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
       break;
     case 'update_model':
       await handleUpdateModel(msg);
+      break;
+    case 'update_thinking':
+      await handleUpdateThinking(msg);
       break;
     case 'close':
       await handleClose(msg);

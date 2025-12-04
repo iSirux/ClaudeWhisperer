@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { sessions, activeSessionId, type TerminalSession } from '$lib/stores/sessions';
-  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, type SessionAiMetadata, settingsToStoreThinking } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
+  import { resolveModelForApi } from '$lib/utils/models';
 
   async function createNewSession() {
     try {
       if ($settings.terminal_mode === 'Sdk') {
         // SDK mode: create SDK session
         const repoPath = $activeRepo?.path || '.';
-        const model = $settings.default_model;
-        const sessionId = await sdkSessions.createSession(repoPath, model);
+        const model = resolveModelForApi($settings.default_model, $settings.enabled_models);
+        const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+        const sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel);
         activeSdkSessionId.set(sessionId);
         activeSessionId.set(null); // Clear PTY selection
       } else {
@@ -108,6 +110,8 @@
     isFinished: boolean; // Whether the session is done/idle/error
     unread?: boolean; // Whether the session completed and user hasn't viewed it yet
     latestMessage?: string; // Latest assistant text message snippet for SDK sessions
+    // AI-generated metadata (from Gemini)
+    aiMetadata?: SessionAiMetadata;
   }
 
   // Cache for git branches to avoid repeated calls
@@ -139,6 +143,26 @@
   function getSdkSmartStatus(session: typeof $sdkSessions[0]): { status: string; detail?: string } {
     const messages = session.messages;
     const lastMsg = messages.at(-1);
+
+    // Handle pending_transcription status
+    if (session.status === 'pending_transcription') {
+      const subStatus = session.pendingTranscription?.status || 'recording';
+      // Check for transcription error
+      if (session.pendingTranscription?.transcriptionError) {
+        return { status: 'transcription_error', detail: session.pendingTranscription.transcriptionError };
+      }
+      return { status: 'pending_transcription', detail: subStatus };
+    }
+
+    // Handle pending_repo status
+    if (session.status === 'pending_repo') {
+      return { status: 'pending_repo' };
+    }
+
+    // Handle initializing status
+    if (session.status === 'initializing') {
+      return { status: 'initializing' };
+    }
 
     if (session.status === 'error') {
       return { status: 'error' };
@@ -328,10 +352,13 @@
   function getStatusColor(status: string): string {
     switch (status) {
       case 'Starting': return 'text-yellow-400';
+      case 'pending_transcription': return 'text-violet-400';
+      case 'pending_repo': return 'text-amber-400';
+      case 'initializing': return 'text-yellow-400';
       case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': case 'subagent': return 'text-emerald-400';
       case 'Completed': case 'idle': case 'done': return 'text-blue-400';
       case 'new': return 'text-text-muted';
-      case 'Failed': case 'error': return 'text-red-400';
+      case 'Failed': case 'error': case 'transcription_error': return 'text-red-400';
       default: return 'text-text-muted';
     }
   }
@@ -339,16 +366,28 @@
   function getStatusBg(status: string): string {
     switch (status) {
       case 'Starting': return 'bg-yellow-400';
+      case 'pending_transcription': return 'bg-violet-400';
+      case 'pending_repo': return 'bg-amber-400';
+      case 'initializing': return 'bg-yellow-400';
       case 'Running': case 'querying': case 'tool': case 'thinking': case 'responding': case 'subagent': return 'bg-emerald-400';
       case 'Completed': case 'idle': case 'done': return 'bg-blue-400';
       case 'new': return 'bg-slate-400';
-      case 'Failed': case 'error': return 'bg-red-400';
+      case 'Failed': case 'error': case 'transcription_error': return 'bg-red-400';
       default: return 'bg-text-muted';
     }
   }
 
   function getStatusLabel(status: string, detail?: string): string {
     switch (status) {
+      case 'pending_transcription':
+        // detail contains the sub-status: 'recording', 'transcribing', 'processing'
+        if (detail === 'recording') return 'Recording';
+        if (detail === 'transcribing') return 'Transcribing';
+        if (detail === 'processing') return 'Processing';
+        return 'Pending';
+      case 'transcription_error': return 'Retry?';
+      case 'pending_repo': return 'Select Repo';
+      case 'initializing': return 'Starting';
       case 'Running': case 'querying': return 'Active';
       case 'tool': return detail || 'Tool';
       case 'subagent': return detail || 'Agent';
@@ -415,7 +454,7 @@
           type: 'sdk' as const,
           status: smartStatus.status,
           statusDetail: smartStatus.detail,
-          prompt: s.messages.find(m => m.type === 'user')?.content || 'SDK Session',
+          prompt: s.messages.find(m => m.type === 'user')?.content || s.pendingPrompt || s.pendingRepoSelection?.transcript || '',
           repoPath: s.cwd,
           model: s.model,
           createdAt: Math.floor(s.createdAt / 1000), // For sorting
@@ -426,6 +465,7 @@
           isFinished,
           unread: s.unread,
           latestMessage: getLatestTextMessage(s.messages),
+          aiMetadata: s.aiMetadata,
         };
       })
     ];
@@ -435,6 +475,9 @@
       if (sortOrder === 'StatusThenChronological') {
         // Sort by status first, then by creation time (newest first)
         const statusOrder: Record<string, number> = {
+          // Pending transcription/repo at top (user action needed or in progress)
+          pending_transcription: -1, transcription_error: -1,
+          pending_repo: 0, initializing: 0,
           Starting: 0, Running: 0, querying: 0, tool: 0, thinking: 0, responding: 0, subagent: 0,
           idle: 1, new: 1, Completed: 2, done: 2,
           Failed: 3, error: 3
@@ -492,7 +535,7 @@
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
     </svg>
     <span class="text-sm font-medium">
-      {$settings.terminal_mode === 'Sdk' ? 'New SDK Session' : 'New Terminal'}
+      {$settings.terminal_mode === 'Sdk' ? 'New Session' : 'New Terminal'}
     </span>
   </button>
 
@@ -520,19 +563,34 @@
         }}
         onclick={() => session.type === 'pty' ? selectPtySession(session.id) : selectSdkSession(session.id)}
       >
-        <!-- Header row: type badge, status dot, time, close button -->
+        <!-- Header row: type badge, status dot, interaction indicator, time, close button -->
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
             {#if session.type === 'sdk' && session.model}
               <span class="px-1.5 py-0.5 text-[10px] font-medium {getModelBadgeBgColor(session.model)} {getModelTextColor(session.model)} rounded">{getShortModelName(session.model)}</span>
             {/if}
-            <div class="relative">
-              <div class="w-2 h-2 rounded-full {getStatusBg(session.status)}"></div>
-              {#if ['Running', 'Starting', 'querying', 'tool', 'thinking', 'responding', 'subagent'].includes(session.status)}
-                <div class="absolute inset-0 w-2 h-2 rounded-full {getStatusBg(session.status)} animate-ping opacity-75"></div>
-              {/if}
-            </div>
-            <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status, session.statusDetail)}</span>
+            {#if !session.aiMetadata?.needsInteraction}
+              <div class="relative">
+                <div class="w-2 h-2 rounded-full {getStatusBg(session.status)}"></div>
+                {#if ['Running', 'Starting', 'querying', 'tool', 'thinking', 'responding', 'subagent'].includes(session.status)}
+                  <div class="absolute inset-0 w-2 h-2 rounded-full {getStatusBg(session.status)} animate-ping opacity-75"></div>
+                {/if}
+              </div>
+            {/if}
+            {#if session.aiMetadata?.needsInteraction}
+              {@const urgency = session.aiMetadata.interactionUrgency || 'low'}
+              <span
+                class="text-xs font-medium flex items-center gap-1 {urgency === 'high' ? 'text-orange-400' : urgency === 'medium' ? 'text-yellow-400' : 'text-blue-400'}"
+                title={session.aiMetadata.interactionReason || 'Needs your input'}
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {session.aiMetadata.waitingFor || 'Input needed'}
+              </span>
+            {:else}
+              <span class="text-xs font-medium {getStatusColor(session.status)}">{getStatusLabel(session.status, session.statusDetail)}</span>
+            {/if}
           </div>
           <div class="flex items-center gap-2">
             {#if session.type === 'sdk'}
@@ -556,21 +614,34 @@
           </div>
         </div>
 
-        <!-- Prompt text -->
-        <p
-          class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
-          style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {$settings.session_prompt_rows};"
-          title={session.prompt || 'Interactive session'}
-        >
-          {#if session.prompt}
-            {session.prompt}
-          {:else}
-            <span class="text-text-muted italic">{session.type === 'sdk' ? 'SDK Session' : 'Interactive session'}</span>
+        <!-- Session name or prompt text -->
+        {#if session.aiMetadata?.name}
+          <!-- AI-generated session name -->
+          <div class="mb-1">
+            <span class="text-sm font-medium text-text-primary">{session.aiMetadata.name}</span>
+          </div>
+          {#if session.aiMetadata.outcome}
+            <p class="text-xs text-text-muted leading-snug mb-1.5" title={session.aiMetadata.outcome}>
+              {session.aiMetadata.outcome}
+            </p>
           {/if}
-        </p>
+        {:else}
+          <!-- Original prompt text -->
+          <p
+            class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
+            style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {$settings.session_prompt_rows};"
+            title={session.prompt || 'Interactive session'}
+          >
+            {#if session.prompt}
+              {session.prompt}
+            {:else}
+              <span class="text-text-muted italic">{session.type === 'sdk' ? 'SDK Session' : 'Interactive session'}</span>
+            {/if}
+          </p>
+        {/if}
 
-        <!-- Latest message preview (SDK sessions only) -->
-        {#if $settings.show_latest_message_preview && session.type === 'sdk' && session.latestMessage}
+        <!-- Latest message preview (SDK sessions only, hide when showing outcome) -->
+        {#if $settings.show_latest_message_preview && session.type === 'sdk' && session.latestMessage && !session.aiMetadata?.outcome}
           <p
             class="text-xs text-text-muted leading-snug mb-1.5 italic overflow-hidden"
             style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {$settings.session_response_rows};"
@@ -580,17 +651,19 @@
           </p>
         {/if}
 
-        <!-- Repo name, branch, and model -->
-        <div class="flex items-center gap-1.5 text-text-muted">
-          <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-          <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
-          {#if session.branch}
-            <span class="text-xs text-text-muted">·</span>
-            <span class="text-xs text-blue-400/70" title="Git branch: {session.branch}">{session.branch}</span>
-          {/if}
-        </div>
+        <!-- Repo name, branch, and model (hide when pending repo selection or no repo) -->
+        {#if session.status !== 'pending_repo' && session.repoPath && session.repoPath !== '.'}
+          <div class="flex items-center gap-1.5 text-text-muted">
+            <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <span class="text-xs truncate">{getRepoName(session.repoPath)}</span>
+            {#if session.branch}
+              <span class="text-xs text-text-muted">·</span>
+              <span class="text-xs text-blue-400/70" title="Git branch: {session.branch}">{session.branch}</span>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/each}
   {/if}
@@ -648,21 +721,26 @@
   }
 
   .session-item {
-    border-left: 2px solid transparent;
+    border-left: 3px solid transparent;
+    position: relative;
   }
 
+  /* Active/focused session - purple accent highlight */
   .session-item.active {
-    background-color: rgba(99, 102, 241, 0.05);
-    border-left: 2px solid var(--color-accent);
+    background-color: rgba(99, 102, 241, 0.15);
+    border-left: 3px solid var(--color-accent);
   }
 
+  /* Unread session - blue border with subtle tint */
   .session-item.unread {
     background-color: rgba(59, 130, 246, 0.08);
-    border-left: 2px solid rgb(59, 130, 246);
+    border-left: 3px solid rgb(59, 130, 246);
   }
 
+  /* Active + unread - active takes visual precedence, but add blue glow to border */
   .session-item.unread.active {
-    background-color: rgba(99, 102, 241, 0.1);
-    border-left: 2px solid var(--color-accent);
+    background-color: rgba(99, 102, 241, 0.15);
+    border-left: 3px solid var(--color-accent);
+    box-shadow: inset 3px 0 0 rgb(59, 130, 246);
   }
 </style>

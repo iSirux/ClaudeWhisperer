@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { recording, isRecording, isProcessing, type RecordingState } from '$lib/stores/recording';
-  import { settings, activeRepo } from '$lib/stores/settings';
+  import { settings, activeRepo, isAutoRepoSelected } from '$lib/stores/settings';
+  import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
   import { overlay } from '$lib/stores/overlay';
   import StatusBadge from './StatusBadge.svelte';
   import Waveform from './Waveform.svelte';
@@ -14,6 +15,7 @@
   let unlistenRecordingState: UnlistenFn | null = null;
   let unlistenSessionInfo: UnlistenFn | null = null;
   let unlistenMode: UnlistenFn | null = null;
+  let unlistenInlineSessionInfo: UnlistenFn | null = null;
 
   $: showHotkeyHints = $settings.overlay.show_hotkey_hints ?? true;
 
@@ -75,6 +77,17 @@
       overlay.updateModeLocal(event.payload.mode);
       setTimeout(notifyResize, 10);
     });
+
+    // Listen for inline session info changes from main window
+    unlistenInlineSessionInfo = await listen<{
+      repoName: string | null;
+      branch: string | null;
+      model: string | null;
+      promptPreview: string | null;
+    } | null>('overlay-inline-session-info', (event) => {
+      overlay.updateInlineSessionInfoLocal(event.payload);
+      setTimeout(notifyResize, 10);
+    });
   });
 
   onDestroy(() => {
@@ -86,6 +99,9 @@
     }
     if (unlistenMode) {
       unlistenMode();
+    }
+    if (unlistenInlineSessionInfo) {
+      unlistenInlineSessionInfo();
     }
   });
 
@@ -119,6 +135,16 @@
           <span class="text-xs text-text-muted px-1.5 py-0.5 bg-surface rounded">
             Transcription
           </span>
+        {:else if $overlay.mode === 'inline'}
+          <span class="text-sm font-medium text-recording">Recording</span>
+          <span class="text-xs text-text-muted px-1.5 py-0.5 bg-surface-elevated rounded border border-border/50">
+            → Session
+          </span>
+          {#if $overlay.inlineSessionInfo?.model}
+            <span class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor($overlay.inlineSessionInfo.model)} {getModelTextColor($overlay.inlineSessionInfo.model)}">
+              {getModelLabel($overlay.inlineSessionInfo.model)}
+            </span>
+          {/if}
         {:else}
           <span class="text-sm font-medium text-recording">Recording</span>
           {#if $overlay.sessionInfo.model}
@@ -144,13 +170,29 @@
     </div>
 
     <div class="flex items-center gap-3">
-      {#if $activeRepo && $overlay.mode !== 'paste'}
+      {#if $overlay.mode === 'inline' && $overlay.inlineSessionInfo}
         <div class="flex items-center gap-2 text-xs">
-          <span class="text-text-secondary truncate max-w-32">{$activeRepo.name}</span>
-          <StatusBadge
-            createBranch={$settings.git.create_branch}
-            autoMerge={$settings.git.auto_merge}
-          />
+          {#if $overlay.inlineSessionInfo.repoName}
+            <span class="text-text-secondary truncate max-w-32">{$overlay.inlineSessionInfo.repoName}</span>
+          {/if}
+          {#if $overlay.inlineSessionInfo.branch}
+            <span class="text-text-muted">·</span>
+            <span class="font-mono text-primary truncate max-w-24">{$overlay.inlineSessionInfo.branch}</span>
+          {/if}
+        </div>
+      {:else if $overlay.mode !== 'paste'}
+        <div class="flex items-center gap-2 text-xs">
+          {#if $isAutoRepoSelected && isRepoAutoSelectEnabled()}
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500 font-medium">Auto</span>
+          {:else if $activeRepo}
+            <span class="text-text-secondary truncate max-w-32">{$activeRepo.name}</span>
+          {/if}
+          {#if $activeRepo || $isAutoRepoSelected}
+            <StatusBadge
+              createBranch={$settings.git.create_branch}
+              autoMerge={$settings.git.auto_merge}
+            />
+          {/if}
         </div>
       {/if}
 
@@ -166,8 +208,17 @@
     </div>
   </div>
 
+  <!-- Show inline session prompt preview when in inline mode -->
+  {#if $overlay.mode === 'inline' && $overlay.inlineSessionInfo?.promptPreview && isRecordingActive}
+    <div class="mt-2 p-2 bg-surface-elevated rounded text-xs text-text-muted border border-border/30 overflow-hidden">
+      <div class="truncate">
+        {$overlay.inlineSessionInfo.promptPreview}
+      </div>
+    </div>
+  {/if}
+
   <!-- Show SDK session info when available (only show branch here, model is shown inline when recording) -->
-  {#if $overlay.sessionInfo.branch && !isRecordingActive && $overlay.mode !== 'paste'}
+  {#if $overlay.sessionInfo.branch && !isRecordingActive && $overlay.mode !== 'paste' && $overlay.mode !== 'inline'}
     <div class="mt-2 p-2 bg-surface rounded text-xs text-text-secondary">
       <div class="flex items-center gap-3">
         <div class="flex items-center gap-1">
@@ -190,8 +241,8 @@
     </div>
   {/if}
 
-  <!-- Hotkey hints at bottom -->
-  {#if isRecordingActive && showHotkeyHints}
+  <!-- Hotkey hints at bottom (not shown for inline mode since user clicked the mic button) -->
+  {#if isRecordingActive && showHotkeyHints && $overlay.mode !== 'inline'}
     <div class="hotkey-hints mt-3 pt-2 border-t border-border/50 flex gap-4 justify-center">
       <div class="hotkey-hint flex items-center gap-2">
         <div class="keys flex items-center gap-0.5">
@@ -209,6 +260,13 @@
         </div>
         <span class="action text-xs text-text-secondary">Transcribe</span>
       </div>
+    </div>
+  {/if}
+
+  <!-- Simple hint for inline mode -->
+  {#if isRecordingActive && $overlay.mode === 'inline'}
+    <div class="mt-2 pt-2 border-t border-border/50 text-center">
+      <span class="text-xs text-text-muted">Click mic button again to stop and send</span>
     </div>
   {/if}
 </div>

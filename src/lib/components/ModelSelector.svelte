@@ -4,6 +4,8 @@
     getModelRingColor,
     getModelHoverBgColor,
   } from "$lib/utils/modelColors";
+  import { getEnabledModelsWithAuto, isAutoModel } from "$lib/utils/models";
+  import { settings } from "$lib/stores/settings";
 
   interface Props {
     model: string;
@@ -13,42 +15,57 @@
 
   let { model, onchange, size = "sm" }: Props = $props();
 
-  const models = [
-    {
-      id: "claude-opus-4-5-20251101",
-      label: "Opus",
-      title: "Claude Opus 4.5 - Most capable model",
-    },
-    {
-      id: "claude-sonnet-4-5-20250929",
-      label: "Sonnet",
-      title: "Claude Sonnet 4.5 - Balanced performance",
-    },
-    {
-      id: "claude-sonnet-4-5-20250929[1m]",
-      label: "Sonnet 1M",
-      title: "Claude Sonnet 4.5 - 1M token context window",
-    },
-    {
-      id: "claude-haiku-4-5-20251001",
-      label: "Haiku",
-      title: "Claude Haiku 4.5 - Fastest model",
-    },
-  ];
+  // Check if smart model selection feature is enabled
+  const isSmartModelEnabled = $derived(
+    $settings.llm?.enabled && $settings.llm?.features?.recommend_model
+  );
+
+  // Get enabled models - Auto is always shown
+  const models = $derived(getEnabledModelsWithAuto($settings.enabled_models));
 
   const sizeClasses = {
     sm: "px-3 py-1 text-xs",
     md: "px-4 py-2 text-sm",
   };
 
+  function handleModelClick(id: string) {
+    if (isAutoModel(id) && !isSmartModelEnabled) {
+      // Navigate to settings to enable the feature
+      window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'gemini' } }));
+      return;
+    }
+    onchange(id);
+  }
+
   function getButtonClasses(id: string, isSelected: boolean): string {
     const base = `rounded font-medium transition-all ${sizeClasses[size]}`;
 
+    // Auto model when not enabled - show as disabled/muted
+    if (isAutoModel(id) && !isSmartModelEnabled) {
+      return `${base} text-text-muted hover:text-text-secondary hover:bg-surface-elevated`;
+    }
+
     if (isSelected) {
+      // Auto model gets a special gradient
+      if (isAutoModel(id)) {
+        return `${base} bg-gradient-to-r from-purple-500 to-amber-500 text-white shadow-md ring-2 ring-purple-400 ring-opacity-50 scale-105`;
+      }
       return `${base} ${getModelBgColor(id)} text-white shadow-md ring-2 ${getModelRingColor(id)} ring-opacity-50 scale-105`;
     }
 
+    // Auto model hover state
+    if (isAutoModel(id)) {
+      return `${base} text-text-secondary hover:bg-gradient-to-r hover:from-purple-500/20 hover:to-amber-500/20`;
+    }
+
     return `${base} text-text-secondary ${getModelHoverBgColor(id)}`;
+  }
+
+  function getButtonTitle(id: string, originalTitle: string): string {
+    if (isAutoModel(id) && !isSmartModelEnabled) {
+      return "Click to enable Smart Model Selection in Gemini settings";
+    }
+    return originalTitle;
   }
 </script>
 
@@ -56,8 +73,8 @@
   {#each models as { id, label, title }}
     <button
       class={getButtonClasses(id, model === id)}
-      onclick={() => onchange(id)}
-      {title}
+      onclick={() => handleModelClick(id)}
+      title={getButtonTitle(id, title)}
     >
       {label}
     </button>

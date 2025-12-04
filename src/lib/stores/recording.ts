@@ -6,12 +6,25 @@ import { settings } from './settings';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
 
+interface QueuedRecording {
+  id: string;
+  audioData: Uint8Array;
+  status: 'pending' | 'transcribing' | 'done' | 'error';
+  transcript?: string;
+  error?: string;
+  onComplete?: (transcript: string) => void;
+}
+
 interface RecordingStore {
   state: RecordingState;
   transcript: string;
   error: string | null;
   audioData: Uint8Array | null;
   stream: MediaStream | null;
+  // Queue for pending transcriptions
+  queue: QueuedRecording[];
+  // Number of recordings currently being transcribed
+  transcribingCount: number;
 }
 
 function createRecordingStore() {
@@ -21,6 +34,8 @@ function createRecordingStore() {
     error: null,
     audioData: null,
     stream: null,
+    queue: [],
+    transcribingCount: 0,
   });
 
   let mediaRecorder: MediaRecorder | null = null;
@@ -72,6 +87,73 @@ function createRecordingStore() {
 
     // Emit empty data to signal recording stopped
     emit('audio-visualization', { data: null });
+  }
+
+  // Generate a unique ID for queued recordings
+  function generateId(): string {
+    return `rec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  // Process the next item in the transcription queue
+  async function processQueue() {
+    const currentState = get({ subscribe });
+
+    // Find the next pending recording
+    const pendingRecording = currentState.queue.find(r => r.status === 'pending');
+    if (!pendingRecording) return;
+
+    // Mark it as transcribing
+    update((s) => ({
+      ...s,
+      transcribingCount: s.transcribingCount + 1,
+      queue: s.queue.map(r =>
+        r.id === pendingRecording.id ? { ...r, status: 'transcribing' as const } : r
+      ),
+    }));
+
+    try {
+      const transcript = await invoke<string>('transcribe_audio', {
+        audioData: Array.from(pendingRecording.audioData),
+      });
+
+      // Track transcription
+      usageStats.trackTranscription();
+
+      // Update the queue item as done
+      update((s) => ({
+        ...s,
+        transcribingCount: s.transcribingCount - 1,
+        queue: s.queue.map(r =>
+          r.id === pendingRecording.id ? { ...r, status: 'done' as const, transcript } : r
+        ),
+      }));
+
+      // Call the completion callback if provided
+      if (pendingRecording.onComplete) {
+        pendingRecording.onComplete(transcript);
+      }
+
+      // Emit event for the completed transcription
+      emit('transcription-complete', { id: pendingRecording.id, transcript });
+
+    } catch (error) {
+      console.error('Failed to transcribe queued recording:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to transcribe';
+
+      update((s) => ({
+        ...s,
+        transcribingCount: s.transcribingCount - 1,
+        queue: s.queue.map(r =>
+          r.id === pendingRecording.id ? { ...r, status: 'error' as const, error: errorMessage } : r
+        ),
+      }));
+
+      // Emit error event
+      emit('transcription-error', { id: pendingRecording.id, error: errorMessage });
+    }
+
+    // Process the next item in the queue
+    processQueue();
   }
 
   return {
@@ -140,39 +222,44 @@ function createRecordingStore() {
             const arrayBuffer = await audioBlob.arrayBuffer();
             const audioData = new Uint8Array(arrayBuffer);
 
+            // Clean up media resources immediately
+            mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
+            mediaRecorder = null;
+            audioChunks = [];
+
             if (autoTranscribe) {
-              update((s) => ({ ...s, state: 'processing' }));
-              emit('recording-state', { state: 'processing' });
+              // Queue the transcription instead of blocking
+              const recordingId = generateId();
 
-              const transcript = await invoke<string>('transcribe_audio', {
-                audioData: Array.from(audioData),
-              });
-
-              // Track transcription
-              usageStats.trackTranscription();
-
+              // Add to queue with a callback that will resolve the promise
               update((s) => ({
                 ...s,
-                state: 'idle',
-                transcript,
+                state: 'idle', // Go back to idle so new recordings can start
                 audioData,
                 stream: null,
+                queue: [
+                  ...s.queue,
+                  {
+                    id: recordingId,
+                    audioData,
+                    status: 'pending',
+                    onComplete: (transcript: string) => {
+                      // Update the store with the transcript when done
+                      update((s2) => ({ ...s2, transcript }));
+                      resolve(transcript);
+                    },
+                  },
+                ],
               }));
-              emit('recording-state', { state: 'idle' });
 
-              mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
-              mediaRecorder = null;
-              audioChunks = [];
+              // Emit that we're processing (for UI feedback)
+              emit('recording-state', { state: 'processing' });
 
-              resolve(transcript);
+              // Start processing the queue if not already running
+              processQueue();
             } else {
               update((s) => ({ ...s, state: 'recorded', audioData, stream: null }));
               emit('recording-state', { state: 'recorded' });
-
-              mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
-              mediaRecorder = null;
-              audioChunks = [];
-
               resolve(null);
             }
           } catch (error) {
@@ -254,8 +341,22 @@ function createRecordingStore() {
       }
       mediaRecorder = null;
       audioChunks = [];
-      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null });
+      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0 });
       emit('recording-state', { state: 'idle' });
+    },
+
+    // Clear completed/errored items from the queue
+    clearCompletedFromQueue() {
+      update((s) => ({
+        ...s,
+        queue: s.queue.filter(r => r.status === 'pending' || r.status === 'transcribing'),
+      }));
+    },
+
+    // Get the current queue length (pending + transcribing)
+    getQueueLength(): number {
+      const state = get({ subscribe });
+      return state.queue.filter(r => r.status === 'pending' || r.status === 'transcribing').length;
     },
 
     clearTranscript() {
@@ -274,3 +375,13 @@ export const isRecording = derived(recording, ($recording) => $recording.state =
 export const isProcessing = derived(recording, ($recording) => $recording.state === 'processing');
 export const hasRecorded = derived(recording, ($recording) => $recording.state === 'recorded');
 export const hasError = derived(recording, ($recording) => $recording.state === 'error');
+
+// Queue-related derived stores
+export const transcriptionQueue = derived(recording, ($recording) => $recording.queue);
+export const pendingTranscriptions = derived(recording, ($recording) =>
+  $recording.queue.filter(r => r.status === 'pending' || r.status === 'transcribing').length
+);
+export const isTranscribing = derived(recording, ($recording) => $recording.transcribingCount > 0);
+export const hasQueuedTranscriptions = derived(recording, ($recording) =>
+  $recording.queue.some(r => r.status === 'pending' || r.status === 'transcribing')
+);

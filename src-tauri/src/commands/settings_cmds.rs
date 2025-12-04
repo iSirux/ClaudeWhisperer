@@ -21,7 +21,7 @@ pub fn save_config(config: State<ConfigState>, new_config: AppConfig) -> Result<
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     println!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone() });
+    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None });
     println!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
     let result = cfg.save();
     match &result {
@@ -50,10 +50,18 @@ pub fn set_active_repo(config: State<ConfigState>, index: usize) -> Result<(), S
     let mut cfg = config.lock();
     if index < cfg.repos.len() {
         cfg.active_repo_index = index;
+        cfg.auto_repo_mode = false; // Disable auto mode when selecting specific repo
         cfg.save()
     } else {
         Err("Invalid repo index".to_string())
     }
+}
+
+#[tauri::command]
+pub fn set_auto_repo_mode(config: State<ConfigState>, enabled: bool) -> Result<(), String> {
+    let mut cfg = config.lock();
+    cfg.auto_repo_mode = enabled;
+    cfg.save()
 }
 
 #[tauri::command]

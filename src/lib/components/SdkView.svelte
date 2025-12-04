@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { sdkSessions, type SdkMessage, type SdkSession, type SdkImageContent } from '$lib/stores/sdkSessions';
-  import { recording, isRecording } from '$lib/stores/recording';
+  import { recording, isRecording, isProcessing } from '$lib/stores/recording';
   import { settings } from '$lib/stores/settings';
+  import { overlay } from '$lib/stores/overlay';
+  import { invoke } from '@tauri-apps/api/core';
   import SdkUsageBar from './sdk/SdkUsageBar.svelte';
   import SdkMessageComponent from './sdk/SdkMessage.svelte';
   import SdkLoadingIndicator from './sdk/SdkLoadingIndicator.svelte';
   import SdkPromptInput from './sdk/SdkPromptInput.svelte';
+  import SessionRecordingHeader from './sdk/SessionRecordingHeader.svelte';
 
   let { sessionId }: { sessionId: string } = $props();
 
@@ -18,6 +21,10 @@
   let messages = $derived(session?.messages ?? []);
   let status = $derived(session?.status ?? 'idle');
   let isQuerying = $derived(status === 'querying');
+  let isPendingRepo = $derived(status === 'pending_repo');
+  let isInitializing = $derived(status === 'initializing');
+  let isPendingTranscription = $derived(status === 'pending_transcription');
+  let isLoading = $derived(isQuerying || isInitializing);
   let usage = $derived(session?.usage);
   let hasUsageData = $derived(!!usage && (
     usage.totalInputTokens > 0 ||
@@ -25,6 +32,34 @@
     usage.progressiveInputTokens > 0 ||
     usage.progressiveOutputTokens > 0
   ));
+  let pendingRepoSelection = $derived(session?.pendingRepoSelection);
+  let pendingTranscription = $derived(session?.pendingTranscription);
+
+  // Show completed recording header when we have recording data but session is no longer pending
+  let hasCompletedRecordingData = $derived(
+    !isPendingTranscription &&
+    pendingTranscription &&
+    (pendingTranscription.audioVisualizationHistory?.length ||
+     pendingTranscription.transcript ||
+     pendingTranscription.modelRecommendation ||
+     pendingTranscription.repoRecommendation)
+  );
+
+  // Repo and branch info
+  let cwd = $derived(session?.cwd ?? '');
+  let repoName = $derived(cwd.split(/[/\\]/).pop() || cwd);
+  let branch = $state<string | null>(null);
+
+  // Fetch git branch when session changes
+  $effect(() => {
+    if (cwd) {
+      invoke<string>('get_git_branch', { repoPath: cwd })
+        .then(b => { branch = b; })
+        .catch(() => { branch = null; });
+    } else {
+      branch = null;
+    }
+  });
 
   // Get the first user prompt to display as session identifier
   const PROMPT_PREVIEW_LENGTH = 80;
@@ -85,7 +120,7 @@
     prevMessageCount = currentCount;
   });
 
-  // Smart status based on recent messages
+  // Smart status based on recent messages and session state
   function getSmartStatus(): { status: string; detail?: string } {
     const msgs = messages;
 
@@ -93,7 +128,27 @@
       return { status: 'error' };
     }
 
+    if (status === 'pending_transcription') {
+      return { status: 'pending_transcription', detail: pendingTranscription?.status };
+    }
+
+    if (status === 'pending_repo') {
+      return { status: 'pending_repo' };
+    }
+
+    if (status === 'initializing') {
+      return { status: 'initializing' };
+    }
+
     if (status === 'querying') {
+      // Check if we have any response content yet
+      const hasAnyResponse = msgs.some(m => m.type === 'text' || m.type === 'tool_start');
+
+      if (!hasAnyResponse) {
+        // No response yet - waiting for LLM
+        return { status: 'waiting_llm' };
+      }
+
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i];
         if (msg.type === 'tool_start') {
@@ -135,6 +190,10 @@
         return 'Thinking...';
       case 'responding':
         return 'Responding...';
+      case 'waiting_llm':
+        return 'Waiting for response...';
+      case 'initializing':
+        return 'Starting session...';
       default:
         return 'Working...';
     }
@@ -195,6 +254,17 @@
   async function handleStartRecording() {
     if ($isRecording) return;
     isRecordingForCurrentSession = true;
+
+    // Set overlay mode to inline and show session info
+    overlay.setMode('inline');
+    overlay.setInlineSessionInfo({
+      repoName: repoName,
+      branch: branch,
+      model: session?.model ?? null,
+      promptPreview: firstPrompt() ?? null,
+    });
+    await overlay.show();
+
     await recording.startRecording($settings.audio.device_id || undefined);
   }
 
@@ -206,6 +276,25 @@
       recording.clearTranscript();
     }
     isRecordingForCurrentSession = false;
+
+    // Hide overlay and clear inline session info
+    overlay.clearInlineSessionInfo();
+    overlay.hide();
+  }
+
+  // Handlers for pending transcription sessions
+  function handleRetryTranscription() {
+    // Dispatch event to parent to retry transcription
+    window.dispatchEvent(new CustomEvent('retry-transcription', { detail: { sessionId } }));
+  }
+
+  function handleCancelPendingTranscription() {
+    // Cancel recording if still recording
+    if ($isRecording) {
+      recording.cancelRecording();
+    }
+    // Remove the pending session
+    sdkSessions.cancelPendingTranscription(sessionId);
   }
 </script>
 
@@ -216,16 +305,54 @@
     <SdkUsageBar {usage} {isQuerying} />
   {/if}
 
+  <!-- Repo and branch info bar (hide when pending repo selection) -->
+  {#if !isPendingRepo}
+    <div class="repo-info">
+      <div class="repo-info-content">
+        <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+        <span class="repo-name">{repoName}</span>
+        {#if branch}
+          <span class="separator">·</span>
+          <svg class="branch-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span class="branch-name">{branch}</span>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   {#if firstPrompt()}
     <div class="prompt-preview">{firstPrompt()}</div>
   {/if}
 
   <div class="messages" bind:this={messagesEl} onscroll={() => { checkIfNearBottom(); markAsReadOnInteraction(); }}>
+    <!-- Recording/transcription header for pending sessions -->
+    {#if isPendingTranscription && pendingTranscription}
+      <SessionRecordingHeader
+        {pendingTranscription}
+        {sessionId}
+        onRetry={handleRetryTranscription}
+        onCancel={handleCancelPendingTranscription}
+      />
+    {/if}
+
+    <!-- Completed recording context shown at the top of active sessions -->
+    {#if hasCompletedRecordingData && pendingTranscription}
+      <SessionRecordingHeader
+        {pendingTranscription}
+        {sessionId}
+        completed={true}
+      />
+    {/if}
+
     {#each messages as msg (msg.timestamp)}
       <SdkMessageComponent message={msg} {copiedMessageId} onCopy={copyMessage} />
     {/each}
 
-    {#if isQuerying}
+    {#if isLoading}
       <SdkLoadingIndicator {statusMessage} />
     {/if}
   </div>
@@ -233,6 +360,7 @@
   <SdkPromptInput
     {isQuerying}
     isRecording={$isRecording}
+    isTranscribing={$isProcessing && isRecordingForCurrentSession}
     {isRecordingForCurrentSession}
     onSendPrompt={handleSendPrompt}
     onStopQuery={handleStopQuery}
@@ -248,6 +376,49 @@
     height: 100%;
     background: var(--color-background);
     color: var(--color-text-primary);
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  .repo-info {
+    padding: 0.5rem 1rem;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .repo-info-content {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .repo-icon {
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .repo-name {
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+    font-weight: 500;
+  }
+
+  .separator {
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+  }
+
+  .branch-icon {
+    width: 0.75rem;
+    height: 0.75rem;
+    color: rgb(96, 165, 250);
+    flex-shrink: 0;
+  }
+
+  .branch-name {
+    font-size: 0.8rem;
+    color: rgb(96, 165, 250);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 

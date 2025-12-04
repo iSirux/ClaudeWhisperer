@@ -12,6 +12,7 @@
   let {
     isQuerying = false,
     isRecording = false,
+    isTranscribing = false,
     isRecordingForCurrentSession = false,
     onSendPrompt,
     onStopQuery,
@@ -20,6 +21,7 @@
   }: {
     isQuerying?: boolean;
     isRecording?: boolean;
+    isTranscribing?: boolean;
     isRecordingForCurrentSession?: boolean;
     onSendPrompt: (prompt: string, images?: SdkImageContent[]) => void;
     onStopQuery: () => void;
@@ -168,7 +170,22 @@
         </svg>
       </button>
     {/if}
-    {#if isRecording && isRecordingForCurrentSession}
+    {#if isTranscribing}
+      <button
+        class="record-button transcribing"
+        disabled
+        title="Transcribing audio..."
+      >
+        <div class="transcribing-spinner"></div>
+        <svg class="mic-icon" fill="currentColor" viewBox="0 0 20 20">
+          <path
+            fill-rule="evenodd"
+            d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z"
+            clip-rule="evenodd"
+          />
+        </svg>
+      </button>
+    {:else if isRecording && isRecordingForCurrentSession}
       <button
         class="record-button recording"
         onclick={onStopRecording}
@@ -356,6 +373,25 @@
       opacity: 0.7;
       transform: scale(1.05);
     }
+  }
+
+  .record-button.transcribing {
+    background: var(--color-warning, #f59e0b);
+    color: var(--color-background);
+    cursor: wait;
+  }
+
+  .record-button.transcribing:disabled {
+    opacity: 1;
+  }
+
+  .transcribing-spinner {
+    position: absolute;
+    inset: 4px;
+    border: 2px solid transparent;
+    border-top-color: var(--color-background);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
   }
 
   /* Pending images preview */

@@ -7,17 +7,24 @@
   import Settings from './settings/+page.svelte';
   import Start from '$lib/components/Start.svelte';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
+  import ThinkingSelector from '$lib/components/ThinkingSelector.svelte';
   import UsagePreview from '$lib/components/UsagePreview.svelte';
   import { sessions, activeSessionId, activeSession } from '$lib/stores/sessions';
-  import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
-  import { settings, activeRepo } from '$lib/stores/settings';
-  import { recording, isRecording } from '$lib/stores/recording';
+  import { sdkSessions, activeSdkSessionId, activeSdkSession, type ThinkingLevel, settingsToStoreThinking } from '$lib/stores/sdkSessions';
+  import { settings, activeRepo, isAutoRepoSelected } from '$lib/stores/settings';
+  import { recording, isRecording, pendingTranscriptions } from '$lib/stores/recording';
   import { overlay } from '$lib/stores/overlay';
   import { loadSessionsFromDisk, saveSessionsToDisk, setupAutoSave, setupPeriodicAutoSave } from '$lib/stores/sessionPersistence';
   import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { get } from 'svelte/store';
+  import { cleanTranscription, recommendModel, recommendRepo, getRepoConfirmationSystemPrompt, isTranscriptionCleanupEnabled, isModelRecommendationEnabled, isRepoAutoSelectEnabled, needsUserConfirmation, buildRepoContextForCleanup } from '$lib/utils/llm';
+  import { isAutoModel } from '$lib/utils/models';
+  import SessionPendingView from '$lib/components/SessionPendingView.svelte';
+  import type { PendingRepoSelection } from '$lib/stores/sdkSessions';
+  import { goto } from '$app/navigation';
 
   // System prompt for voice-transcribed sessions
   const VOICE_TRANSCRIPTION_SYSTEM_PROMPT =
@@ -76,19 +83,26 @@
   let registeredCycleRepoHotkey: string | null = null;
   let registeredCycleModelHotkey: string | null = null;
   let settingsInitialTab = $state('general');
+  let isChatCopied = $state(false);
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
 
-  // Model cycling order (must match model IDs in ModelSelector.svelte)
-  const MODEL_CYCLE = [
-    'claude-opus-4-5-20251101',
-    'claude-sonnet-4-5-20250929',
-    'claude-haiku-4-5-20251001'
-  ];
+  // Pending transcription session tracking
+  let pendingTranscriptionSessionId: string | null = null;
+  let unlistenAudioVisualization: UnlistenFn | null = null;
+  let unlistenDiscardRecording: UnlistenFn | null = null;
+
+  // Model cycling uses enabled models from settings
+  // Note: Sonnet 1M is excluded from cycling as it's a variant
 
   function handleOpenSettings(event: CustomEvent<{ tab: string }>) {
     settingsInitialTab = event.detail.tab;
     showSettingsView();
+  }
+
+  function handleCloseSettings() {
+    // Return to sessions view when closing settings
+    showSessionsView();
   }
 
   // Load sidebar width from settings after they're loaded
@@ -129,6 +143,38 @@
     window.addEventListener('switch-to-sessions', showSessionsView);
     // Listen for open-settings events from Start component
     window.addEventListener('open-settings', handleOpenSettings as EventListener);
+    // Listen for close-settings events from Settings component
+    window.addEventListener('close-settings', handleCloseSettings);
+    // Listen for retry-transcription events from SdkView
+    window.addEventListener('retry-transcription', handleRetryTranscription as unknown as EventListener);
+
+    // Listen for discard-recording events from overlay
+    unlistenDiscardRecording = await listen('discard-recording', async () => {
+      console.log('[Recording] Discard recording event received');
+
+      // Unregister hotkeys
+      await unregisterTranscribeHotkey();
+      await unregisterCycleRepoHotkey();
+      await unregisterCycleModelHotkey();
+
+      // Stop audio visualization listener
+      if (unlistenAudioVisualization) {
+        unlistenAudioVisualization();
+        unlistenAudioVisualization = null;
+      }
+
+      // Cancel the pending transcription session if it exists
+      if (pendingTranscriptionSessionId) {
+        sdkSessions.cancelPendingTranscription(pendingTranscriptionSessionId);
+        pendingTranscriptionSessionId = null;
+      }
+
+      // Clear active session selection
+      activeSdkSessionId.set(null);
+
+      // Reset recording-for-new-session flag
+      isRecordingForNewSession = false;
+    });
   });
 
   // Re-register hotkeys when the toggle_recording hotkey changes in settings
@@ -150,6 +196,20 @@
   onDestroy(() => {
     window.removeEventListener('switch-to-sessions', showSessionsView);
     window.removeEventListener('open-settings', handleOpenSettings as EventListener);
+    window.removeEventListener('close-settings', handleCloseSettings);
+    window.removeEventListener('retry-transcription', handleRetryTranscription as unknown as EventListener);
+
+    // Cleanup audio visualization listener
+    if (unlistenAudioVisualization) {
+      unlistenAudioVisualization();
+      unlistenAudioVisualization = null;
+    }
+
+    // Cleanup discard recording listener
+    if (unlistenDiscardRecording) {
+      unlistenDiscardRecording();
+      unlistenDiscardRecording = null;
+    }
 
     // Cleanup auto-save handlers
     if (cleanupAutoSave) cleanupAutoSave();
@@ -161,27 +221,511 @@
 
   async function sendTranscript() {
     if (!$recording.transcript) return;
+    await sendTranscriptDirectly($recording.transcript);
+    recording.clearTranscript();
+  }
+
+  // Send a transcript directly (used by queued transcription flow)
+  // If pendingSessionId is provided, processes the transcript for that pending session
+  async function sendTranscriptDirectly(transcript: string, pendingSessionId?: string | null) {
+    if (!transcript) return;
+
+    // Update pending session status to processing if we have one
+    if (pendingSessionId) {
+      sdkSessions.updatePendingTranscription(pendingSessionId, {
+        status: 'processing',
+        transcript,
+      });
+    }
 
     if ($settings.terminal_mode === 'Sdk') {
-      // SDK mode: always create a new SDK session and send prompt
-      const repoPath = $activeRepo?.path || '.';
+      // SDK mode: process pending session or create new one
       const model = $settings.default_model;
+      const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
 
-      // Always create a new session for each recording, optionally with voice transcription context
-      const systemPrompt = $settings.audio.include_transcription_notice ? VOICE_TRANSCRIPTION_SYSTEM_PROMPT : undefined;
-      const sessionId = await sdkSessions.createSession(repoPath, model, systemPrompt);
-      activeSdkSessionId.set(sessionId);
+      // Step 1: Get repo recommendation if auto-select is enabled and "Auto" repo is selected
+      // Do this BEFORE cleanup so we can include repo context in cleanup
+      let repoRecommendation: { repoIndex: number; reasoning: string; confidence: string } | null = null;
+      if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
+        try {
+          // Pass isTranscribed=true since this is from voice transcription
+          // Use raw transcript for recommendation (cleanup happens after repo is selected)
+          repoRecommendation = await recommendRepo(transcript, true);
 
-      // Send the prompt to the new SDK session
-      await sdkSessions.sendPrompt(sessionId, $recording.transcript);
-      activeSessionId.set(null); // Clear PTY session selection
+          // If LLM couldn't make a recommendation, require user to select
+          if (!repoRecommendation) {
+            console.log('[llm] No repo recommendation - requiring user selection');
+            if (pendingSessionId) {
+              // Complete pending transcription with repo selection needed (no recommendation)
+              // Use RAW transcript - cleanup will happen after repo selection
+              await sdkSessions.completePendingTranscription(
+                pendingSessionId,
+                '', // No cwd yet
+                transcript,
+                undefined,
+                {
+                  transcript: transcript,
+                  recommendedIndex: null,
+                  reasoning: 'Not enough information to determine repository',
+                  confidence: 'low',
+                }
+              );
+              currentView = 'sessions';
+              return; // Exit here - continuation happens via SessionPendingView
+            } else {
+              // Create a pending session that shows repo selection in the main view
+              const sessionId = sdkSessions.createPendingRepoSession(
+                model,
+                thinkingLevel,
+                {
+                  transcript: transcript,
+                  recommendedIndex: null,
+                  reasoning: 'Not enough information to determine repository',
+                  confidence: 'low',
+                }
+              );
+              activeSdkSessionId.set(sessionId);
+              activeSessionId.set(null);
+              currentView = 'sessions';
+              return; // Exit here - continuation happens via SessionPendingView
+            }
+          }
+
+          // Update pending session with repo recommendation
+          if (pendingSessionId) {
+            const recommendedRepo = $settings.repos[repoRecommendation.repoIndex];
+            sdkSessions.updatePendingTranscription(pendingSessionId, {
+              repoRecommendation: {
+                repoIndex: repoRecommendation.repoIndex,
+                repoName: recommendedRepo?.name || 'Unknown',
+                reasoning: repoRecommendation.reasoning,
+                confidence: repoRecommendation.confidence,
+              },
+            });
+          }
+
+          // Check if we need user confirmation due to low confidence
+          if (needsUserConfirmation(repoRecommendation.confidence)) {
+            if (pendingSessionId) {
+              // Complete pending transcription with repo selection needed
+              // Use RAW transcript - cleanup will happen after repo selection
+              await sdkSessions.completePendingTranscription(
+                pendingSessionId,
+                '', // No cwd yet
+                transcript,
+                undefined,
+                {
+                  transcript: transcript,
+                  recommendedIndex: repoRecommendation.repoIndex,
+                  reasoning: repoRecommendation.reasoning,
+                  confidence: repoRecommendation.confidence,
+                }
+              );
+              currentView = 'sessions';
+              return; // Exit here - continuation happens via SessionPendingView
+            } else {
+              // Create a pending session that shows repo selection in the main view
+              const sessionId = sdkSessions.createPendingRepoSession(
+                model,
+                thinkingLevel,
+                {
+                  transcript: transcript,
+                  recommendedIndex: repoRecommendation.repoIndex,
+                  reasoning: repoRecommendation.reasoning,
+                  confidence: repoRecommendation.confidence,
+                }
+              );
+              activeSdkSessionId.set(sessionId);
+              activeSessionId.set(null);
+              currentView = 'sessions';
+              return; // Exit here - continuation happens via SessionPendingView
+            }
+          }
+
+          // High confidence - use the recommended repo for this session
+          // Note: We don't call setActiveRepo because that disables auto mode
+          // Instead, we'll pass the repo directly to session creation
+          const recommendedRepo = $settings.repos[repoRecommendation.repoIndex];
+          if (recommendedRepo) {
+            console.log('[llm] Auto selected repo:', recommendedRepo.name, '-', repoRecommendation.reasoning);
+          }
+        } catch (error) {
+          console.error('[llm] Repo recommendation failed, requiring user selection:', error);
+          // On error, also require user to select instead of using current repo
+          if (pendingSessionId) {
+            await sdkSessions.completePendingTranscription(
+              pendingSessionId,
+              '', // No cwd yet
+              transcript,
+              undefined,
+              {
+                transcript: transcript,
+                recommendedIndex: null,
+                reasoning: 'Failed to get recommendation',
+                confidence: 'low',
+              }
+            );
+            currentView = 'sessions';
+            return;
+          } else {
+            const sessionId = sdkSessions.createPendingRepoSession(
+              model,
+              thinkingLevel,
+              {
+                transcript: transcript,
+                recommendedIndex: null,
+                reasoning: 'Failed to get recommendation',
+                confidence: 'low',
+              }
+            );
+            activeSdkSessionId.set(sessionId);
+            activeSessionId.set(null);
+            currentView = 'sessions';
+            return;
+          }
+        }
+      }
+
+      // Determine the repo to use for this session
+      // If auto-repo recommended one, use that; otherwise fall back to current activeRepo
+      const sessionRepo = repoRecommendation
+        ? $settings.repos[repoRecommendation.repoIndex]
+        : $activeRepo;
+
+      // Step 2: Clean up transcription if enabled (via LLM)
+      // Now we know the repo, so we can include repo context for better cleanup
+      let finalTranscript = transcript;
+      let wasCleanedUp = false;
+
+      if (isTranscriptionCleanupEnabled()) {
+        try {
+          // Build repo context for cleanup using the session's repo
+          const repoContext = sessionRepo ? buildRepoContextForCleanup(sessionRepo) : undefined;
+
+          const cleanupResult = await cleanTranscription(transcript, repoContext);
+          finalTranscript = cleanupResult.text;
+          wasCleanedUp = cleanupResult.wasCleanedUp;
+          if (wasCleanedUp) {
+            console.log('[llm] Transcription cleaned up:', cleanupResult.corrections);
+          }
+          // Update pending session with cleaned transcript
+          if (pendingSessionId) {
+            sdkSessions.updatePendingTranscription(pendingSessionId, {
+              cleanedTranscript: finalTranscript,
+              wasCleanedUp,
+            });
+          }
+        } catch (error) {
+          console.error('[llm] Transcription cleanup failed, using original:', error);
+        }
+      }
+
+      // Continue with session creation/completion
+      if (pendingSessionId) {
+        await completePendingTranscriptionSession(pendingSessionId, finalTranscript, sessionRepo);
+      } else {
+        await createSdkSessionWithPrompt(finalTranscript, sessionRepo);
+      }
     } else {
       // PTY mode: create terminal session as before
-      const sessionId = await sessions.createSession($recording.transcript);
+      // For PTY mode, we can still clean up but without repo context
+      let finalTranscript = transcript;
+      if (isTranscriptionCleanupEnabled()) {
+        try {
+          const currentRepo = $activeRepo;
+          const repoContext = currentRepo ? buildRepoContextForCleanup(currentRepo) : undefined;
+          const cleanupResult = await cleanTranscription(transcript, repoContext);
+          finalTranscript = cleanupResult.text;
+          if (cleanupResult.wasCleanedUp) {
+            console.log('[llm] Transcription cleaned up:', cleanupResult.corrections);
+          }
+        } catch (error) {
+          console.error('[llm] Transcription cleanup failed, using original:', error);
+        }
+      }
+
+      // Clear pending session if it exists (PTY mode doesn't use pending sessions)
+      if (pendingSessionId) {
+        sdkSessions.cancelPendingTranscription(pendingSessionId);
+      }
+      const sessionId = await sessions.createSession(finalTranscript);
       activeSessionId.set(sessionId);
       activeSdkSessionId.set(null); // Clear SDK session selection
     }
-    recording.clearTranscript();
+  }
+
+  // Complete a pending transcription session (SDK mode)
+  // If overrideRepo is provided, use it instead of $activeRepo (for auto-repo selection)
+  async function completePendingTranscriptionSession(sessionId: string, transcript: string, overrideRepo?: typeof $activeRepo) {
+    const repo = overrideRepo ?? $activeRepo;
+    const repoPath = repo?.path || '.';
+    const repoName = repo?.name || '';
+    let model = $settings.default_model;
+    let thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+
+    // Get model recommendation if "Auto" is selected
+    if (isAutoModel(model)) {
+      if (isModelRecommendationEnabled()) {
+        try {
+          const recommendation = await recommendModel(transcript);
+          if (recommendation) {
+            // Update pending session with model recommendation
+            sdkSessions.updatePendingTranscription(sessionId, {
+              modelRecommendation: {
+                modelId: recommendation.modelId,
+                reasoning: recommendation.reasoning,
+                thinkingLevel: recommendation.thinkingLevel ?? undefined,
+              },
+            });
+
+            // Only use recommendation if the model is enabled
+            if ($settings.enabled_models.includes(recommendation.modelId)) {
+              model = recommendation.modelId;
+              // Update the session's model
+              await sdkSessions.updateSessionModel(sessionId, model);
+              console.log('[llm] Auto selected model:', model, '-', recommendation.reasoning);
+            } else {
+              // Fall back to first enabled model if recommendation is not enabled
+              model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+              console.log('[llm] Recommended model not enabled, falling back to:', model);
+            }
+            // Apply thinking level recommendation if provided
+            if (recommendation.thinkingLevel) {
+              thinkingLevel = recommendation.thinkingLevel as typeof thinkingLevel;
+              await sdkSessions.updateSessionThinking(sessionId, thinkingLevel);
+              console.log('[llm] Using recommended thinking level:', thinkingLevel);
+            }
+          } else {
+            // Fallback if no recommendation returned
+            model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+            console.log('[llm] No recommendation, falling back to:', model);
+          }
+        } catch (error) {
+          console.error('[llm] Model recommendation failed, falling back to default:', error);
+          model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+        }
+      } else {
+        // Auto model selected but LLM recommendation not enabled - fall back to first enabled model
+        model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+        console.log('[llm] Auto model selected but recommendation disabled, falling back to:', model);
+      }
+    }
+
+    // Build system prompt
+    let systemPromptParts: string[] = [];
+
+    // Add voice transcription notice if applicable
+    const needsTranscriptionNotice = $settings.audio.include_transcription_notice && !isTranscriptionCleanupEnabled();
+    if (needsTranscriptionNotice) {
+      systemPromptParts.push(VOICE_TRANSCRIPTION_SYSTEM_PROMPT);
+    }
+
+    // Add repo confirmation prompt if applicable
+    const otherRepoNames = $settings.repos
+      .filter((r) => r.path !== repoPath)
+      .map((r) => r.name);
+    const repoConfirmationPrompt = getRepoConfirmationSystemPrompt(repoName, otherRepoNames);
+    if (repoConfirmationPrompt) {
+      systemPromptParts.push(repoConfirmationPrompt);
+    }
+
+    const systemPrompt = systemPromptParts.length > 0 ? systemPromptParts.join('\n\n') : undefined;
+
+    // Complete the pending transcription session
+    await sdkSessions.completePendingTranscription(sessionId, repoPath, transcript, systemPrompt);
+    activeSessionId.set(null); // Clear PTY session selection
+  }
+
+  // Handle retry transcription request from SdkView
+  async function handleRetryTranscription(event: CustomEvent<{ sessionId: string }>) {
+    const sessionId = event.detail.sessionId;
+
+    // Get the session to find the stored audio data
+    let session: typeof $sdkSessions[0] | undefined;
+    sdkSessions.subscribe(sessions => {
+      session = sessions.find(s => s.id === sessionId);
+    })();
+
+    if (!session || !session.pendingTranscription?.audioData) {
+      console.error('[retry] No audio data available for retry');
+      return;
+    }
+
+    // Clear the error and set status to transcribing
+    sdkSessions.updatePendingTranscription(sessionId, {
+      status: 'transcribing',
+      transcriptionError: undefined,
+    });
+
+    try {
+      // Retry the transcription
+      const transcript = await invoke<string>('transcribe_audio', {
+        audioData: Array.from(session.pendingTranscription.audioData),
+      });
+
+      if (transcript) {
+        // Process the transcript
+        await sendTranscriptDirectly(transcript, sessionId);
+      } else {
+        // Empty transcription
+        sdkSessions.updatePendingTranscription(sessionId, {
+          transcriptionError: 'No transcription returned',
+        });
+      }
+    } catch (error) {
+      console.error('[retry] Transcription failed:', error);
+      sdkSessions.updatePendingTranscription(sessionId, {
+        transcriptionError: error instanceof Error ? error.message : 'Transcription failed',
+      });
+    }
+  }
+
+  // Helper function to create SDK session with the current active repo
+  // If overrideRepo is provided, use it instead of $activeRepo (for auto-repo selection)
+  async function createSdkSessionWithPrompt(transcript: string, overrideRepo?: typeof $activeRepo) {
+    const repo = overrideRepo ?? $activeRepo;
+    const repoPath = repo?.path || '.';
+    const repoName = repo?.name || '';
+    let model = $settings.default_model;
+    let thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+
+    // Get model recommendation if "Auto" is selected
+    if (isAutoModel(model)) {
+      if (isModelRecommendationEnabled()) {
+        try {
+          const recommendation = await recommendModel(transcript);
+          if (recommendation) {
+            // Only use recommendation if the model is enabled
+            if ($settings.enabled_models.includes(recommendation.modelId)) {
+              model = recommendation.modelId;
+              console.log('[llm] Auto selected model:', model, '-', recommendation.reasoning);
+            } else {
+              // Fall back to first enabled model if recommendation is not enabled
+              model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+              console.log('[llm] Recommended model not enabled, falling back to:', model);
+            }
+            // Apply thinking level recommendation if provided
+            if (recommendation.thinkingLevel) {
+              thinkingLevel = recommendation.thinkingLevel as ThinkingLevel;
+              console.log('[llm] Using recommended thinking level:', thinkingLevel);
+            }
+          } else {
+            // Fallback if no recommendation returned
+            model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+            console.log('[llm] No recommendation, falling back to:', model);
+          }
+        } catch (error) {
+          console.error('[llm] Model recommendation failed, falling back to default:', error);
+          model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+        }
+      } else {
+        // Auto model selected but LLM recommendation not enabled - fall back to first enabled model
+        model = $settings.enabled_models[0] || 'claude-sonnet-4-5-20250929';
+        console.log('[llm] Auto model selected but recommendation disabled, falling back to:', model);
+      }
+    }
+
+    // Build system prompt - combine voice transcription notice and repo confirmation prompt
+    let systemPromptParts: string[] = [];
+
+    // Add voice transcription notice if applicable
+    const needsTranscriptionNotice = $settings.audio.include_transcription_notice && !isTranscriptionCleanupEnabled();
+    if (needsTranscriptionNotice) {
+      systemPromptParts.push(VOICE_TRANSCRIPTION_SYSTEM_PROMPT);
+    }
+
+    // Add repo confirmation prompt if applicable
+    const otherRepoNames = $settings.repos
+      .filter((r) => r.path !== repoPath)
+      .map((r) => r.name);
+    const repoConfirmationPrompt = getRepoConfirmationSystemPrompt(repoName, otherRepoNames);
+    if (repoConfirmationPrompt) {
+      systemPromptParts.push(repoConfirmationPrompt);
+    }
+
+    const systemPrompt = systemPromptParts.length > 0 ? systemPromptParts.join('\n\n') : undefined;
+    const sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel, systemPrompt);
+    activeSdkSessionId.set(sessionId);
+
+    // Send the prompt to the new SDK session
+    await sdkSessions.sendPrompt(sessionId, transcript);
+    activeSessionId.set(null); // Clear PTY session selection
+  }
+
+  // Handle repo selection from SessionPendingView
+  async function handlePendingRepoSelection(index: number, editedPrompt?: string) {
+    // Capture all values from reactive stores BEFORE any async operations
+    // to avoid stale/changed values after awaits
+    const session = $activeSdkSession;
+    if (!session || session.status !== 'pending_repo') return;
+
+    const sessionId = session.id;
+    const selectedRepo = $settings.repos[index];
+    if (!selectedRepo) return;
+
+    // Use edited prompt if provided, otherwise capture the original transcript
+    const rawTranscript = editedPrompt || session.pendingPrompt || session.pendingRepoSelection?.transcript || '';
+
+    console.log('[llm] User selected repo:', selectedRepo.name);
+
+    // Ensure we stay on sessions view (set before async operations)
+    currentView = 'sessions';
+
+    // Update the active repo setting
+    await settings.setActiveRepo(index);
+
+    // Step 1: Clean up transcription with repo context (now that we know the repo)
+    let finalTranscript = rawTranscript;
+    if (isTranscriptionCleanupEnabled() && rawTranscript) {
+      try {
+        const repoContext = buildRepoContextForCleanup(selectedRepo);
+        const cleanupResult = await cleanTranscription(rawTranscript, repoContext);
+        finalTranscript = cleanupResult.text;
+        if (cleanupResult.wasCleanedUp) {
+          console.log('[llm] Transcription cleaned up:', cleanupResult.corrections);
+        }
+      } catch (error) {
+        console.error('[llm] Transcription cleanup failed, using original:', error);
+      }
+    }
+
+    // Build system prompt for the session
+    const repoPath = selectedRepo.path;
+    const repoName = selectedRepo.name;
+    let systemPromptParts: string[] = [];
+
+    // Add voice transcription notice if applicable
+    const needsTranscriptionNotice = $settings.audio.include_transcription_notice && !isTranscriptionCleanupEnabled();
+    if (needsTranscriptionNotice) {
+      systemPromptParts.push(VOICE_TRANSCRIPTION_SYSTEM_PROMPT);
+    }
+
+    // Add repo confirmation prompt if applicable
+    const otherRepoNames = $settings.repos
+      .filter((r) => r.path !== repoPath)
+      .map((r) => r.name);
+    const repoConfirmationPrompt = getRepoConfirmationSystemPrompt(repoName, otherRepoNames);
+    if (repoConfirmationPrompt) {
+      systemPromptParts.push(repoConfirmationPrompt);
+    }
+
+    const systemPrompt = systemPromptParts.length > 0 ? systemPromptParts.join('\n\n') : undefined;
+
+    // Complete the repo selection and initialize the session with the cleaned transcript
+    // Use the captured sessionId to avoid any issues with reactive store changes
+    await sdkSessions.completeRepoSelection(sessionId, repoPath, systemPrompt, finalTranscript);
+
+    // Ensure view stays on sessions after completion
+    currentView = 'sessions';
+  }
+
+  // Handle cancel from SessionPendingView
+  async function handlePendingSessionCancel() {
+    if (!$activeSdkSessionId) return;
+
+    console.log('[session] User cancelled pending session');
+    await sdkSessions.closeSession($activeSdkSessionId);
+    activeSdkSessionId.set(null);
   }
 
   // Register the transcribe-to-input hotkey (only while recording/overlay is open)
@@ -200,12 +744,13 @@
           await overlay.hide();
           overlay.clearSessionInfo();
 
-          const transcript = await recording.stopRecording(true);
-
-          if (transcript) {
-            // Paste the transcript into the currently focused app
-            await invoke('paste_text', { text: transcript });
-          }
+          // Stop recording - don't await so user can start new recording while transcribing
+          recording.stopRecording(true).then(async (transcript) => {
+            if (transcript) {
+              // Paste the transcript into the currently focused app
+              await invoke('paste_text', { text: transcript });
+            }
+          });
         } finally {
           setTimeout(() => {
             isTogglingRecording = false;
@@ -327,10 +872,23 @@
           const currentSettings = get(settings);
           const currentOverlay = get(overlay);
 
+          // Get enabled models for cycling (exclude 1M context variant)
+          let cyclableModels = currentSettings.enabled_models.filter(
+            (id: string) => !id.includes('[1m]')
+          );
+
+          // Add 'auto' to cyclable models if smart model selection is enabled
+          if (isModelRecommendationEnabled()) {
+            cyclableModels = ['auto', ...cyclableModels];
+          }
+
+          // Need at least 2 models to cycle
+          if (cyclableModels.length < 2) return;
+
           // Find current model index and cycle to next
-          const currentIndex = MODEL_CYCLE.indexOf(currentSettings.default_model);
-          const nextIndex = (currentIndex + 1) % MODEL_CYCLE.length;
-          const nextModel = MODEL_CYCLE[nextIndex];
+          const currentIndex = cyclableModels.indexOf(currentSettings.default_model);
+          const nextIndex = (currentIndex + 1) % cyclableModels.length;
+          const nextModel = cyclableModels[nextIndex];
 
           // Update the default model
           settings.update(s => ({ ...s, default_model: nextModel }));
@@ -394,12 +952,55 @@
             // Hide overlay immediately before processing starts
             await overlay.hide();
             overlay.clearSessionInfo();
-            await recording.stopRecording();
 
-            // Auto-send transcript to create a new session
-            if ($recording.transcript) {
-              await sendTranscript();
+            // Stop audio visualization listener
+            if (unlistenAudioVisualization) {
+              unlistenAudioVisualization();
+              unlistenAudioVisualization = null;
             }
+
+            // Update pending session to transcribing status
+            const sessionIdToProcess = pendingTranscriptionSessionId;
+            if (sessionIdToProcess) {
+              sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
+            }
+
+            // Stop recording and get transcript (queued transcription)
+            // This returns immediately but transcript comes via callback/promise
+            // Note: we don't await here to allow starting a new recording while transcribing
+            recording.stopRecording().then(async (transcript) => {
+              // Store audio data for retry capability
+              if (sessionIdToProcess) {
+                const audioData = get(recording).audioData;
+                if (audioData) {
+                  sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+                }
+              }
+
+              if (transcript) {
+                // Send the transcript to process the pending session
+                await sendTranscriptDirectly(transcript, sessionIdToProcess);
+              } else if (sessionIdToProcess) {
+                // Transcription failed or returned empty - set error
+                sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+                  transcriptionError: 'No transcription returned',
+                });
+              }
+              // Clear the pending session ID after processing
+              pendingTranscriptionSessionId = null;
+            }).catch((error) => {
+              // Handle transcription error - also try to store audio data for retry
+              if (sessionIdToProcess) {
+                const audioData = get(recording).audioData;
+                if (audioData) {
+                  sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+                }
+                sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+                  transcriptionError: error?.message || 'Transcription failed',
+                });
+              }
+              pendingTranscriptionSessionId = null;
+            });
           } else {
             // Check if main window is focused before starting
             const mainWindow = getCurrentWindow();
@@ -407,6 +1008,7 @@
 
             const repoPath = $activeRepo?.path || '.';
             const model = $settings.default_model;
+            const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
 
             // Get current git branch for overlay display
             let branch: string | null = null;
@@ -416,9 +1018,24 @@
               console.error('Failed to get git branch:', e);
             }
 
-            // Set overlay info - session will be created after transcription completes
+            // Set overlay info
             overlay.setMode('session');
             overlay.setSessionInfo(branch, model, false);
+
+            // Create pending transcription session immediately (SDK mode only)
+            if ($settings.terminal_mode === 'Sdk') {
+              pendingTranscriptionSessionId = sdkSessions.createPendingTranscriptionSession(model, thinkingLevel);
+              activeSdkSessionId.set(pendingTranscriptionSessionId);
+              activeSessionId.set(null);
+              currentView = 'sessions';
+
+              // Set up audio visualization listener to capture waveform data
+              unlistenAudioVisualization = await listen<{ data: number[] | null }>('audio-visualization', (event) => {
+                if (pendingTranscriptionSessionId && event.payload.data) {
+                  sdkSessions.addAudioVisualizationSnapshot(pendingTranscriptionSessionId, event.payload.data);
+                }
+              });
+            }
 
             await recording.startRecording($settings.audio.device_id || undefined);
 
@@ -481,6 +1098,7 @@
 
     const repoPath = $activeRepo?.path || '.';
     const model = $settings.default_model;
+    const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
 
     // Get current git branch for overlay display
     let branch: string | null = null;
@@ -490,8 +1108,24 @@
       console.error('Failed to get git branch:', e);
     }
 
-    // Set overlay info - session will be created after transcription completes
+    // Set overlay info
+    overlay.setMode('session');
     overlay.setSessionInfo(branch, model, false);
+
+    // Create pending transcription session immediately (SDK mode only)
+    if ($settings.terminal_mode === 'Sdk') {
+      pendingTranscriptionSessionId = sdkSessions.createPendingTranscriptionSession(model, thinkingLevel);
+      activeSdkSessionId.set(pendingTranscriptionSessionId);
+      activeSessionId.set(null);
+      currentView = 'sessions';
+
+      // Set up audio visualization listener to capture waveform data
+      unlistenAudioVisualization = await listen<{ data: number[] | null }>('audio-visualization', (event) => {
+        if (pendingTranscriptionSessionId && event.payload.data) {
+          sdkSessions.addAudioVisualizationSnapshot(pendingTranscriptionSessionId, event.payload.data);
+        }
+      });
+    }
 
     await recording.startRecording($settings.audio.device_id || undefined);
 
@@ -508,6 +1142,9 @@
   async function stopRecordingNewSession() {
     if (!$isRecording) return;
 
+    const wasRecordingForNew = isRecordingForNewSession;
+    isRecordingForNewSession = false;
+
     // Unregister hotkeys so they pass through to other apps
     await unregisterTranscribeHotkey();
     await unregisterCycleRepoHotkey();
@@ -516,25 +1153,52 @@
     await overlay.hide();
     overlay.clearSessionInfo();
 
-    const transcript = await recording.stopRecording(true);
-    if (transcript && isRecordingForNewSession) {
-      if ($settings.terminal_mode === 'Sdk') {
-        const repoPath = $activeRepo?.path || '.';
-        const model = $settings.default_model;
-        // Always create a new session
-        const systemPrompt = $settings.audio.include_transcription_notice ? VOICE_TRANSCRIPTION_SYSTEM_PROMPT : undefined;
-        const sessionId = await sdkSessions.createSession(repoPath, model, systemPrompt);
-        activeSdkSessionId.set(sessionId);
-        await sdkSessions.sendPrompt(sessionId, transcript);
-        activeSessionId.set(null);
-      } else {
-        const sessionId = await sessions.createSession(transcript);
-        activeSessionId.set(sessionId);
-        activeSdkSessionId.set(null);
-      }
-      recording.clearTranscript();
+    // Stop audio visualization listener
+    if (unlistenAudioVisualization) {
+      unlistenAudioVisualization();
+      unlistenAudioVisualization = null;
     }
-    isRecordingForNewSession = false;
+
+    // Update pending session to transcribing status
+    const sessionIdToProcess = pendingTranscriptionSessionId;
+    if (sessionIdToProcess) {
+      sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
+    }
+
+    // Stop recording - don't await so user can start new recording while transcribing
+    recording.stopRecording(true).then(async (transcript) => {
+      // Store audio data for retry capability
+      if (sessionIdToProcess) {
+        const audioData = get(recording).audioData;
+        if (audioData) {
+          sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+        }
+      }
+
+      if (transcript) {
+        // Send the transcript to process the pending session
+        await sendTranscriptDirectly(transcript, sessionIdToProcess);
+      } else if (sessionIdToProcess) {
+        // Transcription failed or returned empty - set error
+        sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+          transcriptionError: 'No transcription returned',
+        });
+      }
+      // Clear the pending session ID after processing
+      pendingTranscriptionSessionId = null;
+    }).catch((error) => {
+      // Handle transcription error - also try to store audio data for retry
+      if (sessionIdToProcess) {
+        const audioData = get(recording).audioData;
+        if (audioData) {
+          sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+        }
+        sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+          transcriptionError: error?.message || 'Transcription failed',
+        });
+      }
+      pendingTranscriptionSessionId = null;
+    });
   }
 </script>
 
@@ -555,7 +1219,9 @@
           onclick={() => showRepoSelector = !showRepoSelector}
           title="Select repository"
         >
-          {#if $activeRepo}
+          {#if $isAutoRepoSelected}
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500 font-medium">Auto</span>
+          {:else if $activeRepo}
             <span class="text-text-primary">{$activeRepo.name}</span>
           {:else}
             <span class="text-text-muted">No repo selected</span>
@@ -575,24 +1241,64 @@
                 </div>
               </div>
             {/if}
+            <!-- Auto repo option (always shown) -->
+            <button
+              class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
+              class:bg-gradient-to-r={$isAutoRepoSelected && isRepoAutoSelectEnabled()}
+              class:from-purple-500={$isAutoRepoSelected && isRepoAutoSelectEnabled()}
+              class:to-amber-500={$isAutoRepoSelected && isRepoAutoSelectEnabled()}
+              class:text-white={$isAutoRepoSelected && isRepoAutoSelectEnabled()}
+              onclick={async () => {
+                if (isRepoAutoSelectEnabled()) {
+                  await settings.setAutoRepoMode(true);
+                  showRepoSelector = false;
+                } else {
+                  // Navigate to settings to enable the feature
+                  showRepoSelector = false;
+                  settingsInitialTab = 'llm';
+                  showSettingsView();
+                }
+              }}
+              title={isRepoAutoSelectEnabled() ? "Automatically select repository based on prompt content" : "Click to enable Auto Repo Selection in LLM settings"}
+            >
+              <div class="flex items-center justify-between">
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium flex items-center gap-2">
+                    <span class:text-transparent={!$isAutoRepoSelected || !isRepoAutoSelectEnabled()} class:bg-clip-text={!$isAutoRepoSelected || !isRepoAutoSelectEnabled()} class:bg-gradient-to-r={!$isAutoRepoSelected || !isRepoAutoSelectEnabled()} class:from-purple-500={!$isAutoRepoSelected || !isRepoAutoSelectEnabled()} class:to-amber-500={!$isAutoRepoSelected || !isRepoAutoSelectEnabled()} class:text-text-muted={!isRepoAutoSelectEnabled()}>Auto</span>
+                    {#if $isAutoRepoSelected && isRepoAutoSelectEnabled()}
+                      <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                      </svg>
+                    {/if}
+                  </div>
+                  <div class="text-xs" class:text-text-muted={!$isAutoRepoSelected || !isRepoAutoSelectEnabled()} class:opacity-80={$isAutoRepoSelected && isRepoAutoSelectEnabled()}>
+                    {isRepoAutoSelectEnabled() ? "Select repo based on prompt" : "Enable in LLM settings"}
+                  </div>
+                </div>
+              </div>
+            </button>
+            {#if $settings.repos.length > 0}
+              <div class="border-t border-border"></div>
+            {/if}
             {#each $settings.repos as repo, index}
+              {@const isSelected = index === $settings.active_repo_index && !$isAutoRepoSelected}
               <button
                 class="w-full px-3 py-2 text-left text-sm hover:bg-border transition-colors relative"
-                class:bg-accent={index === $settings.active_repo_index}
-                class:text-white={index === $settings.active_repo_index}
+                class:bg-accent={isSelected}
+                class:text-white={isSelected}
                 onclick={() => selectRepo(index)}
               >
                 <div class="flex items-center justify-between">
                   <div class="flex-1 min-w-0">
                     <div class="font-medium flex items-center gap-2">
                       {repo.name}
-                      {#if index === $settings.active_repo_index}
+                      {#if isSelected}
                         <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                           <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
                         </svg>
                       {/if}
                     </div>
-                    <div class="text-xs truncate" class:text-text-muted={index !== $settings.active_repo_index} class:opacity-80={index === $settings.active_repo_index}>
+                    <div class="text-xs truncate" class:text-text-muted={!isSelected} class:opacity-80={isSelected}>
                       {repo.path}
                     </div>
                   </div>
@@ -626,6 +1332,16 @@
         onchange={changeModel}
         size="sm"
       />
+
+      <!-- Global Thinking Selector -->
+      <ThinkingSelector
+        thinkingLevel={settingsToStoreThinking($settings.default_thinking_level)}
+        onchange={async (newLevel: ThinkingLevel) => {
+          const settingsLevel = newLevel === null ? 'off' : newLevel;
+          await settings.save({ ...$settings, default_thinking_level: settingsLevel });
+        }}
+        size="sm"
+      />
     </div>
 
     <div class="flex items-center gap-2">
@@ -643,21 +1359,36 @@
           Stop & Send
         </button>
       {:else if !$isRecording}
-        <button
-          class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
-          onclick={startRecordingNewSession}
-          title="Record voice prompt"
-        >
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-          </svg>
-          Record
-        </button>
+        <div class="flex items-center gap-2">
+          <!-- Pending transcriptions indicator -->
+          {#if $pendingTranscriptions > 0}
+            <div class="flex items-center gap-1.5 px-2 py-1 bg-warning/20 text-warning rounded text-xs" title="Transcriptions in progress">
+              <div class="w-2 h-2 bg-warning rounded-full animate-pulse"></div>
+              <span>{$pendingTranscriptions}</span>
+            </div>
+          {/if}
+          <button
+            class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors flex items-center gap-2"
+            onclick={startRecordingNewSession}
+            title="Record voice prompt"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+            </svg>
+            Record
+          </button>
+        </div>
       {/if}
       <button
         class="p-2 hover:bg-surface-elevated rounded transition-colors"
         class:bg-surface-elevated={currentView === 'settings'}
-        onclick={showSettingsView}
+        onclick={() => {
+          if (currentView === 'settings') {
+            showSessionsView();
+          } else {
+            showSettingsView();
+          }
+        }}
         title="Settings"
       >
         <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -670,61 +1401,80 @@
 
   <div class="main-content flex-1 flex overflow-hidden">
     <aside class="sidebar border-r border-border bg-surface flex flex-col relative" style="width: {sidebarWidth}px; min-width: {MIN_SIDEBAR_WIDTH}px; max-width: {MAX_SIDEBAR_WIDTH}px;">
-      <button
-        class="px-3 py-2.5 border-b border-border text-left hover:bg-surface-elevated transition-colors"
-        class:bg-surface-elevated={currentView === 'sessions'}
-        onclick={showSessionsView}
-      >
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
-            {#if $settings.mark_sessions_unread}
-              {@const unreadCount = $sdkSessions.filter(s => s.unread).length}
-              {#if unreadCount > 0}
-                <span class="px-1.5 py-0.5 text-[10px] font-medium bg-blue-500 text-white rounded-full">{unreadCount}</span>
-              {/if}
-            {/if}
-          </div>
-          {#if $sessions.length + $sdkSessions.length > 0}
-            {@const activeCount = [...$sessions, ...$sdkSessions].filter(s => {
-              if ('status' in s && typeof s.status === 'string') {
-                return ['Starting', 'Running', 'querying'].includes(s.status);
-              }
-              return false;
-            }).length}
-            {@const doneCount = [...$sessions, ...$sdkSessions].filter(s => {
-              if ('status' in s && typeof s.status === 'string') {
-                return ['Completed', 'idle', 'done'].includes(s.status);
-              }
-              return false;
-            }).length}
-            {@const errorCount = [...$sessions, ...$sdkSessions].filter(s => {
-              if ('status' in s && typeof s.status === 'string') {
-                return ['Failed', 'error'].includes(s.status);
-              }
-              return false;
-            }).length}
-            <div class="flex items-center gap-1.5">
-              <span class="text-xs text-text-muted">{$sessions.length + $sdkSessions.length}</span>
-              {#if activeCount > 0}
-                <div class="flex items-center gap-1">
-                  <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
-                  <span class="text-xs text-emerald-400 font-medium">{activeCount}</span>
-                </div>
-              {/if}
-              {#if doneCount > 0}
-                <div class="flex items-center gap-1">
-                  <div class="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
-                  <span class="text-xs text-blue-400 font-medium">{doneCount}</span>
-                </div>
-              {/if}
-              {#if errorCount > 0}
-                <div class="w-1.5 h-1.5 rounded-full bg-red-400"></div>
+      <div class="px-3 py-2.5 border-b border-border flex items-center justify-between">
+        <button
+          class="flex-1 text-left hover:bg-surface-elevated transition-colors rounded -ml-1 px-1 py-0.5"
+          class:bg-surface-elevated={currentView === 'sessions'}
+          onclick={showSessionsView}
+        >
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <h2 class="text-sm font-medium text-text-secondary">Sessions</h2>
+              {#if $settings.mark_sessions_unread}
+                {@const unreadCount = $sdkSessions.filter(s => s.unread).length}
+                {#if unreadCount > 0}
+                  <span class="px-1.5 py-0.5 text-[10px] font-medium bg-blue-500 text-white rounded-full">{unreadCount}</span>
+                {/if}
               {/if}
             </div>
-          {/if}
-        </div>
-      </button>
+            {#if $sessions.length + $sdkSessions.length > 0}
+              {@const activeCount = [...$sessions, ...$sdkSessions].filter(s => {
+                if ('status' in s && typeof s.status === 'string') {
+                  return ['Starting', 'Running', 'querying', 'initializing'].includes(s.status);
+                }
+                return false;
+              }).length}
+              {@const pendingCount = [...$sdkSessions].filter(s => s.status === 'pending_repo').length}
+              {@const doneCount = [...$sessions, ...$sdkSessions].filter(s => {
+                if ('status' in s && typeof s.status === 'string') {
+                  return ['Completed', 'idle', 'done'].includes(s.status);
+                }
+                return false;
+              }).length}
+              {@const errorCount = [...$sessions, ...$sdkSessions].filter(s => {
+                if ('status' in s && typeof s.status === 'string') {
+                  return ['Failed', 'error'].includes(s.status);
+                }
+                return false;
+              }).length}
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs text-text-muted">{$sessions.length + $sdkSessions.length}</span>
+                {#if pendingCount > 0}
+                  <div class="flex items-center gap-1">
+                    <div class="w-1.5 h-1.5 rounded-full bg-amber-400"></div>
+                    <span class="text-xs text-amber-400 font-medium">{pendingCount}</span>
+                  </div>
+                {/if}
+                {#if activeCount > 0}
+                  <div class="flex items-center gap-1">
+                    <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+                    <span class="text-xs text-emerald-400 font-medium">{activeCount}</span>
+                  </div>
+                {/if}
+                {#if doneCount > 0}
+                  <div class="flex items-center gap-1">
+                    <div class="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
+                    <span class="text-xs text-blue-400 font-medium">{doneCount}</span>
+                  </div>
+                {/if}
+                {#if errorCount > 0}
+                  <div class="w-1.5 h-1.5 rounded-full bg-red-400"></div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        </button>
+        <!-- Sessions Command Center button -->
+        <button
+          class="p-1 ml-2 hover:bg-surface-elevated rounded transition-colors text-text-muted hover:text-accent"
+          onclick={() => goto('/sessions-view')}
+          title="Open Sessions Command Center"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+          </svg>
+        </button>
+      </div>
       <div class="flex-1 overflow-hidden">
         <SessionList {currentView} />
       </div>
@@ -745,70 +1495,144 @@
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
         {@const sessionTime = $activeSdkSession.createdAt ? new Date($activeSdkSession.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-        <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
-          <div class="flex items-center gap-3">
-            {#if sessionTime}
-              <span class="text-sm text-text-muted">{sessionTime}</span>
-            {/if}
-            <ModelSelector
-              model={$activeSdkSession.model}
-              onchange={(newModel) => {
-                if ($activeSdkSessionId) {
-                  sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
-                }
-              }}
-              size="sm"
+        {@const isPendingState = $activeSdkSession.status === 'pending_repo' || $activeSdkSession.status === 'initializing'}
+
+        {#if isPendingState}
+          <!-- Pending State (repo selection or initializing) -->
+          <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
+            <div class="flex items-center gap-3">
+              {#if sessionTime}
+                <span class="text-sm text-text-muted">{sessionTime}</span>
+              {/if}
+              <ModelSelector
+                model={$activeSdkSession.model}
+                onchange={(newModel) => {
+                  if ($activeSdkSessionId) {
+                    sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
+                  }
+                }}
+                size="sm"
+              />
+              <ThinkingSelector
+                thinkingLevel={$activeSdkSession.thinkingLevel ?? null}
+                onchange={(newLevel: ThinkingLevel) => {
+                  if ($activeSdkSessionId) {
+                    sdkSessions.updateSessionThinking($activeSdkSessionId, newLevel);
+                  }
+                }}
+                size="sm"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                class="p-1 hover:bg-border rounded transition-colors text-text-muted hover:text-error"
+                onclick={handlePendingSessionCancel}
+                title="Cancel session"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="terminal-wrapper flex-1 overflow-hidden">
+            <SessionPendingView
+              status={$activeSdkSession.status as 'pending_repo' | 'initializing'}
+              repos={$settings.repos}
+              pendingSelection={$activeSdkSession.pendingRepoSelection}
+              pendingPrompt={$activeSdkSession.pendingPrompt}
+              onSelectRepo={handlePendingRepoSelection}
+              onCancel={handlePendingSessionCancel}
             />
           </div>
-          <div class="flex items-center gap-2">
-            <button
-              class="copy-all-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors text-text-muted hover:text-text-primary flex items-center gap-1"
-              onclick={async () => {
-                const messages = $activeSdkSession?.messages ?? [];
-                const text = messages
-                  .filter(msg => msg.type !== 'done')
-                  .map(msg => {
-                    const prefix = msg.type === 'user' ? 'User: ' : msg.type === 'text' ? 'Claude: ' : '';
-                    if (msg.type === 'user') return prefix + (msg.content ?? '');
-                    if (msg.type === 'text') return prefix + (msg.content ?? '');
-                    if (msg.type === 'error') return `Error: ${msg.content ?? ''}`;
-                    if (msg.type === 'tool_start') return `[Tool: ${msg.tool}]\nInput: ${JSON.stringify(msg.input, null, 2)}`;
-                    if (msg.type === 'tool_result') return `[Tool: ${msg.tool} completed]\nOutput: ${msg.output ?? ''}`;
-                    return '';
-                  })
-                  .join('\n\n');
-                await navigator.clipboard.writeText(text);
-              }}
-              title="Copy entire chat"
-              disabled={!$activeSdkSession?.messages?.length}
-            >
-              <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-                <path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" />
-                <path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" />
-              </svg>
-              Copy
-            </button>
-            <button
-              class="p-1 hover:bg-border rounded transition-colors text-text-muted hover:text-error"
-              onclick={() => {
-                if ($activeSdkSessionId) {
-                  sdkSessions.closeSession($activeSdkSessionId);
-                  activeSdkSessionId.set(null);
-                }
-              }}
-              title="Close session"
-            >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+        {:else}
+          <!-- Active Session -->
+          <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
+            <div class="flex items-center gap-3">
+              {#if sessionTime}
+                <span class="text-sm text-text-muted">{sessionTime}</span>
+              {/if}
+              <ModelSelector
+                model={$activeSdkSession.model}
+                onchange={(newModel) => {
+                  if ($activeSdkSessionId) {
+                    sdkSessions.updateSessionModel($activeSdkSessionId, newModel);
+                  }
+                }}
+                size="sm"
+              />
+              <ThinkingSelector
+                thinkingLevel={$activeSdkSession.thinkingLevel ?? null}
+                onchange={(newLevel: ThinkingLevel) => {
+                  if ($activeSdkSessionId) {
+                    sdkSessions.updateSessionThinking($activeSdkSessionId, newLevel);
+                  }
+                }}
+                size="sm"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                class="copy-all-btn px-2 py-1 text-xs bg-surface hover:bg-border rounded transition-colors flex items-center gap-1"
+                class:copied={isChatCopied}
+                onclick={async () => {
+                  const messages = $activeSdkSession?.messages ?? [];
+                  const text = messages
+                    .filter(msg => msg.type !== 'done')
+                    .map(msg => {
+                      const prefix = msg.type === 'user' ? 'User: ' : msg.type === 'text' ? 'Claude: ' : '';
+                      if (msg.type === 'user') return prefix + (msg.content ?? '');
+                      if (msg.type === 'text') return prefix + (msg.content ?? '');
+                      if (msg.type === 'error') return `Error: ${msg.content ?? ''}`;
+                      if (msg.type === 'tool_start') return `[Tool: ${msg.tool}]\nInput: ${JSON.stringify(msg.input, null, 2)}`;
+                      if (msg.type === 'tool_result') return `[Tool: ${msg.tool} completed]\nOutput: ${msg.output ?? ''}`;
+                      return '';
+                    })
+                    .join('\n\n');
+                  await navigator.clipboard.writeText(text);
+                  isChatCopied = true;
+                  setTimeout(() => {
+                    isChatCopied = false;
+                  }, 2000);
+                }}
+                title="Copy entire chat"
+                disabled={!$activeSdkSession?.messages?.length}
+              >
+                {#if isChatCopied}
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                  </svg>
+                  Copied!
+                {:else}
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" />
+                    <path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" />
+                  </svg>
+                  Copy
+                {/if}
+              </button>
+              <button
+                class="p-1 hover:bg-border rounded transition-colors text-text-muted hover:text-error"
+                onclick={() => {
+                  if ($activeSdkSessionId) {
+                    sdkSessions.closeSession($activeSdkSessionId);
+                    activeSdkSessionId.set(null);
+                  }
+                }}
+                title="Close session"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
-        </div>
-        <div class="terminal-wrapper flex-1 overflow-hidden">
-          {#key $activeSdkSession.id}
-            <SdkView sessionId={$activeSdkSession.id} />
-          {/key}
-        </div>
+          <div class="terminal-wrapper flex-1 overflow-hidden">
+            {#key $activeSdkSession.id}
+              <SdkView sessionId={$activeSdkSession.id} />
+            {/key}
+          </div>
+        {/if}
       {:else if $activeSession}
         <!-- PTY Mode Session -->
         <SessionHeader session={$activeSession} />
@@ -861,5 +1685,18 @@
 
   .sidebar {
     flex-shrink: 0;
+  }
+
+  .copy-all-btn {
+    color: var(--color-text-muted);
+  }
+
+  .copy-all-btn:hover {
+    color: var(--color-text-primary);
+  }
+
+  .copy-all-btn.copied {
+    background: color-mix(in srgb, var(--color-success) 20%, transparent);
+    color: var(--color-success);
   }
 </style>

@@ -19,15 +19,17 @@ pub struct WhisperClient {
     endpoint: String,
     model: String,
     language: String,
+    api_key: Option<String>,
 }
 
 impl WhisperClient {
-    pub fn new(endpoint: String, model: String, language: String) -> Self {
+    pub fn new(endpoint: String, model: String, language: String, api_key: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
             endpoint,
             model,
             language,
+            api_key,
         }
     }
 
@@ -42,17 +44,24 @@ impl WhisperClient {
             .text("model", self.model.clone())
             .text("language", self.language.clone());
 
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .multipart(form)
+        let mut request = self.client.post(&self.endpoint).multipart(form);
+
+        // Add Authorization header if API key is provided
+        if let Some(ref api_key) = self.api_key {
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Whisper API error: {}", error_text));
+            return Err(format!("Whisper API error ({}): {}", status, error_text));
         }
 
         let result: TranscriptionResponse = response
@@ -105,13 +114,23 @@ impl WhisperClient {
             .text("model", self.model.clone())
             .text("language", self.language.clone());
 
-        match self.client.post(&self.endpoint).multipart(form).send().await {
+        let mut request = self.client.post(&self.endpoint).multipart(form);
+
+        // Add Authorization header if API key is provided
+        if let Some(ref api_key) = self.api_key {
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        match request.send().await {
             Ok(r) => {
                 if r.status().is_success() {
                     result.transcription_ok = true;
                 } else {
+                    let status = r.status();
                     let error_text = r.text().await.unwrap_or_default();
-                    result.transcription_error = Some(format!("Transcription returned error: {}", error_text));
+                    result.transcription_error = Some(format!("Transcription error ({}): {}", status, error_text));
                 }
             }
             Err(e) => {

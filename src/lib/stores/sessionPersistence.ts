@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
-import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage } from './sdkSessions';
+import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type ThinkingLevel, type SessionAiMetadata, type PendingRepoSelection } from './sdkSessions';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
 
 // Persisted session types that match Rust backend
@@ -14,16 +14,53 @@ export interface PersistedSdkMessage {
   timestamp: number;
 }
 
+// Serializable version of PendingTranscriptionInfo (no Uint8Array, no MediaStream)
+export interface PersistedPendingTranscriptionInfo {
+  status: 'recording' | 'transcribing' | 'processing';
+  // Audio visualization data (frequency array from recording)
+  audioVisualizationHistory?: number[][];
+  // Recording timing
+  recordingStartedAt?: number;
+  recordingDurationMs?: number;
+  // Note: audioData (Uint8Array) is NOT persisted - it's transient
+  // Transcription result
+  transcript?: string;
+  transcriptionError?: string;
+  // LLM processing results
+  cleanedTranscript?: string;
+  wasCleanedUp?: boolean;
+  modelRecommendation?: {
+    modelId: string;
+    reasoning: string;
+    thinkingLevel?: string;
+  };
+  repoRecommendation?: {
+    repoIndex: number;
+    repoName: string;
+    reasoning: string;
+    confidence: string;
+  };
+}
+
 export interface PersistedSdkSession {
   id: string;
   cwd: string;
   model: string;
+  thinkingLevel?: ThinkingLevel; // Now persisted
   messages: PersistedSdkMessage[];
   status: string;
   createdAt: number;
   startedAt?: number;
   // Timer-based duration tracking
   accumulatedDurationMs?: number;
+  // AI-generated metadata
+  aiMetadata?: SessionAiMetadata;
+  // Pending transcription state (for sessions in pending_transcription status)
+  pendingTranscription?: PersistedPendingTranscriptionInfo;
+  // Pending repo selection (for sessions in pending_repo status)
+  pendingRepoSelection?: PendingRepoSelection;
+  // Pending prompt (waiting to be sent after initialization)
+  pendingPrompt?: string;
 }
 
 export interface PersistedTerminalSession {
@@ -44,6 +81,29 @@ export interface PersistedSessions {
 }
 
 /**
+ * Convert pending transcription info to persisted format (strips non-serializable data)
+ */
+function pendingTranscriptionToPersisted(
+  info: SdkSession['pendingTranscription']
+): PersistedPendingTranscriptionInfo | undefined {
+  if (!info) return undefined;
+
+  return {
+    status: info.status,
+    audioVisualizationHistory: info.audioVisualizationHistory,
+    recordingStartedAt: info.recordingStartedAt,
+    recordingDurationMs: info.recordingDurationMs,
+    // Note: audioData (Uint8Array) is intentionally NOT persisted
+    transcript: info.transcript,
+    transcriptionError: info.transcriptionError,
+    cleanedTranscript: info.cleanedTranscript,
+    wasCleanedUp: info.wasCleanedUp,
+    modelRecommendation: info.modelRecommendation,
+    repoRecommendation: info.repoRecommendation,
+  };
+}
+
+/**
  * Convert frontend SDK session to persisted format
  */
 function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
@@ -58,6 +118,7 @@ function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
     id: session.id,
     cwd: session.cwd,
     model: session.model,
+    thinkingLevel: session.thinkingLevel,
     messages: session.messages.map(msg => ({
       type: msg.type,
       content: msg.content,
@@ -70,6 +131,33 @@ function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
     createdAt: session.createdAt,
     startedAt: session.startedAt,
     accumulatedDurationMs,
+    aiMetadata: session.aiMetadata,
+    pendingTranscription: pendingTranscriptionToPersisted(session.pendingTranscription),
+    pendingRepoSelection: session.pendingRepoSelection,
+    pendingPrompt: session.pendingPrompt,
+  };
+}
+
+/**
+ * Convert persisted pending transcription to frontend format
+ */
+function persistedToPendingTranscription(
+  persisted: PersistedPendingTranscriptionInfo | undefined
+): SdkSession['pendingTranscription'] {
+  if (!persisted) return undefined;
+
+  return {
+    status: persisted.status,
+    audioVisualizationHistory: persisted.audioVisualizationHistory,
+    recordingStartedAt: persisted.recordingStartedAt,
+    recordingDurationMs: persisted.recordingDurationMs,
+    // audioData is not restored - it was not persisted
+    transcript: persisted.transcript,
+    transcriptionError: persisted.transcriptionError,
+    cleanedTranscript: persisted.cleanedTranscript,
+    wasCleanedUp: persisted.wasCleanedUp,
+    modelRecommendation: persisted.modelRecommendation,
+    repoRecommendation: persisted.repoRecommendation,
   };
 }
 
@@ -77,10 +165,16 @@ function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
  * Convert persisted SDK session to frontend format
  */
 function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
+  // For pending_transcription sessions that were persisted mid-flow,
+  // we restore them in a 'processing' state so the UI shows the LLM reasoning
+  // but the user knows they need to re-record or continue manually
+  const isPending = persisted.status === 'pending_transcription' || persisted.status === 'pending_repo';
+
   return {
     id: persisted.id,
     cwd: persisted.cwd,
     model: persisted.model,
+    thinkingLevel: persisted.thinkingLevel ?? null, // Restore thinking level
     messages: persisted.messages.map(msg => ({
       type: msg.type as SdkMessage['type'],
       content: msg.content,
@@ -90,12 +184,23 @@ function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
       timestamp: msg.timestamp,
     })),
     // Restored sessions should be in 'done' or 'idle' state, never 'querying'
-    status: persisted.status === 'querying' ? 'idle' : (persisted.status as SdkSession['status']),
+    // But pending sessions retain their status
+    status: isPending
+      ? (persisted.status as SdkSession['status'])
+      : (persisted.status === 'querying' ? 'idle' : (persisted.status as SdkSession['status'])),
     createdAt: persisted.createdAt,
     startedAt: persisted.startedAt,
     // Restore accumulated duration, reset current work timer (not working when restored)
     accumulatedDurationMs: persisted.accumulatedDurationMs || 0,
     currentWorkStartedAt: undefined, // Session is idle when restored
+    // Restore AI metadata
+    aiMetadata: persisted.aiMetadata,
+    // Restore pending transcription info (for display of LLM reasoning)
+    pendingTranscription: persistedToPendingTranscription(persisted.pendingTranscription),
+    // Restore pending repo selection
+    pendingRepoSelection: persisted.pendingRepoSelection,
+    // Restore pending prompt
+    pendingPrompt: persisted.pendingPrompt,
   };
 }
 
@@ -142,10 +247,28 @@ export async function saveSessionsToDisk(): Promise<void> {
   const currentActiveSdkId = get(activeSdkSessionId);
   const currentActiveTerminalId = get(activeSessionId);
 
+  // Filter out sessions that are still actively recording (no useful data yet).
+  // Sessions with transcription data, LLM reasoning, etc. are now persisted so
+  // users can see the processing state and resume or restart.
+  const persistableSdkSessions = currentSdkSessions.filter(s => {
+    if (s.status !== 'pending_transcription') {
+      return true; // Not pending, include it
+    }
+    // For pending_transcription sessions, only exclude if still recording with no transcript
+    const hasTranscript = s.pendingTranscription?.transcript;
+    const hasLlmReasoning = s.pendingTranscription?.modelRecommendation ||
+                           s.pendingTranscription?.repoRecommendation ||
+                           s.pendingTranscription?.cleanedTranscript;
+    // Include if we have meaningful data to restore
+    return hasTranscript || hasLlmReasoning;
+  });
+
   const persistedData: PersistedSessions = {
-    sdk_sessions: currentSdkSessions.map(sdkSessionToPersisted),
+    sdk_sessions: persistableSdkSessions.map(sdkSessionToPersisted),
     terminal_sessions: currentTerminalSessions.map(s => terminalSessionToPersisted(s)),
-    active_sdk_session_id: currentActiveSdkId,
+    active_sdk_session_id: currentActiveSdkId && persistableSdkSessions.some(s => s.id === currentActiveSdkId)
+      ? currentActiveSdkId
+      : null,
     active_terminal_session_id: currentActiveTerminalId,
     saved_at: Date.now(),
   };

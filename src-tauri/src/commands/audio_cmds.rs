@@ -12,7 +12,12 @@ pub async fn transcribe_audio(
 ) -> Result<String, String> {
     let cfg = config.lock().clone();
 
-    let client = WhisperClient::new(cfg.whisper.endpoint, cfg.whisper.model, cfg.whisper.language);
+    let client = WhisperClient::new(
+        cfg.whisper.endpoint,
+        cfg.whisper.model,
+        cfg.whisper.language,
+        cfg.whisper.api_key,
+    );
 
     client.transcribe(audio_data).await
 }
@@ -22,6 +27,11 @@ pub async fn test_whisper_connection(
     config: State<'_, ConfigState>,
 ) -> Result<ConnectionTestResult, String> {
     let cfg = config.lock().clone();
-    let client = WhisperClient::new(cfg.whisper.endpoint, cfg.whisper.model, cfg.whisper.language);
+    let client = WhisperClient::new(
+        cfg.whisper.endpoint,
+        cfg.whisper.model,
+        cfg.whisper.language,
+        cfg.whisper.api_key,
+    );
     client.test_connection().await
 }

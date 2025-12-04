@@ -1,6 +1,6 @@
 {
     "name": "claude-whisperer",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "description": "Voice-controlled interface for Claude Code",
     "type": "module",
     "scripts": {
@@ -12,23 +12,24 @@
         "tauri": "tauri",
         "sidecar:install": "cd src-tauri/sidecar && npm install",
         "sidecar:build": "cd src-tauri/sidecar && npm run build",
-        "tauri:dev": "npm run sidecar:build && tauri dev",
+        "tauri:dev": "npm run sidecar:build && tauri dev --config src-tauri/tauri.dev.conf.json",
         "tauri:build": "npm run sidecar:build && tauri build"
     },
     "license": "MIT",
     "dependencies": {
         "@tauri-apps/api": "^2",
+        "@tauri-apps/plugin-clipboard-manager": "^2",
         "@tauri-apps/plugin-dialog": "^2.4.2",
         "@tauri-apps/plugin-global-shortcut": "^2.3.1",
         "@tauri-apps/plugin-opener": "^2",
         "@tauri-apps/plugin-shell": "^2.3.3",
-        "@tauri-apps/plugin-clipboard-manager": "^2",
         "@xterm/addon-fit": "^0.10.0",
         "@xterm/addon-webgl": "^0.18.0",
         "@xterm/xterm": "^5.5.0",
         "highlight.js": "^11.10.0",
         "marked": "^15.0.4",
-        "marked-highlight": "^2.2.1"
+        "marked-highlight": "^2.2.1",
+        "tauri-plugin-keyring-api": "^0.1.1"
     },
     "devDependencies": {
         "@sveltejs/adapter-static": "^3.0.6",

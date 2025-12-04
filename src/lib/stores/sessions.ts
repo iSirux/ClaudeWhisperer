@@ -2,6 +2,7 @@ import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { usageStats } from './usageStats';
+import { saveSessionsToDisk } from './sessionPersistence';
 
 export type SessionStatus = 'Starting' | 'Running' | 'Completed' | 'Failed';
 
@@ -69,6 +70,8 @@ function createSessionsStore() {
       try {
         await invoke('close_terminal', { sessionId });
         update((sessions) => sessions.filter((s) => s.id !== sessionId));
+        // Save to disk so the closed session is removed from persistence
+        await saveSessionsToDisk();
       } catch (error) {
         console.error('Failed to close session:', error);
         throw error;

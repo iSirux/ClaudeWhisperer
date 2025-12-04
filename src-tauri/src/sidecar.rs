@@ -58,6 +58,11 @@ pub enum OutboundMessage {
         id: String,
         model: String,
     },
+    UpdateThinking {
+        id: String,
+        #[serde(rename = "maxThinkingTokens")]
+        max_thinking_tokens: Option<u32>,
+    },
     Close {
         id: String,
     },
@@ -122,6 +127,11 @@ pub enum InboundMessage {
     ModelUpdated {
         id: String,
         model: String,
+    },
+    ThinkingUpdated {
+        id: String,
+        #[serde(rename = "maxThinkingTokens")]
+        max_thinking_tokens: u64,
     },
     Closed {
         id: String,
@@ -435,6 +445,19 @@ impl SidecarManager {
                         "agentId": agent_id,
                         "transcriptPath": transcript_path,
                     }),
+                );
+            }
+            InboundMessage::ThinkingUpdated {
+                id,
+                max_thinking_tokens,
+            } => {
+                println!(
+                    "[sidecar] Thinking updated for {}: {} tokens",
+                    id, max_thinking_tokens
+                );
+                let _ = app.emit(
+                    &format!("sdk-thinking-updated-{}", id),
+                    max_thinking_tokens,
                 );
             }
         }

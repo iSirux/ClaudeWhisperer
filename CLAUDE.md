@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Whisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence and usage tracking.
+Claude Whisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence, usage tracking, and LLM-powered intelligent features via Gemini or other providers.
 
 ## Development Commands
 
@@ -72,17 +72,20 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `image.ts` - Image compression and processing for Claude API (5MB limit, auto-resize, format conversion)
 - `sound.ts` - Completion sound playback
 - `modelColors.ts` - Model-specific color utilities (Opus=purple, Sonnet=amber, Haiku=emerald)
+- `llm.ts` - LLM integration utilities for session analysis, transcription cleanup, model/repo recommendations
+- `models.ts` - Model definitions and Auto model selection support
 
 ### Backend (Rust/Tauri)
 
 **Core Modules (`src-tauri/src/`):**
 
 - `lib.rs` - Tauri app initialization, plugin registration, state management
-- `config.rs` - Configuration types (TerminalMode, Theme) and persistence
+- `config.rs` - Configuration types (TerminalMode, Theme, LlmConfig) and persistence
 - `terminal.rs` - PTY management via `portable-pty`, spawns `claude` CLI
 - `sidecar.rs` - SidecarManager for Node.js process IPC with Claude Agent SDK
 - `whisper.rs` - HTTP client for Whisper transcription API
 - `git.rs` - GitManager for repository operations (branch/worktree creation)
+- `llm.rs` - Unified LLM client supporting Gemini, OpenAI, Groq, and local providers
 
 **Commands (`src-tauri/src/commands/`):**
 
@@ -90,6 +93,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `terminal_cmds.rs` - PTY session CRUD, terminal I/O, resize
 - `audio_cmds.rs` - Audio transcription, Whisper connection testing
 - `sdk_cmds.rs` - SDK session management, prompt sending, model updates
+- `llm_cmds.rs` - LLM integration commands (session naming, interaction analysis, transcription cleanup, model/repo recommendations)
 
 ### Sidecar (Node.js/TypeScript)
 
@@ -155,11 +159,12 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - `theme` - Midnight | Slate | Snow | Sand
 - `whisper` - Transcription endpoint, model, language
 - `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo, transcribe to input)
-- `repos` - List of git repositories with paths and optional default models
+- `repos` - List of git repositories with paths, optional default models, and LLM-generated descriptions
 - `audio` - Recording device, hotkey toggle, sound settings
 - `git` - Branch/worktree creation settings
 - `overlay` - Position and visibility settings
 - `system` - Tray behavior, autostart settings
+- `llm` - LLM integration settings (provider, model, features, auto-model priority)
 
 ## Key Technologies
 
@@ -177,3 +182,46 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - **Per-Session Models:** Each session tracks its own model selection independently
 - **Duration Tracking:** Timer-based work duration that survives session restore
 - **Unread Markers:** Sessions marked as unread when completed while not viewing
+
+## LLM Integration (Gemini/OpenAI/Groq/Local)
+
+The app includes an optional LLM integration layer that uses a secondary AI (Gemini by default) to enhance the user experience. This is configured in Settings → General → LLM Integration.
+
+### Supported Providers
+
+- **Gemini** - Google's Gemini API with automatic model fallback (2.5 Flash Lite → 2.5 Flash → 2.0 Flash)
+- **OpenAI** - OpenAI API (GPT-4, etc.)
+- **Groq** - Groq's fast inference API
+- **Local** - Any OpenAI-compatible local server (LM Studio, Ollama, etc.)
+- **Custom** - Custom OpenAI-compatible endpoint
+
+### Features (`llm.features` in config)
+
+1. **Auto Session Naming** (`auto_name_sessions`) - Generates descriptive session names and summaries from the first user-assistant exchange
+2. **Interaction Detection** (`detect_interaction_needed`) - Analyzes assistant messages to detect when human input is truly required (not just polite offers)
+3. **Transcription Cleanup** (`clean_transcription`) - Fixes common voice transcription errors (homophones, technical terms, punctuation)
+4. **Model Recommendation** (`recommend_model`) - Analyzes prompts to recommend the most cost-effective Claude model (Haiku/Sonnet/Opus) and thinking level
+5. **Auto Repository Selection** (`auto_select_repo`) - Recommends the best repository based on prompt content and repo descriptions
+
+### Auto Model Selection
+
+When enabled, the "Auto" option appears in the model selector. The LLM analyzes each prompt and selects:
+- **Model**: Haiku (simple tasks), Sonnet (typical tasks), Opus (complex tasks)
+- **Thinking Level**: null, think, megathink, or ultrathink based on task complexity
+
+### Auto Repository Selection
+
+Repositories can have LLM-generated descriptions (from CLAUDE.md or README.md) that help the system route prompts to the correct project. Features include:
+- Automatic description generation when adding repos
+- Confidence-based recommendations (low/medium/high)
+- Optional user confirmation for low-confidence matches
+- Optional Claude confirmation prompt when routing may be incorrect
+
+### Data Flow
+
+1. User records voice prompt → Whisper transcription
+2. (Optional) Transcription cleanup via LLM
+3. (Optional) Model recommendation via LLM
+4. (Optional) Repository recommendation via LLM
+5. Prompt sent to Claude with selected model/repo
+6. (On completion) Session analysis for naming and interaction detection

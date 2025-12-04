@@ -2,19 +2,75 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// Provider type for Whisper-compatible APIs
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum WhisperProvider {
+    #[default]
+    Local,
+    OpenAI,
+    Groq,
+    Custom,
+}
+
+/// Docker compute type for local Whisper server
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum DockerComputeType {
+    #[default]
+    CPU,
+    GPU,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerConfig {
+    /// Whether to use GPU (CUDA) or CPU
+    #[serde(default)]
+    pub compute_type: DockerComputeType,
+    /// Start container automatically when Docker daemon starts
+    #[serde(default)]
+    pub auto_restart: bool,
+    /// Custom container name
+    #[serde(default = "default_container_name")]
+    pub container_name: String,
+}
+
+fn default_container_name() -> String {
+    "whisper".to_string()
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            compute_type: DockerComputeType::default(),
+            auto_restart: false,
+            container_name: default_container_name(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhisperConfig {
+    #[serde(default)]
+    pub provider: WhisperProvider,
     pub endpoint: String,
     pub model: String,
     pub language: String,
+    /// Optional API key for authenticated endpoints (OpenAI, Groq, etc.)
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Docker configuration for local Whisper server
+    #[serde(default)]
+    pub docker: DockerConfig,
 }
 
 impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
+            provider: WhisperProvider::default(),
             endpoint: "http://localhost:8000/v1/audio/transcriptions".to_string(),
-            model: "distil-medium.en".to_string(),
+            model: "Systran/faster-whisper-large-v3-turbo".to_string(),
             language: "en".to_string(),
+            api_key: None,
+            docker: DockerConfig::default(),
         }
     }
 }
@@ -480,6 +536,12 @@ impl Default for AudioConfig {
 pub struct RepoConfig {
     pub path: String,
     pub name: String,
+    /// Auto-generated description of the repository for auto-selection
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Domain-specific keywords for matching prompts to this repository
+    #[serde(default)]
+    pub keywords: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -512,6 +574,60 @@ pub enum SessionSortOrder {
     StatusThenChronological,
 }
 
+/// Sessions view layout type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionsViewLayout {
+    #[default]
+    List,
+    Grid,
+}
+
+/// Grid card size options
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionsGridSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionsViewConfig {
+    #[serde(default)]
+    pub layout: SessionsViewLayout,
+    #[serde(default = "default_grid_columns")]
+    pub grid_columns: usize,
+    #[serde(default)]
+    pub card_size: SessionsGridSize,
+}
+
+fn default_grid_columns() -> usize {
+    3
+}
+
+impl Default for SessionsViewConfig {
+    fn default() -> Self {
+        Self {
+            layout: SessionsViewLayout::default(),
+            grid_columns: default_grid_columns(),
+            card_size: SessionsGridSize::default(),
+        }
+    }
+}
+
+/// Thinking level for extended thinking mode (matches Claude Code)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    #[default]
+    Off,
+    Think,
+    Megathink,
+    Ultrathink,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub whisper: WhisperConfig,
@@ -521,7 +637,14 @@ pub struct AppConfig {
     pub audio: AudioConfig,
     pub repos: Vec<RepoConfig>,
     pub active_repo_index: usize,
+    /// When true, repo is auto-selected based on prompt content (if Gemini auto_select_repo is enabled)
+    #[serde(default)]
+    pub auto_repo_mode: bool,
     pub default_model: String,
+    #[serde(default)]
+    pub default_thinking_level: ThinkingLevel,
+    #[serde(default = "default_enabled_models")]
+    pub enabled_models: Vec<String>,
     #[serde(default)]
     pub terminal_mode: TerminalMode,
     #[serde(default)]
@@ -546,6 +669,10 @@ pub struct AppConfig {
     pub session_prompt_rows: usize,
     #[serde(default = "default_session_response_rows")]
     pub session_response_rows: usize,
+    #[serde(default)]
+    pub sessions_view: SessionsViewConfig,
+    #[serde(default, alias = "gemini")]
+    pub llm: LlmConfig,
 }
 
 fn default_mark_sessions_unread() -> bool {
@@ -568,6 +695,142 @@ fn default_session_response_rows() -> usize {
     2
 }
 
+/// Provider type for the lightweight LLM integration (session naming, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum LlmProvider {
+    #[default]
+    Gemini,
+    OpenAI,
+    Groq,
+    Local,
+    Custom,
+}
+
+// Type alias for backwards compatibility
+pub type GeminiProvider = LlmProvider;
+
+/// Model selection priority for Gemini provider
+/// Speed: prioritizes 2.5 Flash-Lite -> 2.5 Flash -> 2.0 Flash
+/// Accuracy: prioritizes 2.5 Flash -> 2.5 Flash-Lite -> 2.0 Flash
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LlmModelPriority {
+    #[default]
+    Speed,
+    Accuracy,
+}
+
+// Type alias for backwards compatibility
+pub type GeminiModelPriority = LlmModelPriority;
+
+/// Minimum confidence level required for auto-selecting a repository
+/// High: Only auto-select when LLM is highly confident
+/// Medium: Auto-select when LLM has medium or high confidence
+/// Low: Auto-select for any confidence level (low, medium, high)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RepoAutoSelectConfidence {
+    /// Only auto-select when confidence is high
+    #[default]
+    High,
+    /// Auto-select when confidence is medium or high
+    Medium,
+    /// Auto-select for any confidence level
+    Low,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmFeaturesConfig {
+    pub auto_name_sessions: bool,
+    pub detect_interaction_needed: bool,
+    #[serde(default)]
+    pub clean_transcription: bool,
+    #[serde(default)]
+    pub recommend_model: bool,
+    /// Auto-select repository based on prompt content
+    #[serde(default)]
+    pub auto_select_repo: bool,
+}
+
+// Type alias for backwards compatibility
+pub type GeminiFeaturesConfig = LlmFeaturesConfig;
+
+impl Default for LlmFeaturesConfig {
+    fn default() -> Self {
+        Self {
+            auto_name_sessions: true,
+            detect_interaction_needed: true,
+            clean_transcription: false,
+            recommend_model: false,
+            auto_select_repo: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    pub enabled: bool,
+    /// Provider for the LLM integration
+    #[serde(default)]
+    pub provider: LlmProvider,
+    /// Model name (varies by provider) - used when auto_model is false
+    #[serde(default = "default_llm_model")]
+    pub model: String,
+    /// API endpoint (only used for Local/Custom providers)
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// When enabled for Gemini provider, automatically select model with fallbacks
+    #[serde(default = "default_auto_model")]
+    pub auto_model: bool,
+    /// Model priority when auto_model is enabled (Speed or Accuracy)
+    #[serde(default)]
+    pub model_priority: LlmModelPriority,
+    pub features: LlmFeaturesConfig,
+    /// When enabled, Claude will question the repo selection if it seems wrong
+    #[serde(default)]
+    pub confirm_repo_selection: bool,
+    /// Minimum confidence level required for auto-selecting a repository
+    #[serde(default)]
+    pub min_auto_select_confidence: RepoAutoSelectConfidence,
+    // API key is stored securely, not in config
+}
+
+// Type alias for backwards compatibility
+pub type GeminiConfig = LlmConfig;
+
+fn default_llm_model() -> String {
+    "gemini-2.0-flash".to_string()
+}
+
+fn default_auto_model() -> bool {
+    true
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: LlmProvider::default(),
+            model: default_llm_model(),
+            endpoint: None,
+            auto_model: default_auto_model(),
+            model_priority: LlmModelPriority::default(),
+            features: LlmFeaturesConfig::default(),
+            confirm_repo_selection: false,
+            min_auto_select_confidence: RepoAutoSelectConfidence::default(),
+        }
+    }
+}
+
+fn default_enabled_models() -> Vec<String> {
+    vec![
+        "claude-opus-4-5-20251101".to_string(),
+        "claude-sonnet-4-5-20250929".to_string(),
+        "claude-sonnet-4-5-20250929[1m]".to_string(),
+        "claude-haiku-4-5-20251001".to_string(),
+    ]
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -578,7 +841,10 @@ impl Default for AppConfig {
             audio: AudioConfig::default(),
             repos: vec![],
             active_repo_index: 0,
+            auto_repo_mode: false,
             default_model: "claude-opus-4-5-20251101".to_string(),
+            default_thinking_level: ThinkingLevel::default(),
+            enabled_models: default_enabled_models(),
             terminal_mode: TerminalMode::default(),
             skip_permissions: false,
             theme: Theme::default(),
@@ -591,6 +857,8 @@ impl Default for AppConfig {
             sidebar_width: 256,
             session_prompt_rows: 2,
             session_response_rows: 2,
+            sessions_view: SessionsViewConfig::default(),
+            llm: LlmConfig::default(),
         }
     }
 }

@@ -4,7 +4,7 @@ import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { primaryMonitor } from '@tauri-apps/api/window';
 import { emit } from '@tauri-apps/api/event';
 
-export type OverlayMode = 'session' | 'paste';
+export type OverlayMode = 'session' | 'paste' | 'inline';
 
 interface OverlayStore {
   visible: boolean;
@@ -15,6 +15,12 @@ interface OverlayStore {
     model: string | null;
     creatingSession: boolean;
   };
+  inlineSessionInfo: {
+    repoName: string | null;
+    branch: string | null;
+    model: string | null;
+    promptPreview: string | null;
+  } | null;
 }
 
 function getOverlayWindow() {
@@ -31,6 +37,7 @@ function createOverlayStore() {
       model: null,
       creatingSession: false,
     },
+    inlineSessionInfo: null,
   });
 
   return {
@@ -136,6 +143,33 @@ function createOverlayStore() {
     // Update mode without emitting (used when receiving event from another window)
     updateModeLocal(mode: OverlayMode) {
       update((s) => ({ ...s, mode }));
+    },
+
+    setInlineSessionInfo(info: {
+      repoName: string | null;
+      branch: string | null;
+      model: string | null;
+      promptPreview: string | null;
+    }) {
+      update((s) => ({ ...s, inlineSessionInfo: info }));
+      // Emit event to sync with overlay window
+      emit('overlay-inline-session-info', info);
+    },
+
+    // Update inline session info without emitting (used when receiving event from another window)
+    updateInlineSessionInfoLocal(info: {
+      repoName: string | null;
+      branch: string | null;
+      model: string | null;
+      promptPreview: string | null;
+    } | null) {
+      update((s) => ({ ...s, inlineSessionInfo: info }));
+    },
+
+    clearInlineSessionInfo() {
+      update((s) => ({ ...s, inlineSessionInfo: null }));
+      // Emit event to sync with overlay window
+      emit('overlay-inline-session-info', null);
     },
   };
 }

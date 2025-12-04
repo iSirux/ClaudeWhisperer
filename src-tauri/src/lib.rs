@@ -1,12 +1,13 @@
 mod commands;
 mod config;
+mod llm;
 mod git;
 mod session_persistence;
 mod sidecar;
 mod terminal;
 mod whisper;
 
-use commands::{audio_cmds, input_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds};
+use commands::{audio_cmds, llm_cmds, input_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds};
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
 use sidecar::SidecarManager;
@@ -69,6 +70,7 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_keyring::init())
         .manage(Mutex::new(config))
         .manage(Mutex::new(usage_stats))
         .manage(terminal_manager)
@@ -146,10 +148,17 @@ pub fn run() {
                 let config: tauri::State<Mutex<AppConfig>> = app.state();
                 let minimize_to_tray = config.lock().system.minimize_to_tray;
 
-                if window.label() == "main" && minimize_to_tray {
-                    // Prevent the window from closing, just hide it
-                    api.prevent_close();
-                    let _ = window.hide();
+                if window.label() == "main" {
+                    if minimize_to_tray {
+                        // Prevent the window from closing, just hide it
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        // Actually quit the app when closing and not minimizing to tray
+                        let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
+                        sidecar.shutdown();
+                        app.exit(0);
+                    }
                 }
             }
         })
@@ -159,6 +168,7 @@ pub fn run() {
             settings_cmds::add_repo,
             settings_cmds::remove_repo,
             settings_cmds::set_active_repo,
+            settings_cmds::set_auto_repo_mode,
             settings_cmds::get_active_repo,
             settings_cmds::get_git_branch,
             terminal_cmds::create_terminal_session,
@@ -175,6 +185,7 @@ pub fn run() {
             sdk_cmds::send_sdk_prompt,
             sdk_cmds::stop_sdk_query,
             sdk_cmds::update_sdk_model,
+            sdk_cmds::update_sdk_thinking,
             sdk_cmds::close_sdk_session,
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
@@ -190,6 +201,17 @@ pub fn run() {
             get_autostart_enabled,
             toggle_autostart,
             input_cmds::paste_text,
+            llm_cmds::test_gemini_connection,
+            llm_cmds::generate_session_name,
+            llm_cmds::generate_session_outcome,
+            llm_cmds::analyze_interaction_needed,
+            llm_cmds::clean_transcription,
+            llm_cmds::recommend_model,
+            llm_cmds::save_gemini_api_key,
+            llm_cmds::has_gemini_api_key,
+            llm_cmds::delete_gemini_api_key,
+            llm_cmds::generate_repo_description,
+            llm_cmds::recommend_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

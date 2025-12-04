@@ -62,6 +62,18 @@ pub fn update_sdk_model(
 }
 
 #[tauri::command]
+pub fn update_sdk_thinking(
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    max_thinking_tokens: Option<u32>,
+) -> Result<(), String> {
+    if !sidecar.is_started() {
+        return Err("Sidecar not started".to_string());
+    }
+    sidecar.send(OutboundMessage::UpdateThinking { id, max_thinking_tokens })
+}
+
+#[tauri::command]
 pub fn close_sdk_session(
     sidecar: State<Arc<SidecarManager>>,
     id: String,

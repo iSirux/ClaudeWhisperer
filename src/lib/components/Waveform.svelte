@@ -13,12 +13,32 @@
   export let useEvents: boolean = false;
 
   let canvas: HTMLCanvasElement;
+  let container: HTMLDivElement;
   let animationId: number;
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let dataArray: Uint8Array | null = null;
   let eventDataArray: number[] | null = null;
   let unlistenVisualization: UnlistenFn | null = null;
+  let resizeObserver: ResizeObserver | null = null;
+
+  // Update canvas size to match container and handle high-DPI displays
+  function updateCanvasSize() {
+    if (!canvas || !container) return;
+
+    const rect = container.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    // Set the canvas buffer size to match display size * device pixel ratio
+    canvas.width = rect.width * dpr;
+    canvas.height = height * dpr;
+
+    // Scale the canvas context to handle high-DPI
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.scale(dpr, dpr);
+    }
+  }
 
   async function setupLocalAudioVisualization() {
     if (!$isRecording || !$recording.stream) return;
@@ -83,30 +103,40 @@
   }
 
   function drawBars(ctx: CanvasRenderingContext2D, data: number[]) {
-    // Clear canvas
+    if (!container) return;
+
+    // Get the actual display dimensions (not the scaled buffer size)
+    const displayWidth = container.getBoundingClientRect().width;
+    const displayHeight = height;
+    const dpr = window.devicePixelRatio || 1;
+
+    // Clear the entire canvas buffer
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
 
     const barTotalWidth = barWidth + barGap;
-    const barCount = Math.floor(canvas.width / barTotalWidth);
+    const barCount = Math.floor(displayWidth / barTotalWidth);
 
     // Sample the data array evenly
-    const step = Math.floor(data.length / barCount);
+    const step = Math.max(1, Math.floor(data.length / barCount));
 
     for (let i = 0; i < barCount; i++) {
-      const dataIndex = i * step;
+      const dataIndex = Math.min(i * step, data.length - 1);
       const value = data[dataIndex] || 0;
 
       // Normalize value to 0-1 range
       const normalized = value / 255;
 
       // Calculate bar height (minimum 2px for visibility even at low volumes)
-      const barHeight = Math.max(2, normalized * canvas.height);
+      const barHeight = Math.max(2, normalized * displayHeight);
 
       // Calculate x position
       const x = i * barTotalWidth;
 
       // Center the bar vertically
-      const y = (canvas.height - barHeight) / 2;
+      const y = (displayHeight - barHeight) / 2;
 
       // Draw bar with rounded corners
       ctx.fillStyle = color;
@@ -128,12 +158,26 @@
       unlistenVisualization();
       unlistenVisualization = null;
     }
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
     analyser = null;
     dataArray = null;
     eventDataArray = null;
   }
 
   onMount(() => {
+    // Set up resize observer to update canvas size when container changes
+    if (container) {
+      resizeObserver = new ResizeObserver(() => {
+        updateCanvasSize();
+      });
+      resizeObserver.observe(container);
+      // Initial size update
+      updateCanvasSize();
+    }
+
     if (useEvents) {
       // In event mode, start listening immediately
       setupEventBasedVisualization();
@@ -152,15 +196,20 @@
   });
 </script>
 
-<canvas
-  bind:this={canvas}
-  width={300}
-  height={height}
-  class="waveform-canvas"
-  style="width: 100%; height: {height}px;"
-></canvas>
+<div bind:this={container} class="waveform-container" style="height: {height}px;">
+  <canvas
+    bind:this={canvas}
+    class="waveform-canvas"
+    style="width: 100%; height: {height}px;"
+  ></canvas>
+</div>
 
 <style>
+  .waveform-container {
+    width: 100%;
+    position: relative;
+  }
+
   .waveform-canvas {
     display: block;
   }
