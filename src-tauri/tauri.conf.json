@@ -55,11 +55,7 @@
             "sidecar/dist/",
             "sidecar/node_modules/@anthropic-ai/"
         ],
-        "windows": {
-            "wix": {
-                "template": "wix/main.wxs"
-            }
-        }
+        "windows": {}
     },
     "plugins": {
         "shell": {

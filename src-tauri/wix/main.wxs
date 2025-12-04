@@ -207,7 +207,21 @@
             Display="expand"
             Absent="disallow">
 
-{{{component_refs}}}
+{{#each component_group_refs as |id| ~}}
+            <ComponentGroupRef Id="{{ id }}"/>
+            {{/each~}}
+            {{#each component_refs as |id| ~}}
+            <ComponentRef Id="{{ id }}"/>
+            {{/each~}}
+            {{#each feature_group_refs as |id| ~}}
+            <FeatureGroupRef Id="{{ id }}"/>
+            {{/each~}}
+            {{#each feature_refs as |id| ~}}
+            <FeatureRef Id="{{ id }}"/>
+            {{/each~}}
+            {{#each merge_refs as |id| ~}}
+            <MergeRef Id="{{ id }}"/>
+            {{/each~}}
             <ComponentRef Id="Path"/>
             <ComponentRef Id="CMP_UninstallShortcut" />
             <ComponentRef Id="ApplicationShortcut" />
