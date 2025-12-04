@@ -259,33 +259,70 @@
     <div class="recommendations-section">
       {#if pendingTranscription.modelRecommendation}
         <div class="recommendation model-recommendation">
-          <div class="recommendation-row">
+          <div class="recommendation-header">
+            <svg class="recommendation-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+            </svg>
             <span class="auto-badge">AUTO</span>
-            <span class="recommendation-label">Model:</span>
+            <span class="recommendation-label">Model</span>
             <span class="model-badge {getModelBadgeBgColor(pendingTranscription.modelRecommendation.modelId)} {getModelTextColor(pendingTranscription.modelRecommendation.modelId)}">
               {getShortModelName(pendingTranscription.modelRecommendation.modelId)}
             </span>
             {#if pendingTranscription.modelRecommendation.thinkingLevel}
               <span class="thinking-badge">
+                <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 6v6l4 2" />
+                </svg>
                 {pendingTranscription.modelRecommendation.thinkingLevel}
               </span>
             {/if}
           </div>
-          <div class="reasoning">{pendingTranscription.modelRecommendation.reasoning}</div>
+          <div class="reasoning-container">
+            <svg class="quote-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z" />
+            </svg>
+            <blockquote class="reasoning">{pendingTranscription.modelRecommendation.reasoning}</blockquote>
+          </div>
         </div>
       {/if}
 
       {#if pendingTranscription.repoRecommendation}
         <div class="recommendation repo-recommendation">
-          <div class="recommendation-row">
+          <div class="recommendation-header">
+            <svg class="recommendation-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
             <span class="auto-badge">AUTO</span>
-            <span class="recommendation-label">Repo:</span>
+            <span class="recommendation-label">Repository</span>
             <span class="repo-name">{pendingTranscription.repoRecommendation.repoName}</span>
             <span class="confidence confidence-{pendingTranscription.repoRecommendation.confidence}">
+              {#if pendingTranscription.repoRecommendation.confidence === 'high'}
+                <svg class="confidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              {:else if pendingTranscription.repoRecommendation.confidence === 'medium'}
+                <svg class="confidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              {:else}
+                <svg class="confidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              {/if}
               {pendingTranscription.repoRecommendation.confidence}
             </span>
           </div>
-          <div class="reasoning">{pendingTranscription.repoRecommendation.reasoning}</div>
+          <div class="reasoning-container">
+            <svg class="quote-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z" />
+            </svg>
+            <blockquote class="reasoning">{pendingTranscription.repoRecommendation.reasoning}</blockquote>
+          </div>
         </div>
       {/if}
     </div>
@@ -304,7 +341,6 @@
   .session-recording-header.completed {
     background: var(--color-surface-elevated);
     border-color: var(--color-border);
-    opacity: 0.9;
   }
 
   .session-recording-header.completed .waveform-container {
@@ -524,88 +560,167 @@
     margin-top: 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.75rem;
   }
 
   .recommendation {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    font-size: 0.75rem;
-    padding: 0.5rem;
-    background: var(--color-surface-elevated);
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border-left: 3px solid;
+    position: relative;
   }
 
-  .recommendation-row {
+  .model-recommendation {
+    border-left-color: #8b5cf6;
+    background: linear-gradient(to right, rgba(139, 92, 246, 0.08), transparent);
+  }
+
+  .repo-recommendation {
+    border-left-color: #22c55e;
+    background: linear-gradient(to right, rgba(34, 197, 94, 0.08), transparent);
+  }
+
+  .recommendation-header {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 0.375rem;
-    border-radius: 4px;
+    gap: 0.5rem;
+  }
+
+  .recommendation-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  .model-recommendation .recommendation-icon {
+    color: #8b5cf6;
+  }
+
+  .repo-recommendation .recommendation-icon {
+    color: #22c55e;
   }
 
   .auto-badge {
-    padding: 0.125rem 0.375rem;
+    padding: 0.1875rem 0.5rem;
     border-radius: 4px;
-    background: linear-gradient(to right, rgb(168, 85, 247), rgb(245, 158, 11));
+    background: linear-gradient(
+      135deg,
+      rgb(168, 85, 247) 0%,
+      rgb(245, 158, 11) 50%,
+      rgb(168, 85, 247) 100%
+    );
+    background-size: 200% 200%;
+    animation: shimmer 3s ease-in-out infinite;
     color: white;
-    font-size: 0.625rem;
-    font-weight: 600;
+    font-size: 0.6875rem;
+    font-weight: 700;
     letter-spacing: 0.05em;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  @keyframes shimmer {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
   }
 
   .recommendation-label {
     color: var(--color-text-muted);
     font-weight: 500;
+    font-size: 0.8125rem;
   }
 
   .model-badge {
-    padding: 0.125rem 0.375rem;
+    padding: 0.1875rem 0.5rem;
     border-radius: 4px;
-    font-weight: 500;
-    font-size: 0.625rem;
+    font-weight: 600;
+    font-size: 0.75rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
   }
 
   .thinking-badge {
-    padding: 0.125rem 0.375rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1875rem 0.5rem;
     border-radius: 4px;
-    background: rgba(139, 92, 246, 0.2);
-    color: #8b5cf6;
-    font-size: 0.625rem;
-    font-weight: 500;
+    background: rgba(139, 92, 246, 0.15);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    color: #a78bfa;
+    font-size: 0.6875rem;
+    font-weight: 600;
+  }
+
+  .thinking-icon {
+    width: 12px;
+    height: 12px;
   }
 
   .repo-name {
     color: var(--color-text-primary);
-    font-weight: 500;
+    font-weight: 600;
+    font-size: 0.875rem;
   }
 
   .confidence {
-    padding: 0.125rem 0.375rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1875rem 0.5rem;
     border-radius: 4px;
-    font-size: 0.625rem;
-    font-weight: 500;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: capitalize;
+  }
+
+  .confidence-icon {
+    width: 12px;
+    height: 12px;
   }
 
   .confidence-high {
-    background: rgba(34, 197, 94, 0.2);
-    color: #22c55e;
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #4ade80;
   }
 
   .confidence-medium {
-    background: rgba(234, 179, 8, 0.2);
-    color: #eab308;
+    background: rgba(234, 179, 8, 0.15);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+    color: #fbbf24;
   }
 
   .confidence-low {
-    background: rgba(239, 68, 68, 0.2);
-    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #f87171;
+  }
+
+  .reasoning-container {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--color-surface);
+    border-radius: 6px;
+    margin-top: 0.25rem;
+  }
+
+  .quote-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    opacity: 0.5;
+    margin-top: 0.125rem;
   }
 
   .reasoning {
-    color: var(--color-text-muted);
-    font-style: italic;
-    line-height: 1.4;
-    padding-left: 0.25rem;
+    color: var(--color-text-secondary);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    margin: 0;
   }
 </style>

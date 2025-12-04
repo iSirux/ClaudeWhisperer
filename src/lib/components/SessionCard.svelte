@@ -241,17 +241,14 @@
         {session.aiMetadata.outcome}
       </p>
     {/if}
-  {:else}
+  {:else if session.prompt}
+    <!-- Only show prompt text if we have actual content -->
     <p
       class="{sizeClasses.title} text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
       style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {promptRows};"
-      title={session.prompt || 'Interactive session'}
+      title={session.prompt}
     >
-      {#if session.prompt}
-        {session.prompt}
-      {:else}
-        <span class="text-text-muted italic">{session.type === 'sdk' ? 'SDK Session' : 'Interactive session'}</span>
-      {/if}
+      {session.prompt}
     </p>
   {/if}
 

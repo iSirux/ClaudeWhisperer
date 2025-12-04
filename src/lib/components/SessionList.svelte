@@ -454,7 +454,7 @@
           type: 'sdk' as const,
           status: smartStatus.status,
           statusDetail: smartStatus.detail,
-          prompt: s.messages.find(m => m.type === 'user')?.content || s.pendingPrompt || s.pendingRepoSelection?.transcript || '',
+          prompt: s.messages.find(m => m.type === 'user')?.content || s.pendingPrompt || s.pendingRepoSelection?.transcript || s.pendingTranscription?.transcript || '',
           repoPath: s.cwd,
           model: s.model,
           createdAt: Math.floor(s.createdAt / 1000), // For sorting
@@ -625,18 +625,14 @@
               {session.aiMetadata.outcome}
             </p>
           {/if}
-        {:else}
-          <!-- Original prompt text -->
+        {:else if session.prompt}
+          <!-- Original prompt text (only show if we have actual content) -->
           <p
             class="text-sm text-text-primary leading-snug mb-1.5 select-text overflow-hidden"
             style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: {$settings.session_prompt_rows};"
-            title={session.prompt || 'Interactive session'}
+            title={session.prompt}
           >
-            {#if session.prompt}
-              {session.prompt}
-            {:else}
-              <span class="text-text-muted italic">{session.type === 'sdk' ? 'SDK Session' : 'Interactive session'}</span>
-            {/if}
+            {session.prompt}
           </p>
         {/if}
 
