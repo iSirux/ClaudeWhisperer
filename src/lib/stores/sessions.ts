@@ -1,10 +1,14 @@
 import { writable, derived } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
 
 export type SessionStatus = 'Starting' | 'Running' | 'Completed' | 'Failed';
+
+// Track all event listeners for proper cleanup
+const sessionCloseListeners = new Map<string, UnlistenFn>();
+let mainUnlisten: UnlistenFn | null = null;
 
 export interface TerminalSession {
   id: string;
@@ -70,6 +74,8 @@ function createSessionsStore() {
       try {
         await invoke('close_terminal', { sessionId });
         update((sessions) => sessions.filter((s) => s.id !== sessionId));
+        // Clean up the event listener for this session
+        this.cleanupSessionListener(sessionId);
         // Save to disk so the closed session is removed from persistence
         await saveSessionsToDisk();
       } catch (error) {
@@ -102,25 +108,67 @@ function createSessionsStore() {
       );
     },
 
-    setupListeners() {
-      listen<TerminalSession>('session-created', (event) => {
+    async setupListeners() {
+      // Clean up any existing main listener before setting up new one
+      if (mainUnlisten) {
+        mainUnlisten();
+        mainUnlisten = null;
+      }
+
+      mainUnlisten = await listen<TerminalSession>('session-created', async (event) => {
         update((sessions) => [...sessions, event.payload]);
 
         // Set up listener for this session's completion
         const sessionId = event.payload.id;
-        listen(`terminal-closed-${sessionId}`, () => {
+
+        // Clean up any existing listener for this session (shouldn't happen, but be safe)
+        if (sessionCloseListeners.has(sessionId)) {
+          sessionCloseListeners.get(sessionId)!();
+          sessionCloseListeners.delete(sessionId);
+        }
+
+        const unlisten = await listen(`terminal-closed-${sessionId}`, () => {
           update((sessions) =>
             sessions.map((s) =>
               s.id === sessionId ? { ...s, status: 'Completed' as SessionStatus } : s
             )
           );
+
+          // Clean up this listener after it fires (session closed = no more events)
+          if (sessionCloseListeners.has(sessionId)) {
+            sessionCloseListeners.get(sessionId)!();
+            sessionCloseListeners.delete(sessionId);
+          }
         });
+
+        sessionCloseListeners.set(sessionId, unlisten);
       });
+    },
+
+    cleanupSessionListener(sessionId: string) {
+      if (sessionCloseListeners.has(sessionId)) {
+        sessionCloseListeners.get(sessionId)!();
+        sessionCloseListeners.delete(sessionId);
+      }
+    },
+
+    cleanupAllListeners() {
+      // Clean up all session-specific listeners
+      for (const unlisten of sessionCloseListeners.values()) {
+        unlisten();
+      }
+      sessionCloseListeners.clear();
+
+      // Clean up main listener
+      if (mainUnlisten) {
+        mainUnlisten();
+        mainUnlisten = null;
+      }
     },
 
     async init() {
       await this.load();
-      this.setupListeners();
+      await this.setupListeners();
     },
   };
 }

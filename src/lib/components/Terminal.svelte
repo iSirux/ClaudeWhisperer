@@ -14,6 +14,10 @@
   let fitAddon: FitAddon | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Debounce delay for resize events (ms)
+  const RESIZE_DEBOUNCE_MS = 50;
 
   onMount(async () => {
     terminal = new Terminal({
@@ -66,8 +70,10 @@
     const { rows, cols } = terminal;
     await sessions.resizeSession(sessionId, rows, cols);
 
-    terminal.onData(async (data) => {
-      await sessions.writeToSession(sessionId, data);
+    terminal.onData((data) => {
+      sessions.writeToSession(sessionId, data).catch((error) => {
+        console.error(`Failed to write to terminal session ${sessionId}:`, error);
+      });
     });
 
     unlistenOutput = await listen<string>(`terminal-output-${sessionId}`, (event) => {
@@ -76,17 +82,41 @@
 
     // Note: terminal-closed listener is handled globally in sessions store
 
-    resizeObserver = new ResizeObserver(() => {
-      if (fitAddon && terminal) {
-        fitAddon.fit();
-        const { rows, cols } = terminal;
-        sessions.resizeSession(sessionId, rows, cols);
+    // Debounced resize handler to prevent race conditions during rapid resizing
+    const handleResize = () => {
+      if (!fitAddon || !terminal) return;
+
+      // Clear any pending resize
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
       }
-    });
+
+      // Debounce the resize to prevent rapid-fire events
+      resizeTimeout = setTimeout(() => {
+        if (fitAddon && terminal) {
+          fitAddon.fit();
+          const { rows, cols } = terminal;
+
+          // Validate dimensions before sending
+          if (rows > 0 && cols > 0) {
+            sessions.resizeSession(sessionId, rows, cols).catch((error) => {
+              console.error(`Failed to resize terminal session ${sessionId}:`, error);
+            });
+          }
+        }
+      }, RESIZE_DEBOUNCE_MS);
+    };
+
+    resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(terminalEl);
   });
 
   onDestroy(() => {
+    // Clean up pending resize timeout
+    if (resizeTimeout) {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = null;
+    }
     unlistenOutput?.();
     resizeObserver?.disconnect();
     terminal?.dispose();

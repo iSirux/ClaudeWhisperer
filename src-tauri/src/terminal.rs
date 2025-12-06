@@ -4,10 +4,17 @@ use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
+
+// Minimum and maximum PTY dimensions for validation
+const MIN_PTY_ROWS: u16 = 1;
+const MIN_PTY_COLS: u16 = 1;
+const MAX_PTY_ROWS: u16 = 500;
+const MAX_PTY_COLS: u16 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSession {
@@ -29,6 +36,7 @@ pub enum SessionStatus {
 struct PtySession {
     pair: PtyPair,
     writer: Box<dyn Write + Send>,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 pub struct TerminalManager {
@@ -123,11 +131,16 @@ impl TerminalManager {
             .take_writer()
             .map_err(|e| format!("Failed to take writer: {}", e))?;
 
+        // Create shutdown flag for graceful thread termination
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_clone = Arc::clone(&shutdown_flag);
+
         self.pty_sessions.lock().insert(
             id.clone(),
             PtySession {
                 pair,
                 writer,
+                shutdown_flag,
             },
         );
 
@@ -167,13 +180,24 @@ impl TerminalManager {
             let mut buffer = [0u8; 4096];
 
             loop {
+                // Check if we've been signaled to shut down
+                if shutdown_flag_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 match reader.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => break, // EOF - process exited normally
                     Ok(n) => {
                         let data = String::from_utf8_lossy(&buffer[..n]).to_string();
                         let _ = app_clone.emit(&format!("terminal-output-{}", session_id), &data);
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        // Log error for debugging (only if not due to shutdown)
+                        if !shutdown_flag_clone.load(Ordering::Relaxed) {
+                            eprintln!("Terminal reader error for session {}: {}", session_id, e);
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -207,6 +231,21 @@ impl TerminalManager {
     }
 
     pub fn resize_session(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
+        // Validate dimensions to prevent invalid PTY states
+        if rows < MIN_PTY_ROWS || cols < MIN_PTY_COLS {
+            return Err(format!(
+                "Invalid dimensions: rows={}, cols={} (minimum: {}x{})",
+                rows, cols, MIN_PTY_ROWS, MIN_PTY_COLS
+            ));
+        }
+
+        if rows > MAX_PTY_ROWS || cols > MAX_PTY_COLS {
+            return Err(format!(
+                "Dimensions too large: rows={}, cols={} (maximum: {}x{})",
+                rows, cols, MAX_PTY_ROWS, MAX_PTY_COLS
+            ));
+        }
+
         let pty_sessions = self.pty_sessions.lock();
         if let Some(session) = pty_sessions.get(id) {
             session
@@ -226,6 +265,12 @@ impl TerminalManager {
     }
 
     pub fn close_session(&self, id: &str) -> Result<(), String> {
+        // Signal the reader thread to shut down gracefully
+        if let Some(session) = self.pty_sessions.lock().get(id) {
+            session.shutdown_flag.store(true, Ordering::Relaxed);
+        }
+
+        // Remove the PTY session (this will drop the PTY and close the master side)
         self.pty_sessions.lock().remove(id);
         self.sessions.lock().remove(id);
         Ok(())
