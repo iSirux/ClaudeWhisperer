@@ -479,11 +479,10 @@
       overlay.setSessionInfo(branch, model, false);
 
       // Create pending transcription session immediately (SDK mode only)
+      // Note: We don't switch the view here (via open mic) - user stays on their current view
+      // This matches the hotkey path behavior to avoid jarring the user
       if ($settings.terminal_mode === 'Sdk') {
         pendingTranscriptionSessionId = sdkSessions.createPendingTranscriptionSession(model, thinkingLevel);
-        activeSdkSessionId.set(pendingTranscriptionSessionId);
-        activeSessionId.set(null);
-        currentView = 'sessions';
 
         // Set up audio visualization listener to capture waveform data
         unlistenAudioVisualization = await listen<{ data: number[] | null }>('audio-visualization', (event) => {

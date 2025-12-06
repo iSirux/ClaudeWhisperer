@@ -48,7 +48,6 @@
   let branchCache = new Map<string, string>();
 
   async function getGitBranch(repoPath: string): Promise<string | undefined> {
-    if (!$settings.show_branch_in_sessions) return undefined;
     if (branchCache.has(repoPath)) return branchCache.get(repoPath);
 
     try {
@@ -211,16 +210,14 @@
     allSessions = sorted;
 
     // Fetch branches
-    if ($settings.show_branch_in_sessions) {
-      sorted.forEach(async (session) => {
-        const branch = await getGitBranch(session.repoPath);
-        if (branch) {
-          allSessions = allSessions.map(s =>
-            s.id === session.id ? { ...s, branch } : s
-          );
-        }
-      });
-    }
+    sorted.forEach(async (session) => {
+      const branch = await getGitBranch(session.repoPath);
+      if (branch) {
+        allSessions = allSessions.map(s =>
+          s.id === session.id ? { ...s, branch } : s
+        );
+      }
+    });
   });
 
   // Navigation and selection
@@ -460,7 +457,6 @@
             size={cardSize}
             isActive={isSessionActive(session)}
             {now}
-            showBranch={$settings.show_branch_in_sessions}
             showLatestMessage={$settings.show_latest_message_preview}
             promptRows={$settings.session_prompt_rows}
             responseRows={$settings.session_response_rows}
@@ -481,7 +477,6 @@
             size={cardSize}
             isActive={isSessionActive(session)}
             {now}
-            showBranch={$settings.show_branch_in_sessions}
             showLatestMessage={$settings.show_latest_message_preview}
             promptRows={$settings.session_prompt_rows}
             responseRows={$settings.session_response_rows}

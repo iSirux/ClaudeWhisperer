@@ -47,16 +47,16 @@
   </div>
 
   <!-- Enable toggle -->
-  <label class="flex items-center gap-3 cursor-pointer">
-    <input
-      type="checkbox"
-      class="w-4 h-4 rounded border-border bg-background accent-accent"
-      bind:checked={$settings.vosk.enabled}
-    />
+  <div class="flex items-center justify-between">
     <span class="text-sm text-text-secondary"
       >Enable Vosk real-time transcription</span
     >
-  </label>
+    <input
+      type="checkbox"
+      class="toggle"
+      bind:checked={$settings.vosk.enabled}
+    />
+  </div>
 
   {#if $settings.vosk.enabled}
     <!-- WebSocket Endpoint -->
@@ -95,33 +95,33 @@
     </div>
 
     <!-- Show in overlay toggle -->
-    <label class="flex items-center gap-3 cursor-pointer">
-      <input
-        type="checkbox"
-        class="w-4 h-4 rounded border-border bg-background accent-accent"
-        bind:checked={$settings.vosk.show_realtime_transcript}
-      />
+    <div class="flex items-center justify-between">
       <span class="text-sm text-text-secondary"
         >Show real-time transcript in overlay</span
       >
-    </label>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.vosk.show_realtime_transcript}
+      />
+    </div>
 
     <!-- Accumulate transcript toggle -->
-    <div>
-      <label class="flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          class="w-4 h-4 rounded border-border bg-background accent-accent"
-          bind:checked={$settings.vosk.accumulate_transcript}
-        />
+    <div class="flex items-center justify-between">
+      <div>
         <span class="text-sm text-text-secondary"
           >Accumulate text across pauses</span
         >
-      </label>
-      <p class="text-xs text-text-muted mt-1 ml-7">
-        When enabled, text accumulates as you speak with pauses. When
-        disabled, the transcript resets after each pause.
-      </p>
+        <p class="text-xs text-text-muted mt-1">
+          When enabled, text accumulates as you speak with pauses. When
+          disabled, the transcript resets after each pause.
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.vosk.accumulate_transcript}
+      />
     </div>
 
     <!-- Connection test -->

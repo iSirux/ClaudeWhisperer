@@ -415,6 +415,21 @@
     </div>
   </div>
   <div class="border-t border-border pt-4 mt-4">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Require Transcription Approval</label
+        >
+        <p class="text-xs text-text-muted mt-0.5">
+          Review and approve transcriptions before sending to Claude
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.audio.require_transcription_approval}
+      />
+    </div>
     <div>
       <label class="block text-sm font-medium text-text-secondary mb-1"
         >Recording Linger Time</label
@@ -438,25 +453,6 @@
       </div>
     </div>
   </div>
-  <div class="border-t border-border pt-4 mt-4">
-    <div class="flex items-center justify-between">
-      <div>
-        <label class="text-sm font-medium text-text-secondary"
-          >Include Transcription Notice</label
-        >
-        <p class="text-xs text-text-muted mt-0.5">
-          Tell Claude the prompt was voice-transcribed and may contain
-          minor errors
-        </p>
-      </div>
-      <input
-        type="checkbox"
-        class="toggle"
-        bind:checked={$settings.audio.include_transcription_notice}
-      />
-    </div>
-  </div>
-
   <!-- Voice Commands Section -->
   <div class="border-t border-border pt-4 mt-4">
     <div class="flex items-center justify-between mb-3">

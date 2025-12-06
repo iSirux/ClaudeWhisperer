@@ -4,6 +4,7 @@
   import { onDestroy } from "svelte";
   import {
     GeneralTab,
+    ClaudeTab,
     ThemesTab,
     SystemTab,
     AudioTab,
@@ -69,6 +70,7 @@
 
   const tabs = [
     { id: "general", label: "General" },
+    { id: "claude", label: "Claude" },
     { id: "themes", label: "Themes" },
     { id: "system", label: "System" },
     { id: "audio", label: "Audio" },
@@ -131,6 +133,8 @@
     <div class="flex-1 p-4 overflow-y-auto">
       {#if activeTab === "general"}
         <GeneralTab />
+      {:else if activeTab === "claude"}
+        <ClaudeTab />
       {:else if activeTab === "themes"}
         <ThemesTab />
       {:else if activeTab === "system"}

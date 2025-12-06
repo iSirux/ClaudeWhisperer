@@ -133,10 +133,6 @@
   let branchCache = new Map<string, string>();
 
   async function getGitBranch(repoPath: string): Promise<string | undefined> {
-    if (!$settings.show_branch_in_sessions) {
-      return undefined;
-    }
-
     if (branchCache.has(repoPath)) {
       return branchCache.get(repoPath);
     }
@@ -466,7 +462,6 @@
     // Access reactive dependencies
     const ptySessions = $sessions;
     const sdkSessionsList = $sdkSessions;
-    const showBranch = $settings.show_branch_in_sessions;
     const sortOrder = $settings.session_sort_order;
 
     // Build base sessions without branches
@@ -532,18 +527,16 @@
 
     allSessions = sorted;
 
-    // Fetch branches asynchronously if enabled
-    if (showBranch) {
-      sorted.forEach(async (session) => {
-        const branch = await getGitBranch(session.repoPath);
-        if (branch) {
-          // Update the session in the array
-          allSessions = allSessions.map(s =>
-            s.id === session.id ? { ...s, branch } : s
-          );
-        }
-      });
-    }
+    // Fetch branches asynchronously
+    sorted.forEach(async (session) => {
+      const branch = await getGitBranch(session.repoPath);
+      if (branch) {
+        // Update the session in the array
+        allSessions = allSessions.map(s =>
+          s.id === session.id ? { ...s, branch } : s
+        );
+      }
+    });
   });
 
   interface Props {
