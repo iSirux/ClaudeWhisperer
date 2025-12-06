@@ -61,12 +61,53 @@ export interface OverlayConfig {
   position_y: number | null;
 }
 
+/** Voice command configuration for triggering prompt send */
+export interface VoiceCommandConfig {
+  /** Whether voice commands are enabled */
+  enabled: boolean;
+  /** List of active voice commands that will trigger send */
+  active_commands: string[];
+}
+
+/** Default voice command presets */
+export const VOICE_COMMAND_PRESETS = [
+  "go go",
+  "send it",
+  "execute",
+  "make it so",
+  "do it",
+  "run it",
+] as const;
+
+/** Open mic configuration for passive voice listening */
+export interface OpenMicConfig {
+  /** Whether open mic mode is enabled */
+  enabled: boolean;
+  /** List of active wake commands that will trigger recording */
+  wake_commands: string[];
+}
+
+/** Default open mic wake command presets */
+export const OPEN_MIC_PRESETS = [
+  "hey claude",
+  "okay claude",
+  "start recording",
+  "listen up",
+  "hey assistant",
+  "wake up",
+] as const;
+
 export interface AudioConfig {
   device_id: string | null;
   use_hotkey: boolean;
   play_sound_on_completion: boolean;
   recording_linger_ms: number;
   include_transcription_notice: boolean;
+  require_transcription_approval: boolean;
+  /** Voice command configuration for triggering prompt send */
+  voice_commands: VoiceCommandConfig;
+  /** Open mic configuration for passive voice listening */
+  open_mic: OpenMicConfig;
 }
 
 export interface SystemConfig {
@@ -251,6 +292,15 @@ const defaultConfig: AppConfig = {
     play_sound_on_completion: false,
     recording_linger_ms: 500,
     include_transcription_notice: true,
+    require_transcription_approval: false,
+    voice_commands: {
+      enabled: false,
+      active_commands: ["go go"],
+    },
+    open_mic: {
+      enabled: false,
+      wake_commands: ["hey claude"],
+    },
   },
   repos: [],
   active_repo_index: 0,

@@ -24,7 +24,9 @@
   let isPendingRepo = $derived(status === 'pending_repo');
   let isInitializing = $derived(status === 'initializing');
   let isPendingTranscription = $derived(status === 'pending_transcription');
+  let isPendingApproval = $derived(status === 'pending_approval');
   let isLoading = $derived(isQuerying || isInitializing);
+  let pendingApprovalPrompt = $derived(session?.pendingApprovalPrompt);
   let usage = $derived(session?.usage);
   let hasUsageData = $derived(!!usage && (
     usage.totalInputTokens > 0 ||
@@ -134,6 +136,10 @@
 
     if (status === 'pending_repo') {
       return { status: 'pending_repo' };
+    }
+
+    if (status === 'pending_approval') {
+      return { status: 'pending_approval' };
     }
 
     if (status === 'initializing') {
@@ -296,6 +302,19 @@
     // Remove the pending session
     sdkSessions.cancelPendingTranscription(sessionId);
   }
+
+  // Handlers for pending approval sessions
+  function handleApprove(editedPrompt?: string) {
+    // Dispatch event to parent to complete the approval
+    // The parent (+page.svelte) will handle building system prompt and calling approveAndSend
+    window.dispatchEvent(new CustomEvent('approve-transcription', {
+      detail: { sessionId, editedPrompt }
+    }));
+  }
+
+  function handleCancelApproval() {
+    sdkSessions.cancelApproval(sessionId);
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -339,8 +358,21 @@
       />
     {/if}
 
+    <!-- Approval UI for pending_approval sessions -->
+    {#if isPendingApproval && pendingTranscription && pendingApprovalPrompt}
+      <SessionRecordingHeader
+        {pendingTranscription}
+        {sessionId}
+        showApproval={true}
+        approvalPrompt={pendingApprovalPrompt}
+        {repoName}
+        onApprove={handleApprove}
+        onCancelApproval={handleCancelApproval}
+      />
+    {/if}
+
     <!-- Completed recording context shown at the top of active sessions -->
-    {#if hasCompletedRecordingData && pendingTranscription}
+    {#if hasCompletedRecordingData && pendingTranscription && !isPendingApproval}
       <SessionRecordingHeader
         {pendingTranscription}
         {sessionId}

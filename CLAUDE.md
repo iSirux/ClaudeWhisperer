@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Whisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence, usage tracking, and LLM-powered intelligent features via Gemini or other providers.
+Claude Whisperer is a Tauri v2 desktop application that provides a voice-controlled interface for Claude Code. Users can record voice prompts via hotkeys, which are transcribed using a Whisper API endpoint, then sent to Claude Code either through embedded terminal sessions (PTY mode) or directly via the Claude Agent SDK (SDK mode). The app supports multimodal prompts (text + images), session persistence, usage tracking, thinking levels, voice commands, real-time transcription via Vosk, and LLM-powered intelligent features via Gemini or other providers.
 
 ## Development Commands
 
@@ -33,30 +33,46 @@ npm run sidecar:build    # Build the TypeScript sidecar
 **Routes:**
 
 - `src/routes/+page.svelte` - Main application view with session list, terminal/SDK view, and transcript
-- `src/routes/overlay/+page.svelte` - Floating overlay window for recording status
-- `src/routes/settings/+page.svelte` - Settings modal with tabs (General, System, Audio, Whisper, Git, Hotkeys, Overlay, Repositories)
+- `src/routes/+layout.svelte` - Global layout wrapper for theming and app initialization
+- `src/routes/overlay/+page.svelte` - Floating overlay window for recording status and Vosk real-time transcription
+- `src/routes/settings/+page.svelte` - Settings modal with tabs (General, System, Themes, Audio, Whisper, Vosk, Git, Hotkeys, Overlay, Repositories, LLM)
 - `src/routes/usage/+page.svelte` - Usage statistics dashboard with session/token/cost analytics
+- `src/routes/sessions-view/+page.svelte` - Unified sessions grid/list view for browsing all sessions with filtering and layout options
 
 **Stores (`src/lib/stores/`):**
 
-- `settings.ts` - App configuration (terminal mode, whisper endpoint, hotkeys, repos, theme)
+- `settings.ts` - App configuration (terminal mode, whisper endpoint, hotkeys, repos, theme, voice commands, open mic)
 - `sessions.ts` - PTY terminal session management and Tauri event listeners
-- `sdkSessions.ts` - Claude SDK session management with message streaming, session persistence, progressive usage tracking, and image support
+- `sdkSessions.ts` - Claude SDK session management with message streaming, session persistence, progressive usage tracking, thinking levels, and image support
 - `recording.ts` - Audio recording state machine using MediaRecorder API
 - `overlay.ts` - Floating overlay window visibility and positioning
 - `usageStats.ts` - Persistent usage statistics tracking (sessions, tokens, costs, tools, repos, daily stats, streaks)
+- `openMic.ts` - Passive voice listening for wake command detection
+- `sessionPersistence.ts` - Session persistence layer for disk storage and restoration
 
 **Components (`src/lib/components/`):**
 
-- `Terminal.svelte` - xterm.js terminal with WebGL rendering for PTY sessions
-- `SdkView.svelte` - SDK session UI showing messages, tool calls, and streaming responses
-- `ModelSelector.svelte` - Button group for selecting Claude model (Opus/Sonnet/Haiku) with model-specific colors
+Core UI:
+- `AppHeader.svelte` - Application header with global controls
 - `SessionList.svelte` - Unified list of PTY and SDK sessions with status indicators and unread markers
-- `SessionHeader.svelte` - Active session metadata display
+- `SessionCard.svelte` - Card component for sessions-view grid display
+- `SessionHeader.svelte` - Active session metadata display (PTY sessions)
+- `SdkSessionHeader.svelte` - Active session metadata display for SDK sessions
+- `SessionSidebarHeader.svelte` - Sidebar header with session controls
+- `EmptySessionPlaceholder.svelte` - Placeholder for empty session state
+- `SessionPendingView.svelte` - View for sessions in pending states (repo selection, transcription)
+- `Terminal.svelte` - xterm.js terminal with WebGL rendering for PTY sessions
+- `ModelSelector.svelte` - Button group for selecting Claude model (Opus/Sonnet/Haiku/Auto)
+- `ThinkingSelector.svelte` - Button group for selecting thinking level (Off/Think/Mega/Ultra)
+- `RepoSelector.svelte` - Repository selection dropdown
+- `RepoSelectionDialog.svelte` - Modal dialog for repository selection with LLM recommendations
 - `Transcript.svelte` - Last recording transcript display
+- `TranscriptMarquee.svelte` - Rolling real-time transcript display for Vosk
+- `TranscriptDiff.svelte` - Transcript comparison view (original vs cleaned)
+- `Waveform.svelte` - Audio waveform visualization
 - `StatusBadge.svelte` - Status indicator badge
 - `Overlay.svelte` - Overlay window content
-- `TranscriptMarquee.svelte` - Rolling real-time transcript display for Vosk
+- `HotkeyInput.svelte` - Hotkey configuration input
 - `Start.svelte` - Welcome screen with microphone selection and Whisper connection status
 - `UsagePreview.svelte` - Compact usage stats preview for main view
 
@@ -66,6 +82,27 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `SdkLoadingIndicator.svelte` - Animated loading indicator with status text
 - `SdkPromptInput.svelte` - Multi-line textarea with image paste/drop support, recording button, and auto-resize
 - `SdkUsageBar.svelte` - Token usage display with input/output/cache stats, cost, and context usage bar
+- `SessionRecordingHeader.svelte` - Completed recording display header with visualizations
+
+**Settings Components (`src/lib/components/settings/`):**
+
+- `GeneralTab.svelte` - General settings (terminal mode, language)
+- `SystemTab.svelte` - System settings (tray behavior, autostart, single instance)
+- `ThemesTab.svelte` - Theme selection interface (Midnight, Slate, Snow, Sand)
+- `AudioTab.svelte` - Audio settings with microphone selection, voice commands, and open mic configuration
+- `WhisperTab.svelte` - Whisper provider selection (Local/OpenAI/Groq/Custom) with Docker configuration
+- `VoskTab.svelte` - Vosk real-time transcription settings with Docker support
+- `HotkeysTab.svelte` - Global hotkey configuration
+- `GitTab.svelte` - Git branch/worktree creation settings
+- `OverlayTab.svelte` - Overlay window settings (position, visibility, transparency)
+- `ReposTab.svelte` - Repository management with LLM-generated descriptions
+- `LlmTab.svelte` - LLM integration settings with provider selection and feature toggles
+
+**Composables (`src/lib/composables/`) - Svelte 5 Runes:**
+
+- `useHotkeyManager.svelte.ts` - Hotkey registration and listener management
+- `useSidebarResize.svelte.ts` - Sidebar resize drag handle logic
+- `useTranscriptionProcessor.svelte.ts` - Transcription processing with LLM cleanup and model recommendation
 
 **Utilities (`src/lib/utils/`):**
 
@@ -73,21 +110,36 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `image.ts` - Image compression and processing for Claude API (5MB limit, auto-resize, format conversion)
 - `sound.ts` - Completion sound playback
 - `modelColors.ts` - Model-specific color utilities (Opus=purple, Sonnet=amber, Haiku=emerald)
+- `models.ts` - Model definitions, thinking levels, and Auto model selection support
 - `llm.ts` - LLM integration utilities for session analysis, transcription cleanup, model/repo recommendations
-- `models.ts` - Model definitions and Auto model selection support
+- `voiceCommands.ts` - Voice command detection and processing for sending prompts via voice
 
 ### Backend (Rust/Tauri)
 
 **Core Modules (`src-tauri/src/`):**
 
 - `lib.rs` - Tauri app initialization, plugin registration, state management
-- `config.rs` - Configuration types (TerminalMode, Theme, LlmConfig) and persistence
+- `config.rs` - Configuration types and persistence:
+  - `TerminalMode` enum (Interactive, Prompt, Sdk)
+  - `Theme` enum (Midnight, Slate, Snow, Sand)
+  - `WhisperProvider` enum (Local, OpenAI, Groq, Custom)
+  - `DockerComputeType` enum (CPU, GPU)
+  - Nested configs: WhisperConfig, VoskConfig, GitConfig, HotkeyConfig, OverlayConfig, VoiceCommandConfig, OpenMicConfig, AudioConfig, LlmConfig
 - `terminal.rs` - PTY management via `portable-pty`, spawns `claude` CLI
 - `sidecar.rs` - SidecarManager for Node.js process IPC with Claude Agent SDK
 - `whisper.rs` - HTTP client for Whisper transcription API
-- `vosk.rs` - WebSocket client for Vosk real-time transcription
+- `vosk.rs` - WebSocket client for Vosk real-time transcription with streaming
 - `git.rs` - GitManager for repository operations (branch/worktree creation)
-- `llm.rs` - Unified LLM client supporting Gemini, OpenAI, Groq, and local providers
+- `session_persistence.rs` - Session persistence layer for disk storage
+
+**LLM Module (`src-tauri/src/llm/`):**
+
+- `mod.rs` - Unified `LlmClient` supporting multiple providers with auto-fallback
+- `types.rs` - Response types (SessionNameResult, InteractionAnalysis, TranscriptionCleanupResult, ModelRecommendation, RepoRecommendation)
+- `api_types.rs` - API request/response types for Gemini and OpenAI APIs
+- `features.rs` - Feature implementations (session naming, interaction detection, transcription cleanup, model recommendation, repo selection)
+- `providers.rs` - Provider-specific implementations
+- `utils.rs` - LLM utilities and helpers
 
 **Commands (`src-tauri/src/commands/`):**
 
@@ -96,6 +148,10 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `audio_cmds.rs` - Audio transcription, Whisper connection testing
 - `sdk_cmds.rs` - SDK session management, prompt sending, model updates
 - `llm_cmds.rs` - LLM integration commands (session naming, interaction analysis, transcription cleanup, model/repo recommendations)
+- `vosk_cmds.rs` - Vosk integration commands (connection test, session start/stop, audio streaming)
+- `input_cmds.rs` - System input simulation (clipboard-based text injection)
+- `session_cmds.rs` - Session persistence commands (get/save/clear persisted sessions)
+- `usage_cmds.rs` - Usage tracking commands (track sessions, prompts, tools, recordings, tokens)
 
 ### Sidecar (Node.js/TypeScript)
 
@@ -105,10 +161,12 @@ Located in `src-tauri/sidecar/`:
 - Communicates with Rust via JSON lines over stdin/stdout
 - Handles session creation, query execution, tool calls, and streaming responses
 - Supports multimodal prompts (text + images via base64 content blocks)
+- Supports thinking levels (think, megathink, ultrathink)
 - Session restoration with conversation history context injection
 - Progressive usage tracking during streaming (input/output/cache tokens)
 - Subagent lifecycle events via SDK hooks (SubagentStart/SubagentStop)
 - Query interruption via `iterator.interrupt()` for proper cleanup
+- Built via esbuild, bundles to single `dist/index.js`
 
 ## Terminal Modes
 
@@ -117,6 +175,17 @@ The app supports three terminal modes (configured in settings):
 1. **Interactive** - Opens Claude CLI in interactive mode without a pre-specified prompt
 2. **Prompt** - Spawns Claude CLI with the transcribed prompt (`claude -p "<prompt>"`)
 3. **SDK** - Uses Claude Agent SDK directly via the sidecar process (no CLI)
+
+## Thinking Levels
+
+SDK mode supports Claude's extended thinking capability with four levels:
+
+- **Off** (null) - Standard response without extended thinking
+- **Think** - Basic extended thinking for complex tasks
+- **Megathink** - Extended thinking with higher token budget
+- **Ultrathink** - Maximum thinking depth for the most complex tasks
+
+The thinking level can be set per-session via the ThinkingSelector or automatically recommended by the LLM integration based on prompt complexity.
 
 ## Key Data Flow
 
@@ -131,27 +200,31 @@ The app supports three terminal modes (configured in settings):
 ### SDK Mode
 
 1. User presses hotkey → `recording.startRecording()` captures audio
-2. Stop recording → auto-sends if app not focused
-3. `sdkSessions.createSession(cwd, model)` creates SDK session
-4. Sidecar process spawned if needed, session registered
-5. `sdkSessions.sendPrompt(id, prompt, images?)` sends prompt to sidecar (supports multimodal)
-6. Sidecar runs query with Claude Agent SDK
-7. Events emitted:
-   - `sdk-text-${id}` - Text content from assistant
-   - `sdk-tool-start-${id}` / `sdk-tool-result-${id}` - Tool call lifecycle
-   - `sdk-progressive-usage-${id}` - Live token counts during streaming
-   - `sdk-usage-${id}` - Final usage stats (tokens, cost, duration)
-   - `sdk-subagent-start-${id}` / `sdk-subagent-stop-${id}` - Subagent lifecycle
-   - `sdk-done-${id}` / `sdk-error-${id}` - Query completion
-8. Frontend updates store → SdkView renders streaming responses, tool calls, and usage stats
-9. Session state persisted → can be restored after app restart with conversation history
+2. (Optional) Vosk streams real-time transcription during recording
+3. Stop recording → auto-sends if app not focused
+4. (Optional) LLM cleans transcription, recommends model/thinking level
+5. (Optional) LLM recommends repository based on prompt content
+6. `sdkSessions.createSession(cwd, model, thinkingLevel)` creates SDK session
+7. Sidecar process spawned if needed, session registered
+8. `sdkSessions.sendPrompt(id, prompt, images?)` sends prompt to sidecar (supports multimodal)
+9. Sidecar runs query with Claude Agent SDK
+10. Events emitted:
+    - `sdk-text-${id}` - Text content from assistant
+    - `sdk-tool-start-${id}` / `sdk-tool-result-${id}` - Tool call lifecycle
+    - `sdk-progressive-usage-${id}` - Live token counts during streaming
+    - `sdk-usage-${id}` - Final usage stats (tokens, cost, duration)
+    - `sdk-subagent-start-${id}` / `sdk-subagent-stop-${id}` - Subagent lifecycle
+    - `sdk-done-${id}` / `sdk-error-${id}` - Query completion
+11. Frontend updates store → SdkView renders streaming responses, tool calls, and usage stats
+12. Session state persisted → can be restored after app restart with conversation history
+13. (On completion) LLM analyzes for session naming and interaction detection
 
 ## Windows Configuration
 
 Defined in `tauri.conf.json`:
 
 - `main` - Primary application window (1200x800, decorated)
-- `overlay` - Floating recording indicator (400x120, transparent, always-on-top, initially hidden)
+- `overlay` - Floating recording indicator (380x140, transparent, always-on-top, initially hidden)
 
 ## Configuration
 
@@ -159,20 +232,23 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 
 - `terminal_mode` - Interactive | Prompt | Sdk
 - `theme` - Midnight | Slate | Snow | Sand
-- `whisper` - Transcription endpoint, model, language
+- `whisper` - Transcription provider, endpoint, model, language, Docker settings
+- `vosk` - Real-time transcription endpoint, sample rate, Docker settings, transcript accumulation
 - `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo, transcribe to input)
 - `repos` - List of git repositories with paths, optional default models, and LLM-generated descriptions
 - `audio` - Recording device, hotkey toggle, sound settings
+- `voice_commands` - Voice command settings (enabled, trigger phrases, confirmation phrases)
+- `open_mic` - Passive listening settings (enabled, wake commands, timeout)
 - `git` - Branch/worktree creation settings
-- `overlay` - Position and visibility settings
-- `system` - Tray behavior, autostart settings
-- `llm` - LLM integration settings (provider, model, features, auto-model priority)
+- `overlay` - Position, visibility, transparency settings
+- `system` - Tray behavior, autostart, single instance settings
+- `llm` - LLM integration settings (provider, model, API key, features, auto-model priority)
 
 ## Key Technologies
 
 **Frontend:** SvelteKit 2.9, Svelte 5, TypeScript 5.6, xterm.js 5.5, TailwindCSS 4.1, Vite 6, marked + highlight.js
-**Backend:** Rust, Tauri v2, portable-pty, reqwest, parking_lot, serde
-**Sidecar:** Node.js, TypeScript, @anthropic-ai/claude-agent-sdk
+**Backend:** Rust, Tauri v2, portable-pty, reqwest, tokio-tungstenite, parking_lot, serde, enigo
+**Sidecar:** Node.js, TypeScript, @anthropic-ai/claude-agent-sdk, esbuild
 
 ## SDK Session Features
 
@@ -180,10 +256,12 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - **Conversation History:** Restored sessions inject previous conversation as context for continuity
 - **Multimodal Prompts:** Paste or drag-drop images (auto-compressed to 5MB limit for Claude API)
 - **Progressive Usage:** Live token counts update during streaming before final usage event
+- **Thinking Levels:** Per-session thinking level selection (Off/Think/Mega/Ultra)
 - **Subagent Tracking:** Visual indicators when Claude spawns subagents (Task tool)
 - **Per-Session Models:** Each session tracks its own model selection independently
 - **Duration Tracking:** Timer-based work duration that survives session restore
 - **Unread Markers:** Sessions marked as unread when completed while not viewing
+- **AI Metadata:** LLM-generated session names, summaries, and categories
 
 ## Vosk Real-Time Transcription
 
@@ -199,6 +277,7 @@ The app supports optional real-time transcription using Vosk, which runs alongsi
 - `endpoint` - WebSocket endpoint (default: `ws://localhost:2700`)
 - `sample_rate` - Audio sample rate (default: 16000)
 - `show_realtime_transcript` - Show live transcript in overlay
+- `accumulate_final_transcripts` - Accumulate final transcripts across utterances
 - `docker` - Container settings for local Vosk server
 
 ### Data Flow
@@ -209,9 +288,42 @@ The app supports optional real-time transcription using Vosk, which runs alongsi
 4. Recording stops → complete audio sent to Whisper for final transcription
 5. (Optional) LLM cleanup applied to final transcript
 
+## Voice Commands
+
+The app supports voice-triggered actions for hands-free operation:
+
+### Configuration (`voice_commands` in config)
+
+- `enabled` - Whether voice commands are active
+- `send_phrases` - Phrases that trigger sending the prompt (e.g., "send it", "go ahead")
+- `cancel_phrases` - Phrases that cancel the current recording
+- `confirmation_phrases` - Phrases that confirm actions
+
+### Supported Commands
+
+- **Send Prompt** - Say a trigger phrase after recording to automatically send
+- **Cancel Recording** - Say a cancel phrase to discard the current recording
+
+## Open Mic Mode
+
+Passive voice listening that activates recording when wake commands are detected:
+
+### Configuration (`open_mic` in config)
+
+- `enabled` - Whether open mic mode is active
+- `wake_commands` - Phrases that activate recording (e.g., "hey claude", "ok claude")
+- `timeout` - Timeout after wake command detection
+
+### Data Flow
+
+1. Open mic continuously listens via Vosk (low resource usage)
+2. Wake command detected → recording automatically starts
+3. User speaks prompt → normal recording flow continues
+4. Recording stops → transcription and prompt processing as usual
+
 ## LLM Integration (Gemini/OpenAI/Groq/Local)
 
-The app includes an optional LLM integration layer that uses a secondary AI (Gemini by default) to enhance the user experience. This is configured in Settings → General → LLM Integration.
+The app includes an optional LLM integration layer that uses a secondary AI (Gemini by default) to enhance the user experience. This is configured in Settings → LLM Integration.
 
 ### Supported Providers
 
@@ -223,7 +335,7 @@ The app includes an optional LLM integration layer that uses a secondary AI (Gem
 
 ### Features (`llm.features` in config)
 
-1. **Auto Session Naming** (`auto_name_sessions`) - Generates descriptive session names and summaries from the first user-assistant exchange
+1. **Auto Session Naming** (`auto_name_sessions`) - Generates descriptive session names, summaries, and categories from the first user-assistant exchange
 2. **Interaction Detection** (`detect_interaction_needed`) - Analyzes assistant messages to detect when human input is truly required (not just polite offers)
 3. **Transcription Cleanup** (`clean_transcription`) - Fixes common voice transcription errors (homophones, technical terms, punctuation)
 4. **Model Recommendation** (`recommend_model`) - Analyzes prompts to recommend the most cost-effective Claude model (Haiku/Sonnet/Opus) and thinking level
@@ -249,7 +361,7 @@ Repositories can have LLM-generated descriptions (from CLAUDE.md or README.md) t
 
 1. User records voice prompt → Whisper transcription
 2. (Optional) Transcription cleanup via LLM
-3. (Optional) Model recommendation via LLM
+3. (Optional) Model/thinking level recommendation via LLM
 4. (Optional) Repository recommendation via LLM
-5. Prompt sent to Claude with selected model/repo
+5. Prompt sent to Claude with selected model/repo/thinking level
 6. (On completion) Session analysis for naming and interaction detection

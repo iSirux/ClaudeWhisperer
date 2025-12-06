@@ -16,6 +16,16 @@
     completed?: boolean;
     onRetry?: () => void;
     onCancel?: () => void;
+    /** Whether to show approval UI (for pending_approval state) */
+    showApproval?: boolean;
+    /** The prompt waiting for approval */
+    approvalPrompt?: string;
+    /** Repository name for display in approval mode */
+    repoName?: string;
+    /** Callback when user approves the prompt (with optional edited text) */
+    onApprove?: (editedPrompt?: string) => void;
+    /** Callback when user cancels the approval */
+    onCancelApproval?: () => void;
   }
 
   let {
@@ -24,7 +34,58 @@
     completed = false,
     onRetry,
     onCancel,
+    showApproval = false,
+    approvalPrompt,
+    repoName,
+    onApprove,
+    onCancelApproval,
   }: Props = $props();
+
+  // Approval mode state
+  let isEditingPrompt = $state(false);
+  let editedPrompt = $state('');
+  let textareaEl: HTMLTextAreaElement | null = $state(null);
+
+  // Initialize edited prompt when approval mode is shown
+  $effect(() => {
+    if (showApproval && approvalPrompt) {
+      editedPrompt = approvalPrompt;
+    }
+  });
+
+  // Auto-resize textarea
+  function autoResizeTextarea() {
+    if (textareaEl) {
+      textareaEl.style.height = 'auto';
+      const maxHeight = 200;
+      const newHeight = Math.min(textareaEl.scrollHeight, maxHeight);
+      textareaEl.style.height = newHeight + 'px';
+      textareaEl.style.overflowY = textareaEl.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    }
+  }
+
+  // Focus textarea when entering edit mode
+  $effect(() => {
+    if (isEditingPrompt && textareaEl) {
+      textareaEl.focus();
+      textareaEl.select();
+      autoResizeTextarea();
+    }
+  });
+
+  function handleApprove() {
+    if (onApprove) {
+      // Only pass edited prompt if it was actually changed
+      const promptToSend = editedPrompt !== approvalPrompt ? editedPrompt : undefined;
+      onApprove(promptToSend);
+    }
+  }
+
+  function handleCancelApproval() {
+    if (onCancelApproval) {
+      onCancelApproval();
+    }
+  }
 
   // Live timer for recording duration
   let elapsedMs = $state(0);
@@ -83,9 +144,9 @@
   const barGap = 2;
   const height = 48;
   const liveColor = "#ef4444"; // recording red (same as overlay)
-  const staticColor = "#8b5cf6"; // violet-500 for completed waveform
 
   // Draw static waveform from history with high-DPI support
+  // Creates a mirrored waveform with gradient and glow for a more impressive look
   function drawStaticWaveform() {
     if (
       !staticCanvas ||
@@ -112,32 +173,81 @@
 
     // For each snapshot, compute a representative "volume" level
     // Use the average of the top N frequency values (where voice energy is concentrated)
-    // This gives a better representation than averaging all bins
     const volumes = history.map((snapshot) => {
-      // Sort descending and take average of top 20% of bins
       const sorted = [...snapshot].sort((a, b) => b - a);
       const topCount = Math.max(1, Math.floor(sorted.length * 0.2));
       const topSum = sorted.slice(0, topCount).reduce((a, b) => a + b, 0);
       return topSum / topCount;
     });
 
-    // Create a data array that fits the canvas width
     const barTotalWidth = barWidth + barGap;
     const barCount = Math.floor(displayWidth / barTotalWidth);
+    const centerY = displayHeight / 2;
+
+    // Create gradient for the bars (violet to pink/magenta)
+    const gradient = ctx.createLinearGradient(0, 0, displayWidth, 0);
+    gradient.addColorStop(0, "#8b5cf6");    // violet-500
+    gradient.addColorStop(0.5, "#a78bfa");  // violet-400
+    gradient.addColorStop(1, "#c084fc");    // purple-400
+
+    // Draw glow layer first (subtle blur effect)
+    ctx.save();
+    ctx.filter = "blur(4px)";
+    ctx.globalAlpha = 0.4;
 
     for (let i = 0; i < barCount; i++) {
       const historyIndex = Math.floor((i * volumes.length) / barCount);
       const value = volumes[historyIndex] || 0;
       const normalized = value / 255;
-      const barHeight = Math.max(2, normalized * displayHeight);
+      // Each half gets half the height, with minimum visibility
+      const halfBarHeight = Math.max(1.5, (normalized * displayHeight) / 2);
       const x = i * barTotalWidth;
-      const y = (displayHeight - barHeight) / 2;
 
-      ctx.fillStyle = staticColor;
+      ctx.fillStyle = "#8b5cf6";
+
+      // Top bar (grows upward from center)
       ctx.beginPath();
-      ctx.roundRect(x, y, barWidth, barHeight, barWidth / 2);
+      ctx.roundRect(x, centerY - halfBarHeight, barWidth, halfBarHeight, barWidth / 2);
+      ctx.fill();
+
+      // Bottom bar (grows downward from center) - slightly shorter for reflection effect
+      ctx.beginPath();
+      ctx.roundRect(x, centerY, barWidth, halfBarHeight * 0.85, barWidth / 2);
       ctx.fill();
     }
+    ctx.restore();
+
+    // Draw main bars with gradient
+    for (let i = 0; i < barCount; i++) {
+      const historyIndex = Math.floor((i * volumes.length) / barCount);
+      const value = volumes[historyIndex] || 0;
+      const normalized = value / 255;
+      const halfBarHeight = Math.max(1.5, (normalized * displayHeight) / 2);
+      const x = i * barTotalWidth;
+
+      // Top bar (full opacity)
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.roundRect(x, centerY - halfBarHeight, barWidth, halfBarHeight, barWidth / 2);
+      ctx.fill();
+
+      // Bottom bar (reflection with fade) - slightly shorter and more transparent
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.roundRect(x, centerY, barWidth, halfBarHeight * 0.85, barWidth / 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Draw center line (subtle)
+    ctx.strokeStyle = "rgba(139, 92, 246, 0.3)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, centerY);
+    ctx.lineTo(displayWidth, centerY);
+    ctx.stroke();
   }
 
   // Determine what to show based on status
@@ -407,6 +517,70 @@
           </p>
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- Approval UI -->
+  {#if showApproval && approvalPrompt}
+    <div class="approval-section">
+      <div class="approval-header">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span>Review your prompt before sending</span>
+      </div>
+
+      <!-- Repository info -->
+      {#if repoName}
+        <div class="approval-repo">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+          </svg>
+          <span class="repo-label">Repository:</span>
+          <span class="repo-value">{repoName}</span>
+        </div>
+      {/if}
+
+      <!-- Editable prompt -->
+      <div class="approval-prompt">
+        {#if isEditingPrompt}
+          <textarea
+            bind:this={textareaEl}
+            bind:value={editedPrompt}
+            oninput={autoResizeTextarea}
+            class="prompt-textarea"
+            placeholder="Enter your prompt..."
+            rows="2"
+          ></textarea>
+        {:else}
+          <div class="prompt-display" onclick={() => isEditingPrompt = true}>
+            <span class="prompt-text">{editedPrompt || approvalPrompt}</span>
+            <button class="edit-inline-btn" onclick={(e) => { e.stopPropagation(); isEditingPrompt = true; }} title="Edit prompt">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Action buttons -->
+      <div class="approval-actions">
+        <button class="cancel-approval-btn" onclick={handleCancelApproval}>
+          Cancel
+        </button>
+        {#if isEditingPrompt}
+          <button class="done-edit-btn" onclick={() => isEditingPrompt = false}>
+            Done Editing
+          </button>
+        {/if}
+        <button class="approve-btn" onclick={handleApprove}>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          Send to Claude
+        </button>
+      </div>
     </div>
   {/if}
 </div>
@@ -851,5 +1025,169 @@
     line-height: 1.4;
     max-height: 4rem;
     overflow-y: auto;
+  }
+
+  /* Approval UI Styles */
+  .approval-section {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-accent);
+    border-radius: 8px;
+  }
+
+  .approval-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-accent);
+    margin-bottom: 0.75rem;
+  }
+
+  .approval-repo {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--color-surface);
+    border-radius: 6px;
+  }
+
+  .repo-label {
+    color: var(--color-text-muted);
+  }
+
+  .repo-value {
+    color: var(--color-text-primary);
+    font-weight: 500;
+  }
+
+  .approval-prompt {
+    margin-bottom: 0.75rem;
+  }
+
+  .prompt-display {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    cursor: text;
+    transition: border-color 0.15s ease;
+  }
+
+  .prompt-display:hover {
+    border-color: var(--color-accent);
+  }
+
+  .prompt-display .prompt-text {
+    font-size: 0.875rem;
+    color: var(--color-text-primary);
+    line-height: 1.5;
+    flex: 1;
+  }
+
+  .edit-inline-btn {
+    flex-shrink: 0;
+    padding: 0.25rem;
+    color: var(--color-text-muted);
+    background: transparent;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+  }
+
+  .edit-inline-btn:hover {
+    color: var(--color-accent);
+    background: rgba(var(--color-accent-rgb, 59, 130, 246), 0.1);
+  }
+
+  .prompt-textarea {
+    width: 100%;
+    padding: 0.75rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-accent);
+    border-radius: 6px;
+    color: var(--color-text-primary);
+    font-size: 0.875rem;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: none;
+    overflow-y: hidden;
+  }
+
+  .prompt-textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--color-accent-rgb, 59, 130, 246), 0.2);
+  }
+
+  .approval-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  .cancel-approval-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .cancel-approval-btn:hover {
+    color: var(--color-error);
+    border-color: var(--color-error);
+    background: rgba(239, 68, 68, 0.1);
+  }
+
+  .done-edit-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .done-edit-btn:hover {
+    background: var(--color-surface-elevated);
+    border-color: var(--color-text-muted);
+  }
+
+  .approve-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: white;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .approve-btn:hover {
+    filter: brightness(1.1);
+  }
+
+  .approve-btn:active {
+    transform: scale(0.98);
   }
 </style>

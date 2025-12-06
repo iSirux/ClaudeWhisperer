@@ -560,6 +560,54 @@ impl UsageStats {
     }
 }
 
+/// Voice command configuration for triggering prompt send
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceCommandConfig {
+    /// Whether voice commands are enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// List of active voice commands that will trigger send
+    #[serde(default = "default_voice_commands")]
+    pub active_commands: Vec<String>,
+}
+
+fn default_voice_commands() -> Vec<String> {
+    vec!["go go".to_string()]
+}
+
+impl Default for VoiceCommandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_commands: default_voice_commands(),
+        }
+    }
+}
+
+/// Open mic configuration for passive voice listening
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenMicConfig {
+    /// Whether open mic mode is enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// List of active wake commands that will trigger recording
+    #[serde(default = "default_wake_commands")]
+    pub wake_commands: Vec<String>,
+}
+
+fn default_wake_commands() -> Vec<String> {
+    vec!["hey claude".to_string()]
+}
+
+impl Default for OpenMicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            wake_commands: default_wake_commands(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub device_id: Option<String>,
@@ -570,6 +618,14 @@ pub struct AudioConfig {
     pub recording_linger_ms: u32,
     #[serde(default = "default_include_transcription_notice")]
     pub include_transcription_notice: bool,
+    #[serde(default)]
+    pub require_transcription_approval: bool,
+    /// Voice command configuration for triggering prompt send
+    #[serde(default)]
+    pub voice_commands: VoiceCommandConfig,
+    /// Open mic configuration for passive voice listening
+    #[serde(default)]
+    pub open_mic: OpenMicConfig,
 }
 
 fn default_recording_linger_ms() -> u32 {
@@ -588,6 +644,9 @@ impl Default for AudioConfig {
             play_sound_on_completion: false,
             recording_linger_ms: 500,
             include_transcription_notice: true,
+            require_transcription_approval: false,
+            voice_commands: VoiceCommandConfig::default(),
+            open_mic: OpenMicConfig::default(),
         }
     }
 }

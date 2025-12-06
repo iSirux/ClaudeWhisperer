@@ -1,0 +1,30 @@
+.toggle {
+  appearance: none;
+  width: 36px;
+  height: 20px;
+  background: var(--color-border);
+  border-radius: 10px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.toggle:checked {
+  background: var(--color-accent);
+}
+
+.toggle::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+}
+
+.toggle:checked::before {
+  transform: translateX(16px);
+}

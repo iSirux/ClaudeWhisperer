@@ -160,12 +160,13 @@ export interface SdkSession {
   // Session status:
   // - 'pending_transcription': recording/transcribing voice input
   // - 'pending_repo': waiting for user to select repository
+  // - 'pending_approval': waiting for user to approve the transcribed prompt before sending
   // - 'initializing': setting up SDK session after repo selection
   // - 'idle': ready for input
   // - 'querying': LLM query in progress
   // - 'done': query completed (transitions to idle)
   // - 'error': an error occurred
-  status: 'pending_transcription' | 'pending_repo' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
+  status: 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   startedAt?: number; // Timestamp when first prompt was sent (deprecated, kept for compatibility)
   // Timer-based duration tracking (survives session restore)
@@ -178,6 +179,7 @@ export interface SdkSession {
   // Pending user actions
   pendingRepoSelection?: PendingRepoSelection; // Info for repo selection UI when status='pending_repo'
   pendingPrompt?: string; // The prompt waiting to be sent after initialization
+  pendingApprovalPrompt?: string; // The prompt waiting for user approval (when status='pending_approval')
   // Pending transcription info (when status='pending_transcription')
   pendingTranscription?: PendingTranscriptionInfo;
 }
@@ -1482,6 +1484,78 @@ function createSdkSessionsStore() {
      */
     cancelPendingTranscription(id: string): void {
       update(sessions => sessions.filter(s => s.id !== id));
+    },
+
+    /**
+     * Set a session to pending_approval status.
+     * Used when require_transcription_approval is enabled.
+     * The session waits for user to review and approve the prompt before sending.
+     */
+    setPendingApproval(id: string, prompt: string, cwd?: string): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                status: 'pending_approval' as const,
+                pendingApprovalPrompt: prompt,
+                cwd: cwd || s.cwd,
+              }
+            : s
+        )
+      );
+    },
+
+    /**
+     * Cancel a pending approval (close the session).
+     */
+    cancelApproval(id: string): void {
+      update(sessions => sessions.filter(s => s.id !== id));
+    },
+
+    /**
+     * Approve and send a pending prompt.
+     * Transitions from pending_approval → initializing → querying.
+     * @param editedPrompt - Optional edited prompt to use instead of the original
+     * @param systemPrompt - Optional system prompt to include
+     */
+    async approveAndSend(id: string, editedPrompt?: string, systemPrompt?: string): Promise<void> {
+      // Get session info
+      let session: SdkSession | undefined;
+      subscribe(sessions => {
+        session = sessions.find(s => s.id === id);
+      })();
+
+      if (!session) {
+        throw new Error(`Session ${id} not found`);
+      }
+
+      if (session.status !== 'pending_approval') {
+        console.warn('[sdkSessions] Session is not pending approval:', session.status);
+        return;
+      }
+
+      const prompt = editedPrompt || session.pendingApprovalPrompt;
+      if (!prompt) {
+        throw new Error('No prompt to send');
+      }
+
+      // Transition to initializing
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                status: 'initializing' as const,
+                pendingPrompt: prompt,
+                pendingApprovalPrompt: undefined,
+              }
+            : s
+        )
+      );
+
+      // Initialize the SDK session and send the prompt
+      await this.initializeSession(id, session.cwd, session.model, session.thinkingLevel, systemPrompt, prompt);
     },
 
     /**
