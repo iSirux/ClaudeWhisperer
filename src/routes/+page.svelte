@@ -20,7 +20,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { get } from 'svelte/store';
-  import { cleanTranscription, recommendModel, recommendRepo, getRepoConfirmationSystemPrompt, isTranscriptionCleanupEnabled, isModelRecommendationEnabled, isRepoAutoSelectEnabled, needsUserConfirmation, buildRepoContextForCleanup } from '$lib/utils/llm';
+  import { cleanTranscription, recommendModel, recommendRepo, getRepoConfirmationSystemPrompt, isTranscriptionCleanupEnabled, isModelRecommendationEnabled, isRepoAutoSelectEnabled, needsUserConfirmation, buildRepoContextForCleanup, buildAllReposContextForCleanup } from '$lib/utils/llm';
   import { isAutoModel } from '$lib/utils/models';
   import SessionPendingView from '$lib/components/SessionPendingView.svelte';
   import type { PendingRepoSelection } from '$lib/stores/sdkSessions';
@@ -152,6 +152,9 @@
     unlistenDiscardRecording = await listen('discard-recording', async () => {
       console.log('[Recording] Discard recording event received');
 
+      // Cancel the recording in main window's store (overlay has its own store instance)
+      await recording.cancelRecording();
+
       // Unregister hotkeys
       await unregisterTranscribeHotkey();
       await unregisterCycleRepoHotkey();
@@ -221,20 +224,24 @@
 
   async function sendTranscript() {
     if (!$recording.transcript) return;
-    await sendTranscriptDirectly($recording.transcript);
+    // Pass both Whisper and Vosk transcripts for potential dual-source cleanup
+    await sendTranscriptDirectly($recording.transcript, null, $recording.realtimeTranscript);
     recording.clearTranscript();
   }
 
   // Send a transcript directly (used by queued transcription flow)
   // If pendingSessionId is provided, processes the transcript for that pending session
-  async function sendTranscriptDirectly(transcript: string, pendingSessionId?: string | null) {
+  // voskTranscript is the real-time Vosk transcription for dual-source cleanup
+  async function sendTranscriptDirectly(transcript: string, pendingSessionId?: string | null, voskTranscript?: string) {
     if (!transcript) return;
 
     // Update pending session status to processing if we have one
+    // Store both Whisper transcript and Vosk transcript (if available) for display
     if (pendingSessionId) {
       sdkSessions.updatePendingTranscription(pendingSessionId, {
         status: 'processing',
         transcript,
+        voskTranscript: voskTranscript || undefined,
       });
     }
 
@@ -243,28 +250,58 @@
       const model = $settings.default_model;
       const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
 
-      // Step 1: Get repo recommendation if auto-select is enabled and "Auto" repo is selected
-      // Do this BEFORE cleanup so we can include repo context in cleanup
+      // Step 1: Clean up transcription FIRST (using all repos context)
+      // Do cleanup before repo selection so repo recommendation uses the cleaned transcript
+      let finalTranscript = transcript;
+      let wasCleanedUp = false;
+
+      if (isTranscriptionCleanupEnabled()) {
+        try {
+          // Build context from ALL repos for better vocabulary recognition
+          const repoContext = buildAllReposContextForCleanup($settings.repos);
+
+          // Pass both Whisper and Vosk transcripts for dual-source cleanup
+          const cleanupResult = await cleanTranscription(transcript, voskTranscript, repoContext);
+          finalTranscript = cleanupResult.text;
+          wasCleanedUp = cleanupResult.wasCleanedUp;
+          if (wasCleanedUp) {
+            console.log('[llm] Transcription cleaned up:', cleanupResult.corrections, cleanupResult.usedDualSource ? '(dual-source)' : '');
+          }
+          // Update pending session with cleaned transcript and diff info
+          if (pendingSessionId) {
+            sdkSessions.updatePendingTranscription(pendingSessionId, {
+              voskTranscript: voskTranscript || undefined,
+              cleanedTranscript: finalTranscript,
+              wasCleanedUp,
+              cleanupCorrections: cleanupResult.corrections,
+              usedDualSource: cleanupResult.usedDualSource,
+            });
+          }
+        } catch (error) {
+          console.error('[llm] Transcription cleanup failed, using original:', error);
+        }
+      }
+
+      // Step 2: Get repo recommendation using the CLEANED transcript
       let repoRecommendation: { repoIndex: number; reasoning: string; confidence: string } | null = null;
       if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
         try {
           // Pass isTranscribed=true since this is from voice transcription
-          // Use raw transcript for recommendation (cleanup happens after repo is selected)
-          repoRecommendation = await recommendRepo(transcript, true);
+          // Use cleaned transcript for better repo matching
+          repoRecommendation = await recommendRepo(finalTranscript, true);
 
           // If LLM couldn't make a recommendation, require user to select
           if (!repoRecommendation) {
             console.log('[llm] No repo recommendation - requiring user selection');
             if (pendingSessionId) {
               // Complete pending transcription with repo selection needed (no recommendation)
-              // Use RAW transcript - cleanup will happen after repo selection
               await sdkSessions.completePendingTranscription(
                 pendingSessionId,
                 '', // No cwd yet
-                transcript,
+                finalTranscript,
                 undefined,
                 {
-                  transcript: transcript,
+                  transcript: finalTranscript,
                   recommendedIndex: null,
                   reasoning: 'Not enough information to determine repository',
                   confidence: 'low',
@@ -278,7 +315,7 @@
                 model,
                 thinkingLevel,
                 {
-                  transcript: transcript,
+                  transcript: finalTranscript,
                   recommendedIndex: null,
                   reasoning: 'Not enough information to determine repository',
                   confidence: 'low',
@@ -308,14 +345,13 @@
           if (needsUserConfirmation(repoRecommendation.confidence)) {
             if (pendingSessionId) {
               // Complete pending transcription with repo selection needed
-              // Use RAW transcript - cleanup will happen after repo selection
               await sdkSessions.completePendingTranscription(
                 pendingSessionId,
                 '', // No cwd yet
-                transcript,
+                finalTranscript,
                 undefined,
                 {
-                  transcript: transcript,
+                  transcript: finalTranscript,
                   recommendedIndex: repoRecommendation.repoIndex,
                   reasoning: repoRecommendation.reasoning,
                   confidence: repoRecommendation.confidence,
@@ -329,7 +365,7 @@
                 model,
                 thinkingLevel,
                 {
-                  transcript: transcript,
+                  transcript: finalTranscript,
                   recommendedIndex: repoRecommendation.repoIndex,
                   reasoning: repoRecommendation.reasoning,
                   confidence: repoRecommendation.confidence,
@@ -356,10 +392,10 @@
             await sdkSessions.completePendingTranscription(
               pendingSessionId,
               '', // No cwd yet
-              transcript,
+              finalTranscript,
               undefined,
               {
-                transcript: transcript,
+                transcript: finalTranscript,
                 recommendedIndex: null,
                 reasoning: 'Failed to get recommendation',
                 confidence: 'low',
@@ -372,7 +408,7 @@
               model,
               thinkingLevel,
               {
-                transcript: transcript,
+                transcript: finalTranscript,
                 recommendedIndex: null,
                 reasoning: 'Failed to get recommendation',
                 confidence: 'low',
@@ -392,34 +428,6 @@
         ? $settings.repos[repoRecommendation.repoIndex]
         : $activeRepo;
 
-      // Step 2: Clean up transcription if enabled (via LLM)
-      // Now we know the repo, so we can include repo context for better cleanup
-      let finalTranscript = transcript;
-      let wasCleanedUp = false;
-
-      if (isTranscriptionCleanupEnabled()) {
-        try {
-          // Build repo context for cleanup using the session's repo
-          const repoContext = sessionRepo ? buildRepoContextForCleanup(sessionRepo) : undefined;
-
-          const cleanupResult = await cleanTranscription(transcript, repoContext);
-          finalTranscript = cleanupResult.text;
-          wasCleanedUp = cleanupResult.wasCleanedUp;
-          if (wasCleanedUp) {
-            console.log('[llm] Transcription cleaned up:', cleanupResult.corrections);
-          }
-          // Update pending session with cleaned transcript
-          if (pendingSessionId) {
-            sdkSessions.updatePendingTranscription(pendingSessionId, {
-              cleanedTranscript: finalTranscript,
-              wasCleanedUp,
-            });
-          }
-        } catch (error) {
-          console.error('[llm] Transcription cleanup failed, using original:', error);
-        }
-      }
-
       // Continue with session creation/completion
       if (pendingSessionId) {
         await completePendingTranscriptionSession(pendingSessionId, finalTranscript, sessionRepo);
@@ -434,10 +442,11 @@
         try {
           const currentRepo = $activeRepo;
           const repoContext = currentRepo ? buildRepoContextForCleanup(currentRepo) : undefined;
-          const cleanupResult = await cleanTranscription(transcript, repoContext);
+          // Pass both Whisper and Vosk transcripts for dual-source cleanup
+          const cleanupResult = await cleanTranscription(transcript, voskTranscript, repoContext);
           finalTranscript = cleanupResult.text;
           if (cleanupResult.wasCleanedUp) {
-            console.log('[llm] Transcription cleaned up:', cleanupResult.corrections);
+            console.log('[llm] Transcription cleaned up:', cleanupResult.corrections, cleanupResult.usedDualSource ? '(dual-source)' : '');
           }
         } catch (error) {
           console.error('[llm] Transcription cleanup failed, using original:', error);
@@ -564,8 +573,8 @@
       });
 
       if (transcript) {
-        // Process the transcript
-        await sendTranscriptDirectly(transcript, sessionId);
+        // Process the transcript (no Vosk available on retry)
+        await sendTranscriptDirectly(transcript, sessionId, undefined);
       } else {
         // Empty transcription
         sdkSessions.updatePendingTranscription(sessionId, {
@@ -675,11 +684,12 @@
     await settings.setActiveRepo(index);
 
     // Step 1: Clean up transcription with repo context (now that we know the repo)
+    // Note: Vosk transcript not available here since this is a deferred repo selection
     let finalTranscript = rawTranscript;
     if (isTranscriptionCleanupEnabled() && rawTranscript) {
       try {
         const repoContext = buildRepoContextForCleanup(selectedRepo);
-        const cleanupResult = await cleanTranscription(rawTranscript, repoContext);
+        const cleanupResult = await cleanTranscription(rawTranscript, undefined, repoContext);
         finalTranscript = cleanupResult.text;
         if (cleanupResult.wasCleanedUp) {
           console.log('[llm] Transcription cleaned up:', cleanupResult.corrections);
@@ -741,8 +751,25 @@
         try {
           // Stop recording and paste
           await unregisterTranscribeHotkey();
+          await unregisterCycleRepoHotkey();
+          await unregisterCycleModelHotkey();
           await overlay.hide();
           overlay.clearSessionInfo();
+
+          // Stop audio visualization listener
+          if (unlistenAudioVisualization) {
+            unlistenAudioVisualization();
+            unlistenAudioVisualization = null;
+          }
+
+          // Cancel the pending transcription session since we're pasting instead of sending
+          if (pendingTranscriptionSessionId) {
+            sdkSessions.cancelPendingTranscription(pendingTranscriptionSessionId);
+            pendingTranscriptionSessionId = null;
+          }
+
+          // Reset recording-for-new-session flag
+          isRecordingForNewSession = false;
 
           // Stop recording - don't await so user can start new recording while transcribing
           recording.stopRecording(true).then(async (transcript) => {
@@ -965,6 +992,9 @@
               sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
             }
 
+            // Capture Vosk transcript before stopping recording (it may be cleared after)
+            const capturedVoskTranscript = get(recording).realtimeTranscript;
+
             // Stop recording and get transcript (queued transcription)
             // This returns immediately but transcript comes via callback/promise
             // Note: we don't await here to allow starting a new recording while transcribing
@@ -978,8 +1008,8 @@
               }
 
               if (transcript) {
-                // Send the transcript to process the pending session
-                await sendTranscriptDirectly(transcript, sessionIdToProcess);
+                // Send the transcript to process the pending session (with captured Vosk transcript)
+                await sendTranscriptDirectly(transcript, sessionIdToProcess, capturedVoskTranscript);
               } else if (sessionIdToProcess) {
                 // Transcription failed or returned empty - set error
                 sdkSessions.updatePendingTranscription(sessionIdToProcess, {
@@ -1165,6 +1195,9 @@
       sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
     }
 
+    // Capture Vosk transcript before stopping recording (it may be cleared after)
+    const capturedVoskTranscript = get(recording).realtimeTranscript;
+
     // Stop recording - don't await so user can start new recording while transcribing
     recording.stopRecording(true).then(async (transcript) => {
       // Store audio data for retry capability
@@ -1176,8 +1209,8 @@
       }
 
       if (transcript) {
-        // Send the transcript to process the pending session
-        await sendTranscriptDirectly(transcript, sessionIdToProcess);
+        // Send the transcript to process the pending session (with captured Vosk transcript)
+        await sendTranscriptDirectly(transcript, sessionIdToProcess, capturedVoskTranscript);
       } else if (sessionIdToProcess) {
         // Transcription failed or returned empty - set error
         sdkSessions.updatePendingTranscription(sessionIdToProcess, {

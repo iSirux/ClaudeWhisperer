@@ -56,6 +56,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `Transcript.svelte` - Last recording transcript display
 - `StatusBadge.svelte` - Status indicator badge
 - `Overlay.svelte` - Overlay window content
+- `TranscriptMarquee.svelte` - Rolling real-time transcript display for Vosk
 - `Start.svelte` - Welcome screen with microphone selection and Whisper connection status
 - `UsagePreview.svelte` - Compact usage stats preview for main view
 
@@ -84,6 +85,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 - `terminal.rs` - PTY management via `portable-pty`, spawns `claude` CLI
 - `sidecar.rs` - SidecarManager for Node.js process IPC with Claude Agent SDK
 - `whisper.rs` - HTTP client for Whisper transcription API
+- `vosk.rs` - WebSocket client for Vosk real-time transcription
 - `git.rs` - GitManager for repository operations (branch/worktree creation)
 - `llm.rs` - Unified LLM client supporting Gemini, OpenAI, Groq, and local providers
 
@@ -183,6 +185,30 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - **Duration Tracking:** Timer-based work duration that survives session restore
 - **Unread Markers:** Sessions marked as unread when completed while not viewing
 
+## Vosk Real-Time Transcription
+
+The app supports optional real-time transcription using Vosk, which runs alongside Whisper:
+
+- **Vosk** provides instant feedback as you speak (shown as a rolling marquee in the overlay)
+- **Whisper** provides the final accurate transcription after recording stops
+- Both can be combined with the LLM cleanup layer for optimal accuracy
+
+### Configuration (`vosk` in config)
+
+- `enabled` - Whether Vosk real-time transcription is active
+- `endpoint` - WebSocket endpoint (default: `ws://localhost:2700`)
+- `sample_rate` - Audio sample rate (default: 16000)
+- `show_realtime_transcript` - Show live transcript in overlay
+- `docker` - Container settings for local Vosk server
+
+### Data Flow
+
+1. User starts recording → audio captured via MediaRecorder (WebM for Whisper)
+2. Simultaneously, PCM audio streamed via ScriptProcessorNode to Vosk WebSocket
+3. Vosk returns partial results → displayed in overlay marquee
+4. Recording stops → complete audio sent to Whisper for final transcription
+5. (Optional) LLM cleanup applied to final transcript
+
 ## LLM Integration (Gemini/OpenAI/Groq/Local)
 
 The app includes an optional LLM integration layer that uses a secondary AI (Gemini by default) to enhance the user experience. This is configured in Settings → General → LLM Integration.
@@ -206,12 +232,14 @@ The app includes an optional LLM integration layer that uses a secondary AI (Gem
 ### Auto Model Selection
 
 When enabled, the "Auto" option appears in the model selector. The LLM analyzes each prompt and selects:
+
 - **Model**: Haiku (simple tasks), Sonnet (typical tasks), Opus (complex tasks)
 - **Thinking Level**: null, think, megathink, or ultrathink based on task complexity
 
 ### Auto Repository Selection
 
 Repositories can have LLM-generated descriptions (from CLAUDE.md or README.md) that help the system route prompts to the correct project. Features include:
+
 - Automatic description generation when adding repos
 - Confidence-based recommendations (low/medium/high)
 - Optional user confirmation for low-confidence matches

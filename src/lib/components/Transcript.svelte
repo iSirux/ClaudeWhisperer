@@ -1,11 +1,18 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { recording, isRecording, isProcessing, hasRecorded } from '$lib/stores/recording';
+  import { recording, isRecording, isProcessing, hasRecorded, realtimeTranscript } from '$lib/stores/recording';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, settingsToStoreThinking } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
   import { resolveModelForApi } from '$lib/utils/models';
   import Waveform from './Waveform.svelte';
+  import { isDualTranscriptionEnabled } from '$lib/utils/llm';
+
+  // Check if we should show both transcripts
+  $: showBothTranscripts = isDualTranscriptionEnabled() &&
+    $recording.transcript &&
+    $realtimeTranscript &&
+    $recording.transcript !== $realtimeTranscript;
 
   onDestroy(() => {
     if (audioElement) {
@@ -325,9 +332,50 @@
       placeholder="Edit your prompt..."
     ></textarea>
   {:else if $recording.transcript}
-    <div class="p-3 bg-background border border-border rounded font-mono text-sm max-h-32 overflow-y-auto whitespace-pre-wrap select-text">
-      {$recording.transcript}
-    </div>
+    {#if showBothTranscripts}
+      <!-- Show both transcripts when dual-source cleanup is enabled -->
+      <div class="space-y-3">
+        <!-- Final transcript -->
+        <div class="p-3 bg-background border border-border rounded font-mono text-sm max-h-24 overflow-y-auto whitespace-pre-wrap select-text">
+          {$recording.transcript}
+        </div>
+        <!-- Source transcripts side by side -->
+        <div class="pt-2 border-t border-dashed border-border">
+          <div class="flex items-center gap-1.5 mb-2">
+            <svg class="w-3.5 h-3.5 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            </svg>
+            <span class="text-xs text-text-muted font-medium">Source Transcripts</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <!-- Whisper -->
+            <div class="p-2.5 bg-background border border-border rounded border-l-2 border-l-accent">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-accent/15 text-accent border border-accent/30 rounded">Whisper</span>
+                <span class="text-[10px] text-text-muted">Final</span>
+              </div>
+              <div class="font-mono text-xs max-h-16 overflow-y-auto whitespace-pre-wrap select-text text-text-secondary">
+                {$recording.transcript}
+              </div>
+            </div>
+            <!-- Vosk -->
+            <div class="p-2.5 bg-background border border-border rounded border-l-2 border-l-purple-500">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-purple-500/15 text-purple-400 border border-purple-500/30 rounded">Vosk</span>
+                <span class="text-[10px] text-text-muted">Real-time</span>
+              </div>
+              <div class="font-mono text-xs max-h-16 overflow-y-auto whitespace-pre-wrap select-text text-text-secondary">
+                {$realtimeTranscript}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    {:else}
+      <div class="p-3 bg-background border border-border rounded font-mono text-sm max-h-32 overflow-y-auto whitespace-pre-wrap select-text">
+        {$recording.transcript}
+      </div>
+    {/if}
   {:else}
     <div class="p-3 bg-background border border-border rounded text-sm text-text-muted text-center">
       {#if $isRecording}

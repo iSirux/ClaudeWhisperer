@@ -26,7 +26,7 @@
                 "title": "Recording",
                 "url": "/overlay",
                 "width": 380,
-                "height": 100,
+                "height": 140,
                 "center": false,
                 "decorations": false,
                 "transparent": false,
@@ -55,7 +55,11 @@
             "sidecar/dist/",
             "sidecar/node_modules/@anthropic-ai/"
         ],
-        "windows": {}
+        "windows": {
+            "wix": {
+                "template": "wix/main.wxs"
+            }
+        }
     },
     "plugins": {
         "shell": {

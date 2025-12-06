@@ -5,13 +5,15 @@ mod git;
 mod session_persistence;
 mod sidecar;
 mod terminal;
+mod vosk;
 mod whisper;
 
-use commands::{audio_cmds, llm_cmds, input_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds};
+use commands::{audio_cmds, llm_cmds, input_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
 use sidecar::SidecarManager;
 use std::sync::Arc;
+use vosk::VoskManager;
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
@@ -51,6 +53,7 @@ pub fn run() {
     let start_minimized = config.system.start_minimized;
     let terminal_manager = Arc::new(TerminalManager::new());
     let sidecar_manager = Arc::new(SidecarManager::new());
+    let vosk_manager = Arc::new(VoskManager::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -75,6 +78,7 @@ pub fn run() {
         .manage(Mutex::new(usage_stats))
         .manage(terminal_manager)
         .manage(sidecar_manager)
+        .manage(vosk_manager)
         .setup(move |app| {
             // Build tray menu
             let show_item = MenuItemBuilder::new("Show")
@@ -171,6 +175,7 @@ pub fn run() {
             settings_cmds::set_auto_repo_mode,
             settings_cmds::get_active_repo,
             settings_cmds::get_git_branch,
+            settings_cmds::run_in_terminal,
             terminal_cmds::create_terminal_session,
             terminal_cmds::create_interactive_session,
             terminal_cmds::write_to_terminal,
@@ -212,6 +217,10 @@ pub fn run() {
             llm_cmds::delete_gemini_api_key,
             llm_cmds::generate_repo_description,
             llm_cmds::recommend_repo,
+            vosk_cmds::test_vosk_connection,
+            vosk_cmds::start_vosk_session,
+            vosk_cmds::send_vosk_audio,
+            vosk_cmds::stop_vosk_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

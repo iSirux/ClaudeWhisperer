@@ -25,6 +25,21 @@ export interface WhisperConfig {
   docker: DockerConfig;
 }
 
+export interface VoskConfig {
+  /** Whether Vosk real-time transcription is enabled */
+  enabled: boolean;
+  /** WebSocket endpoint for Vosk server */
+  endpoint: string;
+  /** Audio sample rate (default: 16000) */
+  sample_rate: number;
+  /** Docker configuration for Vosk server */
+  docker: DockerConfig;
+  /** Whether to show real-time transcript in overlay */
+  show_realtime_transcript: boolean;
+  /** Whether to accumulate transcript text across pauses (vs reset on each pause) */
+  accumulate_transcript: boolean;
+}
+
 export interface GitConfig {
   create_branch: boolean;
   auto_merge: boolean;
@@ -71,8 +86,11 @@ export interface RepoConfig {
   name: string;
   /** Auto-generated description of the repository for auto-selection */
   description?: string;
-  /** Domain-specific keywords for matching prompts to this repository */
+  /** Domain-specific keywords for matching prompts to this repository (around 20 keywords) */
   keywords?: string[];
+  /** Project-specific vocabulary/lingo for transcription cleanup and repo matching (20-50 words).
+   * Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase */
+  vocabulary?: string[];
 }
 
 export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
@@ -124,6 +142,8 @@ export interface LlmFeaturesConfig {
   auto_name_sessions: boolean;
   detect_interaction_needed: boolean;
   clean_transcription: boolean;
+  /** Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled) */
+  use_dual_transcription: boolean;
   recommend_model: boolean;
   /** Auto-select repository based on prompt content */
   auto_select_repo: boolean;
@@ -152,6 +172,7 @@ export type GeminiConfig = LlmConfig;
 
 export interface AppConfig {
   whisper: WhisperConfig;
+  vosk: VoskConfig;
   git: GitConfig;
   hotkeys: HotkeyConfig;
   overlay: OverlayConfig;
@@ -193,6 +214,18 @@ const defaultConfig: AppConfig = {
       auto_restart: false,
       container_name: "whisper",
     },
+  },
+  vosk: {
+    enabled: false,
+    endpoint: "ws://localhost:2700",
+    sample_rate: 16000,
+    docker: {
+      compute_type: "CPU",
+      auto_restart: false,
+      container_name: "claude-whisperer-vosk",
+    },
+    show_realtime_transcript: true,
+    accumulate_transcript: false,
   },
   git: {
     create_branch: false,
@@ -266,6 +299,7 @@ const defaultConfig: AppConfig = {
       auto_name_sessions: true,
       detect_interaction_needed: true,
       clean_transcription: false,
+      use_dual_transcription: false,
       recommend_model: false,
       auto_select_repo: false,
     },

@@ -129,9 +129,15 @@ export interface PendingTranscriptionInfo {
   // Transcription result (set when transcription completes)
   transcript?: string;
   transcriptionError?: string;
+  // Vosk real-time transcript (if available)
+  voskTranscript?: string;
   // LLM processing results
   cleanedTranscript?: string;
   wasCleanedUp?: boolean;
+  /** List of corrections made by the cleanup */
+  cleanupCorrections?: string[];
+  /** Whether dual-source (Vosk + Whisper) cleanup was used */
+  usedDualSource?: boolean;
   modelRecommendation?: {
     modelId: string;
     reasoning: string;
@@ -1102,6 +1108,14 @@ function createSdkSessionsStore() {
                     timestamp: Date.now()
                   },
                 ],
+                // Clear interaction metadata when user replies - they've addressed any pending decision/clarification
+                aiMetadata: s.aiMetadata ? {
+                  ...s.aiMetadata,
+                  needsInteraction: undefined,
+                  interactionReason: undefined,
+                  interactionUrgency: undefined,
+                  waitingFor: undefined,
+                } : s.aiMetadata,
               }
             : s
         )

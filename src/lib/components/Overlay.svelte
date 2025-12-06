@@ -6,9 +6,13 @@
   import { overlay } from '$lib/stores/overlay';
   import StatusBadge from './StatusBadge.svelte';
   import Waveform from './Waveform.svelte';
+  import TranscriptMarquee from './TranscriptMarquee.svelte';
   import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
   import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
   import type { OverlayMode } from '$lib/stores/overlay';
+
+  // Check if Vosk real-time transcription should be shown
+  $: showRealtimeTranscript = $settings.vosk?.enabled ?? false;
 
   // Track remote recording state (from main window events)
   let remoteRecordingState: RecordingState = 'idle';
@@ -124,6 +128,13 @@
     <div class="mb-2">
       <Waveform height={40} barWidth={2} barGap={1} color="#ef4444" useEvents={true} />
     </div>
+
+    <!-- Real-time transcript from Vosk -->
+    {#if showRealtimeTranscript}
+      <div class="mb-2">
+        <TranscriptMarquee />
+      </div>
+    {/if}
   {/if}
 
   <div class="flex items-center justify-between gap-4">

@@ -75,6 +75,66 @@ impl Default for WhisperConfig {
     }
 }
 
+/// Configuration for Vosk real-time transcription
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoskConfig {
+    /// Whether Vosk real-time transcription is enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// WebSocket endpoint for Vosk server
+    #[serde(default = "default_vosk_endpoint")]
+    pub endpoint: String,
+    /// Audio sample rate (default: 16000)
+    #[serde(default = "default_vosk_sample_rate")]
+    pub sample_rate: u32,
+    /// Docker configuration for Vosk server
+    #[serde(default = "default_vosk_docker")]
+    pub docker: DockerConfig,
+    /// Whether to show real-time transcript in overlay
+    #[serde(default = "default_show_realtime_transcript")]
+    pub show_realtime_transcript: bool,
+    /// Whether to accumulate transcript text across pauses (vs reset on each pause)
+    #[serde(default)]
+    pub accumulate_transcript: bool,
+}
+
+fn default_vosk_endpoint() -> String {
+    "ws://localhost:2700".to_string()
+}
+
+fn default_vosk_sample_rate() -> u32 {
+    16000
+}
+
+fn default_vosk_container_name() -> String {
+    "claude-whisperer-vosk".to_string()
+}
+
+fn default_vosk_docker() -> DockerConfig {
+    DockerConfig {
+        compute_type: DockerComputeType::CPU,
+        auto_restart: false,
+        container_name: default_vosk_container_name(),
+    }
+}
+
+fn default_show_realtime_transcript() -> bool {
+    true
+}
+
+impl Default for VoskConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_vosk_endpoint(),
+            sample_rate: default_vosk_sample_rate(),
+            docker: default_vosk_docker(),
+            show_realtime_transcript: true,
+            accumulate_transcript: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitConfig {
     pub create_branch: bool,
@@ -539,9 +599,13 @@ pub struct RepoConfig {
     /// Auto-generated description of the repository for auto-selection
     #[serde(default)]
     pub description: Option<String>,
-    /// Domain-specific keywords for matching prompts to this repository
+    /// Domain-specific keywords for matching prompts to this repository (around 20 keywords)
     #[serde(default)]
     pub keywords: Option<Vec<String>>,
+    /// Project-specific vocabulary/lingo for transcription cleanup and repo matching (20-50 words)
+    /// Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase
+    #[serde(default)]
+    pub vocabulary: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -631,6 +695,8 @@ pub enum ThinkingLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub whisper: WhisperConfig,
+    #[serde(default)]
+    pub vosk: VoskConfig,
     pub git: GitConfig,
     pub hotkeys: HotkeyConfig,
     pub overlay: OverlayConfig,
@@ -745,6 +811,9 @@ pub struct LlmFeaturesConfig {
     pub detect_interaction_needed: bool,
     #[serde(default)]
     pub clean_transcription: bool,
+    /// Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled)
+    #[serde(default)]
+    pub use_dual_transcription: bool,
     #[serde(default)]
     pub recommend_model: bool,
     /// Auto-select repository based on prompt content
@@ -761,6 +830,7 @@ impl Default for LlmFeaturesConfig {
             auto_name_sessions: true,
             detect_interaction_needed: true,
             clean_transcription: false,
+            use_dual_transcription: false,
             recommend_model: false,
             auto_select_repo: false,
         }
@@ -835,6 +905,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             whisper: WhisperConfig::default(),
+            vosk: VoskConfig::default(),
             git: GitConfig::default(),
             hotkeys: HotkeyConfig::default(),
             overlay: OverlayConfig::default(),

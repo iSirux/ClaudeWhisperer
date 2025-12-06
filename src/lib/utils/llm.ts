@@ -76,6 +76,18 @@ export function isTranscriptionCleanupEnabled(): boolean {
 }
 
 /**
+ * Check if dual-source transcription cleanup is enabled (using both Vosk and Whisper)
+ */
+export function isDualTranscriptionEnabled(): boolean {
+  const currentSettings = get(settings);
+  return (
+    isTranscriptionCleanupEnabled() &&
+    currentSettings.llm?.features?.use_dual_transcription &&
+    currentSettings.vosk?.enabled
+  ) ?? false;
+}
+
+/**
  * Check if model recommendation is enabled
  */
 export function isModelRecommendationEnabled(): boolean {
@@ -128,12 +140,13 @@ export function needsUserConfirmation(confidence: string): boolean {
 
 /**
  * Build repo context string for transcription cleanup.
- * Returns a string with the repo name, description, and keywords.
+ * Returns a string with the repo name, description, keywords, and vocabulary.
  */
 export function buildRepoContextForCleanup(repo: {
   name: string;
   description?: string;
   keywords?: string[];
+  vocabulary?: string[];
 }): string {
   const parts: string[] = [`Repository: ${repo.name}`];
 
@@ -142,7 +155,54 @@ export function buildRepoContextForCleanup(repo: {
   }
 
   if (repo.keywords && repo.keywords.length > 0) {
-    parts.push(`Keywords/Terms: ${repo.keywords.join(', ')}`);
+    parts.push(`Keywords: ${repo.keywords.join(', ')}`);
+  }
+
+  if (repo.vocabulary && repo.vocabulary.length > 0) {
+    parts.push(`Vocabulary (project-specific terms that may be spoken): ${repo.vocabulary.join(', ')}`);
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Build combined context from ALL repos for transcription cleanup.
+ * Aggregates vocabulary and keywords from all repos for better recognition.
+ */
+export function buildAllReposContextForCleanup(repos: Array<{
+  name: string;
+  description?: string;
+  keywords?: string[];
+  vocabulary?: string[];
+}>): string | undefined {
+  if (!repos || repos.length === 0) return undefined;
+
+  // Collect all unique vocabulary and keywords from all repos
+  const allVocabulary = new Set<string>();
+  const allKeywords = new Set<string>();
+  const repoNames: string[] = [];
+
+  for (const repo of repos) {
+    repoNames.push(repo.name);
+    if (repo.vocabulary) {
+      repo.vocabulary.forEach(v => allVocabulary.add(v));
+    }
+    if (repo.keywords) {
+      repo.keywords.forEach(k => allKeywords.add(k));
+    }
+  }
+
+  // Only return context if we have vocabulary or keywords
+  if (allVocabulary.size === 0 && allKeywords.size === 0) return undefined;
+
+  const parts: string[] = [`Projects: ${repoNames.join(', ')}`];
+
+  if (allKeywords.size > 0) {
+    parts.push(`Keywords: ${Array.from(allKeywords).join(', ')}`);
+  }
+
+  if (allVocabulary.size > 0) {
+    parts.push(`Vocabulary (project-specific terms that may be spoken): ${Array.from(allVocabulary).join(', ')}`);
   }
 
   return parts.join('\n');
@@ -216,32 +276,39 @@ export async function analyzeInteractionNeeded(
 /**
  * Clean up a voice transcription using the LLM integration
  * Returns the original text if cleanup is disabled or fails
- * @param rawTranscription - The raw voice transcription
+ * @param whisperTranscription - The Whisper transcription (primary source)
+ * @param voskTranscription - Optional Vosk real-time transcription (secondary source for comparison)
  * @param repoContext - Optional repo context (description + keywords) to help with cleanup
  */
 export async function cleanTranscription(
-  rawTranscription: string,
+  whisperTranscription: string,
+  voskTranscription?: string,
   repoContext?: string
-): Promise<{ text: string; wasCleanedUp: boolean; corrections: string[] }> {
+): Promise<{ text: string; wasCleanedUp: boolean; corrections: string[]; usedDualSource: boolean }> {
   if (!isTranscriptionCleanupEnabled()) {
-    return { text: rawTranscription, wasCleanedUp: false, corrections: [] };
+    return { text: whisperTranscription, wasCleanedUp: false, corrections: [], usedDualSource: false };
   }
+
+  // Only pass Vosk transcription if dual-source is enabled
+  const voskToUse = isDualTranscriptionEnabled() ? voskTranscription : undefined;
 
   try {
     const result = await invoke<TranscriptionCleanupResult>('clean_transcription', {
-      rawTranscription,
+      rawTranscription: whisperTranscription,
+      voskTranscription: voskToUse || null,
       repoContext: repoContext || null,
     });
-    console.log('[llm] Transcription cleaned:', result.corrections_made);
+    console.log('[llm] Transcription cleaned:', result.corrections_made, voskToUse ? '(dual-source)' : '(whisper only)');
     return {
       text: result.cleaned_text,
       wasCleanedUp: result.corrections_made.length > 0,
       corrections: result.corrections_made,
+      usedDualSource: !!voskToUse,
     };
   } catch (error) {
     console.error('[llm] Failed to clean transcription:', error);
     // Fall back to original text on error
-    return { text: rawTranscription, wasCleanedUp: false, corrections: [] };
+    return { text: whisperTranscription, wasCleanedUp: false, corrections: [], usedDualSource: false };
   }
 }
 

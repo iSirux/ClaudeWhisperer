@@ -13,7 +13,9 @@
       "Bash(npm ls:*)",
       "Bash(npm install:*)",
       "Bash(npm run tauri:build:*)",
-      "WebFetch(domain:tauri.app)"
+      "WebFetch(domain:tauri.app)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm run tauri build:*)"
     ],
     "deny": [],
     "ask": []

@@ -49,6 +49,8 @@ pub struct ConnectionTestResult {
 pub struct RepoDescriptionResult {
     pub description: String,
     pub keywords: Vec<String>,
+    /// Project-specific vocabulary/lingo (20-50 words) - actual terms used in the codebase
+    pub vocabulary: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -551,9 +553,12 @@ Respond with ONLY a JSON object in this exact format:
     }
 
     /// Clean up voice transcription errors
+    /// When vosk_transcription is provided, both transcriptions are compared
+    /// to improve accuracy (Whisper is more accurate but may miss context that Vosk captured)
     pub async fn clean_transcription(
         &self,
-        raw_transcription: &str,
+        whisper_transcription: &str,
+        vosk_transcription: Option<&str>,
         repo_context: Option<&str>,
     ) -> Result<TranscriptionCleanupResult, String> {
         let context_section = if let Some(context) = repo_context {
@@ -569,6 +574,28 @@ Project context (use this to better recognize project-specific terms):
             String::new()
         };
 
+        // Build the transcription section based on whether we have both sources
+        let transcription_section = if let Some(vosk) = vosk_transcription {
+            format!(
+                r#"You have two transcriptions from different speech-to-text engines:
+
+**Whisper transcription** (more accurate, but may miss quick words):
+{}
+
+**Vosk transcription** (real-time, may capture words Whisper missed but less accurate overall):
+{}
+
+Compare both transcriptions and produce the best combined result. Use Whisper as the primary source but incorporate any clearly correct words from Vosk that Whisper may have missed."#,
+                truncate_text(whisper_transcription, 1500),
+                truncate_text(vosk, 1500)
+            )
+        } else {
+            format!(
+                "Transcription to clean:\n{}",
+                truncate_text(whisper_transcription, 2000)
+            )
+        };
+
         let prompt = format!(
             r#"Clean up this voice transcription for a software development task. Fix:
 
@@ -580,13 +607,12 @@ Project context (use this to better recognize project-specific terms):
 {}
 Keep the original meaning and intent. Only fix clear errors, don't rewrite the content.
 
-Transcription to clean:
 {}
 
 Respond with ONLY a JSON object in this exact format:
 {{"cleaned_text": "the corrected text", "corrections_made": ["correction 1", "correction 2"]}}"#,
             context_section,
-            truncate_text(raw_transcription, 2000)
+            transcription_section
         );
 
         let schema = serde_json::json!({
@@ -677,24 +703,35 @@ Respond with ONLY a JSON object in this exact format:
         };
 
         let prompt = format!(
-            r#"Generate a brief description and domain-specific keywords for this software repository to help with auto-selection based on user prompts.
+            r#"Generate a description, keywords, and vocabulary for this software repository to help with auto-selection and voice transcription accuracy.
 
 Repository: {}
 
 {}
 
-Create:
-1. A concise description (1-2 sentences) focusing on what the project does and its main technologies
-2. Around 20 domain-specific keywords that would help match user prompts to this repository. Include:
-   - Technology stack (frameworks, languages, libraries)
-   - Domain terminology (business logic terms, industry-specific concepts)
-   - Feature names and capabilities
-   - File types and patterns
-   - Common tasks and actions users might request
-   - Project-specific terminology and concepts
+Create THREE distinct outputs:
+
+1. **Description** (1-2 sentences): What the project does and its main technologies
+
+2. **Keywords** (~20 words): Categorical/conceptual terms for matching user intent:
+   - Technology categories (e.g., "frontend", "database", "authentication")
+   - Domain concepts (e.g., "e-commerce", "real-time", "streaming")
+   - Feature types (e.g., "CRUD", "API", "dashboard")
+   - Action verbs users might say (e.g., "deploy", "migrate", "refactor")
+
+3. **Vocabulary** (20-50 words): Actual project-specific lingo/jargon that appears in the codebase:
+   - Function/class/module names (e.g., "SdkSession", "useSettings", "transcribeAudio")
+   - File names and paths (e.g., "config.rs", "llm.ts", "overlay")
+   - Custom types and interfaces (e.g., "RepoConfig", "WhisperProvider")
+   - Project-specific terminology (e.g., "sidecar", "PTY", "hotkey")
+   - Abbreviations and acronyms used (e.g., "SDK", "LLM", "WSL")
+   - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
+
+Keywords help match "I want to add authentication" to the right repo.
+Vocabulary helps speech-to-text correctly hear "SdkSession" instead of "SDK session" or "useSettings" instead of "use settings".
 
 Respond with ONLY a JSON object in this exact format:
-{{"description": "Brief description of the repository", "keywords": ["keyword1", "keyword2", ..., "keyword20"]}}"#,
+{{"description": "...", "keywords": ["..."], "vocabulary": ["..."]}}"#,
             repo_name,
             content
         );
@@ -709,10 +746,15 @@ Respond with ONLY a JSON object in this exact format:
                 "keywords": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Domain-specific keywords for matching prompts to this repo (around 20 keywords)"
+                    "description": "Categorical/conceptual keywords for matching user intent (~20 words)"
+                },
+                "vocabulary": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Project-specific lingo/jargon from the codebase (20-50 words)"
                 }
             },
-            "required": ["description", "keywords"]
+            "required": ["description", "keywords", "vocabulary"]
         });
 
         self.generate_structured(&prompt, Some(schema)).await
@@ -722,7 +764,7 @@ Respond with ONLY a JSON object in this exact format:
     pub async fn recommend_repo(
         &self,
         prompt: &str,
-        repos: &[(String, String, Option<String>, Option<Vec<String>>)], // (name, path, description, keywords)
+        repos: &[(String, String, Option<String>, Option<Vec<String>>, Option<Vec<String>>)], // (name, path, description, keywords, vocabulary)
         is_transcribed: bool,
     ) -> Result<RepoRecommendation, String> {
         if repos.is_empty() {
@@ -737,22 +779,29 @@ Respond with ONLY a JSON object in this exact format:
         let repos_list = repos
             .iter()
             .enumerate()
-            .map(|(i, (name, path, desc, keywords))| {
+            .map(|(i, (name, path, desc, keywords, vocabulary))| {
                 let desc_text = desc.as_deref().unwrap_or("No description");
                 let keywords_text = keywords
                     .as_ref()
                     .map(|kw| kw.join(", "))
                     .unwrap_or_else(|| "None".to_string());
-                format!("{}. {} ({})\n   Description: {}\n   Keywords: {}", i, name, path, desc_text, keywords_text)
+                let vocab_text = vocabulary
+                    .as_ref()
+                    .map(|v| v.join(", "))
+                    .unwrap_or_else(|| "None".to_string());
+                format!(
+                    "{}. {} ({})\n   Description: {}\n   Keywords: {}\n   Vocabulary: {}",
+                    i, name, path, desc_text, keywords_text, vocab_text
+                )
             })
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n\n");
 
         // Add transcription context if the prompt was voice-transcribed
         let transcription_notice = if is_transcribed {
             "\n\nNOTE: The user's prompt was recorded via voice and transcribed using speech-to-text. \
              There may be minor transcription errors such as homophones, missing punctuation, or misheard words. \
-             Please interpret the intent behind the request even if there are small errors in the transcription.\n"
+             Pay special attention to the Vocabulary field - if the prompt contains words that sound like items in a repo's vocabulary, that's a strong match signal.\n"
         } else {
             ""
         };
@@ -767,13 +816,13 @@ User's prompt:
 {}
 
 Analyze the prompt and determine which repository best matches. Consider:
-- Keywords that match the repository's domain keywords
+- **Keywords**: Categorical terms that match the user's intent (e.g., "authentication", "frontend")
+- **Vocabulary**: Project-specific lingo - if the prompt mentions terms from a repo's vocabulary, it's likely the right repo
 - Project names or terminology mentioned
 - Technologies or frameworks referenced
 - Domain or feature areas discussed
-- File paths or patterns mentioned
 
-Pay special attention to the domain keywords - they represent the core concepts and technologies of each repository.
+For voice-transcribed prompts: The vocabulary is especially important because speech-to-text might transcribe project-specific terms incorrectly. Look for words that sound similar to vocabulary items.
 
 IMPORTANT: If the prompt doesn't contain enough information to make a meaningful recommendation (e.g., generic requests like "help me with this" or "fix the bug"), return -1 for recommended_index and empty string for recommended_name. Only recommend a repository if you have actual evidence from the prompt to support the choice.
 

@@ -2,6 +2,7 @@ use crate::config::{AppConfig, RepoConfig};
 use crate::git::GitManager;
 use tauri::State;
 use parking_lot::Mutex;
+use std::process::Command;
 
 pub type ConfigState = Mutex<AppConfig>;
 
@@ -21,7 +22,7 @@ pub fn save_config(config: State<ConfigState>, new_config: AppConfig) -> Result<
 pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Result<(), String> {
     println!("[add_repo] Called with path: {}, name: {}", path, name);
     let mut cfg = config.lock();
-    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None });
+    cfg.repos.push(RepoConfig { path: path.clone(), name: name.clone(), description: None, keywords: None, vocabulary: None });
     println!("[add_repo] Repo added to config, total repos: {}", cfg.repos.len());
     let result = cfg.save();
     match &result {
@@ -73,4 +74,62 @@ pub fn get_active_repo(config: State<ConfigState>) -> Option<RepoConfig> {
 #[tauri::command]
 pub fn get_git_branch(repo_path: String) -> Result<String, String> {
     GitManager::get_current_branch(&repo_path)
+}
+
+/// Run a command in a new terminal window (cross-platform)
+#[tauri::command]
+pub fn run_in_terminal(command: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: Use cmd /c start to open a new command prompt window
+        Command::new("cmd")
+            .args(["/c", "start", "cmd", "/k", &command])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: Use osascript to tell Terminal to run the command
+        let script = format!(
+            r#"tell application "Terminal"
+                activate
+                do script "{}"
+            end tell"#,
+            command.replace("\"", "\\\"")
+        );
+        Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+            .map_err(|e| format!("Failed to open terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Linux: Try common terminal emulators in order of preference
+        let terminals = [
+            ("gnome-terminal", vec!["--", "bash", "-c", &format!("{}; exec bash", command)]),
+            ("konsole", vec!["-e", "bash", "-c", &format!("{}; exec bash", command)]),
+            ("xfce4-terminal", vec!["-e", &format!("bash -c '{}; exec bash'", command)]),
+            ("xterm", vec!["-e", &format!("bash -c '{}; exec bash'", command)]),
+        ];
+
+        let mut launched = false;
+        for (term, args) in terminals {
+            if Command::new(term)
+                .args(&args)
+                .spawn()
+                .is_ok()
+            {
+                launched = true;
+                break;
+            }
+        }
+
+        if !launched {
+            return Err("No supported terminal emulator found. Please install gnome-terminal, konsole, xfce4-terminal, or xterm.".to_string());
+        }
+    }
+
+    Ok(())
 }

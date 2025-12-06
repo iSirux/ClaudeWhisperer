@@ -1,8 +1,13 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import type { PendingTranscriptionInfo } from '$lib/stores/sdkSessions';
-  import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
-  import Waveform from '../Waveform.svelte';
+  import { onDestroy } from "svelte";
+  import type { PendingTranscriptionInfo } from "$lib/stores/sdkSessions";
+  import {
+    getShortModelName,
+    getModelBadgeBgColor,
+    getModelTextColor,
+  } from "$lib/utils/modelColors";
+  import Waveform from "../Waveform.svelte";
+  import TranscriptDiff from "../TranscriptDiff.svelte";
 
   interface Props {
     pendingTranscription: PendingTranscriptionInfo;
@@ -13,7 +18,13 @@
     onCancel?: () => void;
   }
 
-  let { pendingTranscription, sessionId, completed = false, onRetry, onCancel }: Props = $props();
+  let {
+    pendingTranscription,
+    sessionId,
+    completed = false,
+    onRetry,
+    onCancel,
+  }: Props = $props();
 
   // Live timer for recording duration
   let elapsedMs = $state(0);
@@ -24,12 +35,15 @@
     const totalSeconds = Math.floor(ms / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   }
 
   // Get the display duration (live elapsed or final recorded)
   let displayDuration = $derived.by(() => {
-    if (pendingTranscription.status === 'recording' && pendingTranscription.recordingStartedAt) {
+    if (
+      pendingTranscription.status === "recording" &&
+      pendingTranscription.recordingStartedAt
+    ) {
       return formatDuration(elapsedMs);
     }
     if (pendingTranscription.recordingDurationMs) {
@@ -40,7 +54,10 @@
 
   // Start/stop timer based on recording status
   $effect(() => {
-    if (pendingTranscription.status === 'recording' && pendingTranscription.recordingStartedAt) {
+    if (
+      pendingTranscription.status === "recording" &&
+      pendingTranscription.recordingStartedAt
+    ) {
       // Start live timer
       const startTime = pendingTranscription.recordingStartedAt;
       const updateElapsed = () => {
@@ -65,14 +82,19 @@
   const barWidth = 3;
   const barGap = 2;
   const height = 48;
-  const liveColor = '#ef4444'; // recording red (same as overlay)
-  const staticColor = '#8b5cf6'; // violet-500 for completed waveform
+  const liveColor = "#ef4444"; // recording red (same as overlay)
+  const staticColor = "#8b5cf6"; // violet-500 for completed waveform
 
   // Draw static waveform from history with high-DPI support
   function drawStaticWaveform() {
-    if (!staticCanvas || !staticContainer || !pendingTranscription.audioVisualizationHistory?.length) return;
+    if (
+      !staticCanvas ||
+      !staticContainer ||
+      !pendingTranscription.audioVisualizationHistory?.length
+    )
+      return;
 
-    const ctx = staticCanvas.getContext('2d');
+    const ctx = staticCanvas.getContext("2d");
     if (!ctx) return;
 
     const history = pendingTranscription.audioVisualizationHistory;
@@ -91,7 +113,7 @@
     // For each snapshot, compute a representative "volume" level
     // Use the average of the top N frequency values (where voice energy is concentrated)
     // This gives a better representation than averaging all bins
-    const volumes = history.map(snapshot => {
+    const volumes = history.map((snapshot) => {
       // Sort descending and take average of top 20% of bins
       const sorted = [...snapshot].sort((a, b) => b - a);
       const topCount = Math.max(1, Math.floor(sorted.length * 0.2));
@@ -104,7 +126,7 @@
     const barCount = Math.floor(displayWidth / barTotalWidth);
 
     for (let i = 0; i < barCount; i++) {
-      const historyIndex = Math.floor(i * volumes.length / barCount);
+      const historyIndex = Math.floor((i * volumes.length) / barCount);
       const value = volumes[historyIndex] || 0;
       const normalized = value / 255;
       const barHeight = Math.max(2, normalized * displayHeight);
@@ -120,37 +142,49 @@
 
   // Determine what to show based on status
   $effect(() => {
-    if (pendingTranscription.status !== 'recording') {
+    if (pendingTranscription.status !== "recording") {
       // Static visualization from history - draw after a tick to ensure canvas is ready
       setTimeout(() => drawStaticWaveform(), 0);
     }
   });
 
   // Status helpers
-  function getStatusText(status: PendingTranscriptionInfo['status']): string {
+  function getStatusText(status: PendingTranscriptionInfo["status"]): string {
     switch (status) {
-      case 'recording': return 'Recording...';
-      case 'transcribing': return 'Transcribing...';
-      case 'processing': return 'Processing...';
-      default: return 'Pending';
+      case "recording":
+        return "Recording...";
+      case "transcribing":
+        return "Transcribing...";
+      case "processing":
+        return "Processing...";
+      default:
+        return "Pending";
     }
   }
 
-  function getStatusColor(status: PendingTranscriptionInfo['status']): string {
+  function getStatusColor(status: PendingTranscriptionInfo["status"]): string {
     switch (status) {
-      case 'recording': return 'text-recording'; // red, matches overlay
-      case 'transcribing': return 'text-amber-400';
-      case 'processing': return 'text-blue-400';
-      default: return 'text-text-muted';
+      case "recording":
+        return "text-recording"; // red, matches overlay
+      case "transcribing":
+        return "text-amber-400";
+      case "processing":
+        return "text-blue-400";
+      default:
+        return "text-text-muted";
     }
   }
 
-  function getDotColor(status: PendingTranscriptionInfo['status']): string {
+  function getDotColor(status: PendingTranscriptionInfo["status"]): string {
     switch (status) {
-      case 'recording': return 'bg-recording'; // red, matches overlay
-      case 'transcribing': return 'bg-amber-400';
-      case 'processing': return 'bg-blue-400';
-      default: return 'bg-text-muted';
+      case "recording":
+        return "bg-recording"; // red, matches overlay
+      case "transcribing":
+        return "bg-amber-400";
+      case "processing":
+        return "bg-blue-400";
+      default:
+        return "bg-text-muted";
     }
   }
 </script>
@@ -158,12 +192,22 @@
 <div class="session-recording-header" class:completed>
   <!-- Waveform visualization -->
   <div class="waveform-container">
-    {#if pendingTranscription.status === 'recording' && !completed}
+    {#if pendingTranscription.status === "recording" && !completed}
       <!-- Live waveform using the same component as Overlay -->
-      <Waveform height={height} barWidth={barWidth} barGap={barGap} color={liveColor} useEvents={true} />
+      <Waveform
+        {height}
+        {barWidth}
+        {barGap}
+        color={liveColor}
+        useEvents={true}
+      />
     {:else if pendingTranscription.audioVisualizationHistory?.length}
       <!-- Static waveform from recorded history -->
-      <div bind:this={staticContainer} class="static-waveform-container" style="height: {height}px;">
+      <div
+        bind:this={staticContainer}
+        class="static-waveform-container"
+        style="height: {height}px;"
+      >
         <canvas
           bind:this={staticCanvas}
           class="waveform-canvas"
@@ -180,9 +224,16 @@
   {#if !completed}
     <div class="status-row">
       <div class="status-indicator">
-        <span class="status-dot {getDotColor(pendingTranscription.status)}" class:animate-pulse={pendingTranscription.status !== 'recording'}></span>
-        {#if pendingTranscription.status === 'recording'}
-          <span class="status-dot {getDotColor(pendingTranscription.status)} animate-pulse-recording"></span>
+        <span
+          class="status-dot {getDotColor(pendingTranscription.status)}"
+          class:animate-pulse={pendingTranscription.status !== "recording"}
+        ></span>
+        {#if pendingTranscription.status === "recording"}
+          <span
+            class="status-dot {getDotColor(
+              pendingTranscription.status
+            )} animate-pulse-recording"
+          ></span>
         {/if}
         <span class="status-text {getStatusColor(pendingTranscription.status)}">
           {getStatusText(pendingTranscription.status)}
@@ -192,7 +243,7 @@
         {/if}
       </div>
 
-      {#if pendingTranscription.status === 'recording' && onCancel}
+      {#if pendingTranscription.status === "recording" && onCancel}
         <button class="cancel-btn" onclick={onCancel} title="Cancel recording">
           Cancel
         </button>
@@ -211,7 +262,9 @@
     <div class="error-section">
       <div class="error-message">
         <span class="error-icon">!</span>
-        <span>Transcription failed: {pendingTranscription.transcriptionError}</span>
+        <span
+          >Transcription failed: {pendingTranscription.transcriptionError}</span
+        >
       </div>
       {#if onRetry}
         <button class="retry-btn" onclick={onRetry}>
@@ -221,35 +274,84 @@
     </div>
   {/if}
 
-  <!-- Transcript preview (show original vs cleaned in completed mode) -->
+  <!-- Transcript preview section -->
   {#if pendingTranscription.transcript && !pendingTranscription.transcriptionError}
     <div class="transcript-section">
-      {#if completed && pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript}
-        <!-- In completed mode, show both original and cleaned -->
-        <div class="transcript-comparison">
-          <div class="original-transcript">
-            <div class="transcript-label">Original:</div>
-            <div class="transcript-text muted">{pendingTranscription.transcript}</div>
+      <!-- Source transcripts section (show when vosk exists) -->
+      {#if pendingTranscription.voskTranscript}
+        <div class="source-transcripts">
+          <div class="source-header">
+            <svg
+              class="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+              />
+            </svg>
+            <span>Source Transcripts</span>
           </div>
-          <div class="cleaned-transcript">
-            <div class="transcript-label-row">
-              <span class="auto-badge">AUTO</span>
-              <span class="transcript-label">Cleaned:</span>
+          <div class="sources-grid">
+            <!-- Whisper transcript -->
+            <div class="source-item whisper">
+              <div class="source-label">
+                <span class="source-badge whisper-badge">Whisper</span>
+              </div>
+              <div class="source-text">{pendingTranscription.transcript}</div>
             </div>
-            <div class="transcript-text">{pendingTranscription.cleanedTranscript}</div>
+            <!-- Vosk transcript -->
+            <div class="source-item vosk">
+              <div class="source-label">
+                <span class="source-badge vosk-badge">Vosk</span>
+              </div>
+              <div class="source-text">
+                {pendingTranscription.voskTranscript}
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Diff visualization (collapsible) - shows diffs for each source -->
+      <!-- Show if: cleanup changed something OR vosk differs from whisper (at least one source has a diff) -->
+      {#if (pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript) || (pendingTranscription.voskTranscript && pendingTranscription.voskTranscript !== pendingTranscription.transcript)}
+        <div class="diff-container">
+          <TranscriptDiff
+            original={pendingTranscription.transcript}
+            cleaned={pendingTranscription.cleanedTranscript || pendingTranscription.transcript}
+            voskTranscript={pendingTranscription.voskTranscript}
+            usedDualSource={!!pendingTranscription.voskTranscript}
+            corrections={pendingTranscription.cleanupCorrections || []}
+            collapsed={!completed}
+          />
+        </div>
+      {/if}
+
+      <!-- Final transcript (cleaned or original) -->
+      {#if pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript}
+        <div class="final-transcript">
+          <div class="transcript-label-row">
+            <span class="transcript-label"
+              >{completed ? "Voice input" : "Final transcript"}</span
+            >
+            <span class="cleaned-badge">Cleaned</span>
+          </div>
+          <div class="transcript-text">
+            {pendingTranscription.cleanedTranscript}
           </div>
         </div>
       {:else}
-        <div class="transcript-label">{completed ? 'Voice input:' : 'Transcript:'}</div>
-        <div class="transcript-text">
-          {pendingTranscription.cleanedTranscript || pendingTranscription.transcript}
-        </div>
-        {#if !completed && pendingTranscription.wasCleanedUp && pendingTranscription.cleanedTranscript !== pendingTranscription.transcript}
-          <div class="cleanup-note">
-            <span class="cleanup-icon">&#10003;</span>
-            Cleaned up by LLM
+        <div class="final-transcript">
+          <div class="transcript-label">
+            {completed ? "Voice input:" : "Transcript:"}
           </div>
-        {/if}
+          <div class="transcript-text">{pendingTranscription.transcript}</div>
+        </div>
       {/if}
     </div>
   {/if}
@@ -260,17 +362,39 @@
       {#if pendingTranscription.modelRecommendation}
         <div class="recommendation model-recommendation">
           <div class="recommendation-header">
-            <svg class="recommendation-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+            <svg
+              class="recommendation-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"
+              />
             </svg>
             <span class="auto-badge">AUTO</span>
             <span class="recommendation-label">Model</span>
-            <span class="model-badge {getModelBadgeBgColor(pendingTranscription.modelRecommendation.modelId)} {getModelTextColor(pendingTranscription.modelRecommendation.modelId)}">
-              {getShortModelName(pendingTranscription.modelRecommendation.modelId)}
+            <span
+              class="model-badge {getModelBadgeBgColor(
+                pendingTranscription.modelRecommendation.modelId
+              )} {getModelTextColor(
+                pendingTranscription.modelRecommendation.modelId
+              )}"
+            >
+              {getShortModelName(
+                pendingTranscription.modelRecommendation.modelId
+              )}
             </span>
             {#if pendingTranscription.modelRecommendation.thinkingLevel}
               <span class="thinking-badge">
-                <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg
+                  class="thinking-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
                   <circle cx="12" cy="12" r="10" />
                   <path d="M12 6v6l4 2" />
                 </svg>
@@ -282,7 +406,9 @@
             <svg class="quote-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z" />
             </svg>
-            <blockquote class="reasoning">{pendingTranscription.modelRecommendation.reasoning}</blockquote>
+            <blockquote class="reasoning">
+              {pendingTranscription.modelRecommendation.reasoning}
+            </blockquote>
           </div>
         </div>
       {/if}
@@ -290,25 +416,56 @@
       {#if pendingTranscription.repoRecommendation}
         <div class="recommendation repo-recommendation">
           <div class="recommendation-header">
-            <svg class="recommendation-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <svg
+              class="recommendation-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+              />
             </svg>
             <span class="auto-badge">AUTO</span>
             <span class="recommendation-label">Repository</span>
-            <span class="repo-name">{pendingTranscription.repoRecommendation.repoName}</span>
-            <span class="confidence confidence-{pendingTranscription.repoRecommendation.confidence}">
-              {#if pendingTranscription.repoRecommendation.confidence === 'high'}
-                <svg class="confidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <span class="repo-name"
+              >{pendingTranscription.repoRecommendation.repoName}</span
+            >
+            <span
+              class="confidence confidence-{pendingTranscription
+                .repoRecommendation.confidence}"
+            >
+              {#if pendingTranscription.repoRecommendation.confidence === "high"}
+                <svg
+                  class="confidence-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                >
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
-              {:else if pendingTranscription.repoRecommendation.confidence === 'medium'}
-                <svg class="confidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              {:else if pendingTranscription.repoRecommendation.confidence === "medium"}
+                <svg
+                  class="confidence-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
                   <circle cx="12" cy="12" r="10" />
                   <line x1="12" y1="8" x2="12" y2="12" />
                   <line x1="12" y1="16" x2="12.01" y2="16" />
                 </svg>
               {:else}
-                <svg class="confidence-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg
+                  class="confidence-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
                   <circle cx="12" cy="12" r="10" />
                   <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
                   <line x1="12" y1="17" x2="12.01" y2="17" />
@@ -321,7 +478,9 @@
             <svg class="quote-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z" />
             </svg>
-            <blockquote class="reasoning">{pendingTranscription.repoRecommendation.reasoning}</blockquote>
+            <blockquote class="reasoning">
+              {pendingTranscription.repoRecommendation.reasoning}
+            </blockquote>
           </div>
         </div>
       {/if}
@@ -402,7 +561,8 @@
   }
 
   @keyframes pulse-recording {
-    0%, 100% {
+    0%,
+    100% {
       opacity: 1;
       transform: scale(1);
     }
@@ -420,7 +580,8 @@
   .duration-text {
     font-size: 0.875rem;
     font-weight: 600;
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+      monospace;
     color: var(--color-text-secondary);
     margin-left: 0.5rem;
   }
@@ -575,7 +736,11 @@
 
   .model-recommendation {
     border-left-color: #8b5cf6;
-    background: linear-gradient(to right, rgba(139, 92, 246, 0.08), transparent);
+    background: linear-gradient(
+      to right,
+      rgba(139, 92, 246, 0.08),
+      transparent
+    );
   }
 
   .repo-recommendation {
@@ -623,8 +788,13 @@
   }
 
   @keyframes shimmer {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
+    0%,
+    100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
   }
 
   .recommendation-label {
@@ -722,5 +892,122 @@
     font-size: 0.8125rem;
     line-height: 1.5;
     margin: 0;
+  }
+
+  .diff-container {
+    margin-top: 0.75rem;
+  }
+
+  .dual-source-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(139, 92, 246, 0.1);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 4px;
+    font-size: 0.6875rem;
+    color: #a78bfa;
+    font-weight: 500;
+    width: fit-content;
+  }
+
+  .final-transcript {
+    margin-top: 0.5rem;
+  }
+
+  .cleaned-badge {
+    padding: 0.125rem 0.375rem;
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 3px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: #4ade80;
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+  }
+
+  .source-transcripts {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--color-border);
+  }
+
+  .source-header {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    margin-bottom: 0.5rem;
+  }
+
+  .sources-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .sources-grid.single {
+    grid-template-columns: 1fr;
+  }
+
+  .source-item {
+    padding: 0.5rem 0.625rem;
+    background: var(--color-surface);
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+  }
+
+  .source-item.whisper {
+    border-left: 2px solid var(--color-accent);
+  }
+
+  .source-item.vosk {
+    border-left: 2px solid #a78bfa;
+  }
+
+  .source-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .source-badge {
+    padding: 0.125rem 0.375rem;
+    border-radius: 3px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+  }
+
+  .whisper-badge {
+    background: rgba(var(--color-accent-rgb, 59, 130, 246), 0.15);
+    border: 1px solid rgba(var(--color-accent-rgb, 59, 130, 246), 0.3);
+    color: var(--color-accent);
+  }
+
+  .vosk-badge {
+    background: rgba(139, 92, 246, 0.15);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    color: #a78bfa;
+  }
+
+  .source-desc {
+    font-size: 0.625rem;
+    color: var(--color-text-muted);
+  }
+
+  .source-text {
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+    line-height: 1.4;
+    max-height: 4rem;
+    overflow-y: auto;
   }
 </style>

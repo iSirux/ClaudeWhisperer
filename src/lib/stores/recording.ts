@@ -1,6 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { usageStats } from './usageStats';
 import { settings } from './settings';
 
@@ -25,6 +25,9 @@ interface RecordingStore {
   queue: QueuedRecording[];
   // Number of recordings currently being transcribed
   transcribingCount: number;
+  // Vosk real-time transcription
+  realtimeTranscript: string;
+  voskSessionId: string | null;
 }
 
 function createRecordingStore() {
@@ -36,6 +39,8 @@ function createRecordingStore() {
     stream: null,
     queue: [],
     transcribingCount: 0,
+    realtimeTranscript: '',
+    voskSessionId: null,
   });
 
   let mediaRecorder: MediaRecorder | null = null;
@@ -44,6 +49,142 @@ function createRecordingStore() {
   let analyser: AnalyserNode | null = null;
   let visualizationAnimationId: number | null = null;
   let recordingStartTime: number | null = null;
+
+  // Vosk real-time transcription state
+  let voskAudioContext: AudioContext | null = null;
+  let voskProcessor: ScriptProcessorNode | null = null;
+  let voskUnlistenPartial: UnlistenFn | null = null;
+  let voskUnlistenFinal: UnlistenFn | null = null;
+  let voskUnlistenError: UnlistenFn | null = null;
+  // Accumulated final text from Vosk (when accumulate_transcript is enabled)
+  let voskAccumulatedText: string = '';
+
+  // Convert Float32 audio samples to Int16 for Vosk
+  function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
+    const int16Array = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return int16Array;
+  }
+
+  // Start Vosk real-time transcription session
+  async function startVoskSession(stream: MediaStream, sessionId: string) {
+    const currentSettings = get(settings);
+    if (!currentSettings.vosk?.enabled) return;
+
+    try {
+      // Create audio context at Vosk's required sample rate (16kHz)
+      voskAudioContext = new AudioContext({ sampleRate: currentSettings.vosk.sample_rate || 16000 });
+      const source = voskAudioContext.createMediaStreamSource(stream);
+
+      // ScriptProcessor to extract PCM samples (4096 samples per buffer)
+      voskProcessor = voskAudioContext.createScriptProcessor(4096, 1, 1);
+
+      voskProcessor.onaudioprocess = async (event) => {
+        const float32Data = event.inputBuffer.getChannelData(0);
+        const int16Data = convertFloat32ToInt16(float32Data);
+
+        try {
+          await invoke('send_vosk_audio', {
+            sessionId,
+            samples: Array.from(int16Data),
+          });
+        } catch (error) {
+          console.error('Failed to send audio to Vosk:', error);
+        }
+      };
+
+      source.connect(voskProcessor);
+      // Connect to destination to keep processing active (required by ScriptProcessorNode)
+      voskProcessor.connect(voskAudioContext.destination);
+
+      // Listen for Vosk events
+      voskUnlistenPartial = await listen(`vosk-partial-${sessionId}`, (event: any) => {
+        const partial = event.payload?.partial || '';
+        const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
+        // When accumulating, prepend accumulated text to partial
+        const displayText = shouldAccumulate && voskAccumulatedText
+          ? `${voskAccumulatedText} ${partial}`.trim()
+          : partial;
+        update((s) => ({ ...s, realtimeTranscript: displayText }));
+        emit('vosk-realtime-transcript', { text: displayText });
+      });
+
+      voskUnlistenFinal = await listen(`vosk-final-${sessionId}`, (event: any) => {
+        const text = event.payload?.text || '';
+        if (text) {
+          const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
+          if (shouldAccumulate) {
+            // Append this final text to accumulated text
+            voskAccumulatedText = voskAccumulatedText
+              ? `${voskAccumulatedText} ${text}`.trim()
+              : text;
+          }
+          const displayText = shouldAccumulate ? voskAccumulatedText : text;
+          update((s) => ({ ...s, realtimeTranscript: displayText }));
+          emit('vosk-realtime-transcript', { text: displayText });
+        }
+      });
+
+      voskUnlistenError = await listen(`vosk-error-${sessionId}`, (event: any) => {
+        console.error('Vosk error:', event.payload?.error);
+      });
+
+      // Start the Vosk session on the backend
+      await invoke('start_vosk_session', { sessionId });
+
+      update((s) => ({ ...s, voskSessionId: sessionId }));
+    } catch (error) {
+      console.error('Failed to start Vosk session:', error);
+      // Clean up on error
+      await stopVoskSession();
+    }
+  }
+
+  // Stop Vosk real-time transcription session
+  async function stopVoskSession() {
+    const currentState = get({ subscribe });
+    const sessionId = currentState.voskSessionId;
+
+    // Clean up event listeners
+    if (voskUnlistenPartial) {
+      voskUnlistenPartial();
+      voskUnlistenPartial = null;
+    }
+    if (voskUnlistenFinal) {
+      voskUnlistenFinal();
+      voskUnlistenFinal = null;
+    }
+    if (voskUnlistenError) {
+      voskUnlistenError();
+      voskUnlistenError = null;
+    }
+
+    // Clean up audio processing
+    if (voskProcessor) {
+      voskProcessor.disconnect();
+      voskProcessor = null;
+    }
+    if (voskAudioContext) {
+      await voskAudioContext.close();
+      voskAudioContext = null;
+    }
+
+    // Stop the backend session
+    if (sessionId) {
+      try {
+        await invoke('stop_vosk_session', { sessionId });
+      } catch (error) {
+        console.error('Failed to stop Vosk session:', error);
+      }
+    }
+
+    // Clear accumulated text when session ends
+    voskAccumulatedText = '';
+    update((s) => ({ ...s, voskSessionId: null, realtimeTranscript: '' }));
+  }
 
   function startVisualizationBroadcast(stream: MediaStream) {
     try {
@@ -183,10 +324,14 @@ function createRecordingStore() {
         // Start broadcasting audio visualization data to all windows
         startVisualizationBroadcast(stream);
 
+        // Start Vosk real-time transcription if enabled
+        const voskSessionId = `vosk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        await startVoskSession(stream, voskSessionId);
+
         // Also emit recording state change
         emit('recording-state', { state: 'recording' });
 
-        update((s) => ({ ...s, state: 'recording', error: null, transcript: '', stream }));
+        update((s) => ({ ...s, state: 'recording', error: null, transcript: '', realtimeTranscript: '', stream }));
       } catch (error) {
         console.error('Failed to start recording:', error);
         update((s) => ({
@@ -210,6 +355,10 @@ function createRecordingStore() {
         mediaRecorder.onstop = async () => {
           // Stop visualization broadcast after recording has stopped
           stopVisualizationBroadcast();
+
+          // Stop Vosk real-time transcription
+          await stopVoskSession();
+
           try {
             // Track recording duration
             if (recordingStartTime) {
@@ -333,15 +482,16 @@ function createRecordingStore() {
       }
     },
 
-    cancelRecording() {
+    async cancelRecording() {
       stopVisualizationBroadcast();
+      await stopVoskSession();
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach((track) => track.stop());
       }
       mediaRecorder = null;
       audioChunks = [];
-      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0 });
+      set({ state: 'idle', transcript: '', error: null, audioData: null, stream: null, queue: [], transcribingCount: 0, realtimeTranscript: '', voskSessionId: null });
       emit('recording-state', { state: 'idle' });
     },
 
@@ -385,3 +535,7 @@ export const isTranscribing = derived(recording, ($recording) => $recording.tran
 export const hasQueuedTranscriptions = derived(recording, ($recording) =>
   $recording.queue.some(r => r.status === 'pending' || r.status === 'transcribing')
 );
+
+// Vosk real-time transcription
+export const realtimeTranscript = derived(recording, ($recording) => $recording.realtimeTranscript);
+export const hasVoskSession = derived(recording, ($recording) => $recording.voskSessionId !== null);

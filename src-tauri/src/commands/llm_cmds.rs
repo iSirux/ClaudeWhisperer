@@ -230,11 +230,14 @@ pub async fn analyze_interaction_needed(
 }
 
 /// Clean up a voice transcription
+/// When vosk_transcription is provided along with use_dual_transcription enabled,
+/// both transcriptions are used to improve accuracy
 #[tauri::command]
 pub async fn clean_transcription(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
     raw_transcription: String,
+    vosk_transcription: Option<String>,
     repo_context: Option<String>,
 ) -> Result<TranscriptionCleanupResult, String> {
     let cfg = config.lock().clone();
@@ -248,8 +251,16 @@ pub async fn clean_transcription(
     }
 
     let client = create_client(&app, &cfg)?;
+
+    // Only use dual transcription if the feature is enabled and Vosk transcription is provided
+    let vosk = if cfg.llm.features.use_dual_transcription && cfg.vosk.enabled {
+        vosk_transcription.as_deref()
+    } else {
+        None
+    };
+
     client
-        .clean_transcription(&raw_transcription, repo_context.as_deref())
+        .clean_transcription(&raw_transcription, vosk, repo_context.as_deref())
         .await
 }
 
@@ -327,11 +338,17 @@ pub async fn recommend_repo(
 
     let client = create_client(&app, &cfg)?;
 
-    // Build repos list with descriptions and keywords
-    let repos: Vec<(String, String, Option<String>, Option<Vec<String>>)> = cfg
+    // Build repos list with descriptions, keywords, and vocabulary
+    let repos: Vec<(String, String, Option<String>, Option<Vec<String>>, Option<Vec<String>>)> = cfg
         .repos
         .iter()
-        .map(|r| (r.name.clone(), r.path.clone(), r.description.clone(), r.keywords.clone()))
+        .map(|r| (
+            r.name.clone(),
+            r.path.clone(),
+            r.description.clone(),
+            r.keywords.clone(),
+            r.vocabulary.clone(),
+        ))
         .collect();
 
     client.recommend_repo(&prompt, &repos, is_transcribed.unwrap_or(false)).await
