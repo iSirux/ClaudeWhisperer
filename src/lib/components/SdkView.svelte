@@ -47,9 +47,18 @@
      pendingTranscription.repoRecommendation)
   );
 
+  // Reference to prompt input for focus
+  let promptInputRef: { focus: () => void } | undefined;
+
+  // Expose focus function for external use
+  export function focusPromptInput() {
+    promptInputRef?.focus();
+  }
+
   // Repo and branch info
   let cwd = $derived(session?.cwd ?? '');
   let repoName = $derived(cwd.split(/[/\\]/).pop() || cwd);
+  let sessionModel = $derived(session?.model ?? '');
   let branch = $state<string | null>(null);
 
   // Fetch git branch when session changes
@@ -381,7 +390,7 @@
     {/if}
 
     {#each messages as msg (msg.timestamp)}
-      <SdkMessageComponent message={msg} {copiedMessageId} onCopy={copyMessage} />
+      <SdkMessageComponent message={msg} {copiedMessageId} onCopy={copyMessage} sessionCwd={cwd} {sessionModel} />
     {/each}
 
     {#if isLoading}
@@ -390,6 +399,7 @@
   </div>
 
   <SdkPromptInput
+    bind:this={promptInputRef}
     {isQuerying}
     isRecording={$isRecording}
     isTranscribing={$isProcessing && isRecordingForCurrentSession}

@@ -34,6 +34,13 @@ function createOpenMicStore() {
   let unlistenPartial: UnlistenFn | null = null;
   let unlistenFinal: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
+  // Accumulated final text from Vosk (when accumulate_transcript is enabled)
+  let voskAccumulatedText: string = "";
+
+  // Visualization context (to match recording store's audio pipeline)
+  let vizAudioContext: AudioContext | null = null;
+  let vizAnalyser: AnalyserNode | null = null;
+  let vizAnimationId: number | null = null;
 
   // Convert Float32 audio samples to Int16 for Vosk
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
@@ -87,6 +94,13 @@ function createOpenMicStore() {
   }
 
   async function start() {
+    // Prevent double-starting
+    const currentState = get({ subscribe });
+    if (currentState.state === "listening" || currentState.state === "initializing") {
+      console.log("[open-mic] Already running, skipping start");
+      return;
+    }
+
     const currentSettings = get(settings);
 
     // Check prerequisites
@@ -117,22 +131,58 @@ function createOpenMicStore() {
       return;
     }
 
+    // Clear accumulated text at the start of each listening session
+    voskAccumulatedText = "";
+
+    // Clean up any existing listeners first (safety measure)
+    if (unlistenPartial) {
+      unlistenPartial();
+      unlistenPartial = null;
+    }
+    if (unlistenFinal) {
+      unlistenFinal();
+      unlistenFinal = null;
+    }
+    if (unlistenError) {
+      unlistenError();
+      unlistenError = null;
+    }
+
     update((s) => ({
       ...s,
       state: "initializing",
       error: null,
       detectedCommand: null,
+      lastTranscript: "",
     }));
 
     try {
-      // Request microphone access
+      // Request microphone access (use same constraints as recording store)
+      const deviceId = currentSettings.audio.device_id;
       mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: currentSettings.audio.device_id || undefined,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
       });
+
+      // Create visualization context (matches recording store's audio pipeline)
+      // This adds another consumer to the audio stream for consistent timing
+      vizAudioContext = new AudioContext();
+      vizAnalyser = vizAudioContext.createAnalyser();
+      vizAnalyser.fftSize = 256;
+      vizAnalyser.smoothingTimeConstant = 0.8;
+      const vizSource = vizAudioContext.createMediaStreamSource(mediaStream);
+      vizSource.connect(vizAnalyser);
+
+      // Run visualization loop (matches recording store behavior)
+      // Emit audio visualization data for OpenMicMarquee
+      const vizDataArray = new Uint8Array(vizAnalyser.frequencyBinCount);
+
+      function runVisualization() {
+        if (!vizAnalyser) return;
+        vizAnalyser.getByteFrequencyData(vizDataArray);
+        emit("open-mic-visualization", { data: Array.from(vizDataArray) });
+        vizAnimationId = requestAnimationFrame(runVisualization);
+      }
+      runVisualization();
 
       // Create audio context at Vosk's required sample rate (16kHz)
       audioContext = new AudioContext({
@@ -143,10 +193,8 @@ function createOpenMicStore() {
       // ScriptProcessor to extract PCM samples
       processor = audioContext.createScriptProcessor(4096, 1, 1);
 
+      // Match recording store's audio processing (no state check - cleanup handles stopping)
       processor.onaudioprocess = async (event) => {
-        const currentState = get({ subscribe });
-        if (currentState.state !== "listening") return;
-
         const float32Data = event.inputBuffer.getChannelData(0);
         const int16Data = convertFloat32ToInt16(float32Data);
 
@@ -164,18 +212,37 @@ function createOpenMicStore() {
       processor.connect(audioContext.destination);
 
       // Listen for Vosk partial events (real-time)
+      // NOTE: Open mic does NOT accumulate across utterances like recording does.
+      // Open mic runs continuously, so we show only the CURRENT utterance directly.
+      // Vosk partials already contain the full current utterance (they replace, not add).
+      let lastPartialTime = Date.now();
+      let lastPartialText = "";
       unlistenPartial = await listen(
         `vosk-partial-${OPEN_MIC_SESSION_ID}`,
         (event: any) => {
           const partial = event.payload?.partial || "";
-          if (!partial) return;
+
+          // Skip if partial hasn't changed (avoid duplicate updates)
+          if (partial === lastPartialText) {
+            return;
+          }
+          lastPartialText = partial;
+
+          const now = Date.now();
+          const delta = now - lastPartialTime;
+          lastPartialTime = now;
+
+          console.log("[open-mic][partial]", { partial, deltaMs: delta });
 
           update((s) => ({ ...s, lastTranscript: partial }));
+          emit("open-mic-realtime-transcript", { text: partial });
 
-          // Check for wake command in partial transcript
-          const detectedCommand = detectWakeCommand(partial);
-          if (detectedCommand) {
-            handleWakeCommandDetected(detectedCommand);
+          // Check for wake command in partial transcript (only if non-empty)
+          if (partial) {
+            const detectedCommand = detectWakeCommand(partial);
+            if (detectedCommand) {
+              handleWakeCommandDetected(detectedCommand);
+            }
           }
         }
       );
@@ -185,14 +252,17 @@ function createOpenMicStore() {
         `vosk-final-${OPEN_MIC_SESSION_ID}`,
         (event: any) => {
           const text = event.payload?.text || "";
-          if (!text) return;
+          console.log("[open-mic][final]", { text });
 
-          update((s) => ({ ...s, lastTranscript: text }));
+          if (text) {
+            update((s) => ({ ...s, lastTranscript: text }));
+            emit("open-mic-realtime-transcript", { text });
 
-          // Check for wake command in final transcript
-          const detectedCommand = detectWakeCommand(text);
-          if (detectedCommand) {
-            handleWakeCommandDetected(detectedCommand);
+            // Check for wake command in final transcript
+            const detectedCommand = detectWakeCommand(text);
+            if (detectedCommand) {
+              handleWakeCommandDetected(detectedCommand);
+            }
           }
         }
       );
@@ -207,6 +277,9 @@ function createOpenMicStore() {
 
       // Start the Vosk session on the backend
       await invoke("start_vosk_session", { sessionId: OPEN_MIC_SESSION_ID });
+
+      // Clear the UI transcript when starting fresh
+      emit("open-mic-realtime-transcript", { text: "" });
 
       update((s) => ({ ...s, state: "listening" }));
       console.log("[open-mic] Started passive listening");
@@ -241,6 +314,8 @@ function createOpenMicStore() {
     setTimeout(() => {
       const state = get({ subscribe });
       if (state.state === "triggered") {
+        // Clear accumulated text when returning to listening
+        voskAccumulatedText = "";
         update((s) => ({
           ...s,
           state: "listening",
@@ -254,6 +329,8 @@ function createOpenMicStore() {
   async function stop() {
     console.log("[open-mic] Stopping passive listening");
     await cleanup();
+    // Clear accumulated text when stopping
+    voskAccumulatedText = "";
     update((s) => ({
       ...s,
       state: "disabled",
@@ -277,6 +354,21 @@ function createOpenMicStore() {
       unlistenError();
       unlistenError = null;
     }
+
+    // Clean up visualization (matches recording store cleanup)
+    if (vizAnimationId !== null) {
+      cancelAnimationFrame(vizAnimationId);
+      vizAnimationId = null;
+    }
+    if (vizAudioContext) {
+      try {
+        await vizAudioContext.close();
+      } catch (e) {
+        // Ignore errors closing audio context
+      }
+      vizAudioContext = null;
+    }
+    vizAnalyser = null;
 
     // Clean up audio processing
     if (processor) {

@@ -2,6 +2,8 @@
   import {
     settings,
     VOICE_COMMAND_PRESETS,
+    TRANSCRIBE_COMMAND_PRESETS,
+    CANCEL_COMMAND_PRESETS,
     OPEN_MIC_PRESETS,
   } from "$lib/stores/settings";
   import { onMount } from "svelte";
@@ -13,6 +15,10 @@
   let loadingDevices = $state(false);
   let customCommand = $state("");
   let customCommandError = $state("");
+  let customTranscribeCommand = $state("");
+  let customTranscribeCommandError = $state("");
+  let customCancelCommand = $state("");
+  let customCancelCommandError = $state("");
   let customWakeCommand = $state("");
   let customWakeCommandError = $state("");
 
@@ -100,6 +106,142 @@
       VOICE_COMMAND_PRESETS.map((c) => c.toLowerCase())
     );
     return $settings.audio.voice_commands.active_commands.filter(
+      (c) => !presetSet.has(c.toLowerCase())
+    );
+  }
+
+  // Transcribe command functions
+  function toggleTranscribeCommand(command: string) {
+    const transcribeCommands = $settings.audio.voice_commands.transcribe_commands ?? [];
+    const index = transcribeCommands.indexOf(command);
+    if (index === -1) {
+      $settings.audio.voice_commands.transcribe_commands = [
+        ...transcribeCommands,
+        command,
+      ];
+    } else {
+      $settings.audio.voice_commands.transcribe_commands = transcribeCommands.filter(
+        (c) => c !== command
+      );
+    }
+  }
+
+  function isTranscribeCommandActive(command: string): boolean {
+    return ($settings.audio.voice_commands.transcribe_commands ?? []).includes(command);
+  }
+
+  function addCustomTranscribeCommand() {
+    const trimmed = customTranscribeCommand.trim().toLowerCase();
+    if (!trimmed) {
+      customTranscribeCommandError = "";
+      return;
+    }
+
+    if (!isValidVoiceCommand(trimmed)) {
+      customTranscribeCommandError = "Command must be 2-30 characters";
+      return;
+    }
+
+    // Check if already exists (in presets or active commands)
+    const allCommands = [
+      ...TRANSCRIBE_COMMAND_PRESETS,
+      ...($settings.audio.voice_commands.transcribe_commands ?? []),
+    ].map((c) => c.toLowerCase());
+
+    if (allCommands.includes(trimmed)) {
+      customTranscribeCommandError = "Command already exists";
+      return;
+    }
+
+    $settings.audio.voice_commands.transcribe_commands = [
+      ...($settings.audio.voice_commands.transcribe_commands ?? []),
+      trimmed,
+    ];
+    customTranscribeCommand = "";
+    customTranscribeCommandError = "";
+  }
+
+  function removeCustomTranscribeCommand(command: string) {
+    $settings.audio.voice_commands.transcribe_commands =
+      ($settings.audio.voice_commands.transcribe_commands ?? []).filter(
+        (c) => c !== command
+      );
+  }
+
+  // Get custom transcribe commands (commands not in presets)
+  function getCustomTranscribeCommands(): string[] {
+    const presetSet = new Set(
+      TRANSCRIBE_COMMAND_PRESETS.map((c) => c.toLowerCase())
+    );
+    return ($settings.audio.voice_commands.transcribe_commands ?? []).filter(
+      (c) => !presetSet.has(c.toLowerCase())
+    );
+  }
+
+  // Cancel command functions
+  function toggleCancelCommand(command: string) {
+    const cancelCommands = $settings.audio.voice_commands.cancel_commands ?? [];
+    const index = cancelCommands.indexOf(command);
+    if (index === -1) {
+      $settings.audio.voice_commands.cancel_commands = [
+        ...cancelCommands,
+        command,
+      ];
+    } else {
+      $settings.audio.voice_commands.cancel_commands = cancelCommands.filter(
+        (c) => c !== command
+      );
+    }
+  }
+
+  function isCancelCommandActive(command: string): boolean {
+    return ($settings.audio.voice_commands.cancel_commands ?? []).includes(command);
+  }
+
+  function addCustomCancelCommand() {
+    const trimmed = customCancelCommand.trim().toLowerCase();
+    if (!trimmed) {
+      customCancelCommandError = "";
+      return;
+    }
+
+    if (!isValidVoiceCommand(trimmed)) {
+      customCancelCommandError = "Command must be 2-30 characters";
+      return;
+    }
+
+    // Check if already exists (in presets or active commands)
+    const allCommands = [
+      ...CANCEL_COMMAND_PRESETS,
+      ...($settings.audio.voice_commands.cancel_commands ?? []),
+    ].map((c) => c.toLowerCase());
+
+    if (allCommands.includes(trimmed)) {
+      customCancelCommandError = "Command already exists";
+      return;
+    }
+
+    $settings.audio.voice_commands.cancel_commands = [
+      ...($settings.audio.voice_commands.cancel_commands ?? []),
+      trimmed,
+    ];
+    customCancelCommand = "";
+    customCancelCommandError = "";
+  }
+
+  function removeCustomCancelCommand(command: string) {
+    $settings.audio.voice_commands.cancel_commands =
+      ($settings.audio.voice_commands.cancel_commands ?? []).filter(
+        (c) => c !== command
+      );
+  }
+
+  // Get custom cancel commands (commands not in presets)
+  function getCustomCancelCommands(): string[] {
+    const presetSet = new Set(
+      CANCEL_COMMAND_PRESETS.map((c) => c.toLowerCase())
+    );
+    return ($settings.audio.voice_commands.cancel_commands ?? []).filter(
       (c) => !presetSet.has(c.toLowerCase())
     );
   }
@@ -224,6 +366,51 @@
         type="checkbox"
         class="toggle"
         bind:checked={$settings.audio.play_sound_on_completion}
+      />
+    </div>
+    <div class="flex items-center justify-between mt-4">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Play Sound on Repo Select</label
+        >
+        <p class="text-xs text-text-muted mt-0.5">
+          Play a confirmation sound when selecting a repository
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.audio.play_sound_on_repo_select}
+      />
+    </div>
+    <div class="flex items-center justify-between mt-4">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Play Sound on Open Mic Trigger</label
+        >
+        <p class="text-xs text-text-muted mt-0.5">
+          Play a sound when a wake command starts recording
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.audio.play_sound_on_open_mic_trigger}
+      />
+    </div>
+    <div class="flex items-center justify-between mt-4">
+      <div>
+        <label class="text-sm font-medium text-text-secondary"
+          >Play Sound on Voice Command</label
+        >
+        <p class="text-xs text-text-muted mt-0.5">
+          Play a sound when a voice command (like "go go") is detected
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        class="toggle"
+        bind:checked={$settings.audio.play_sound_on_voice_command}
       />
     </div>
   </div>
@@ -389,6 +576,226 @@
             triggering.
           </p>
         {/if}
+
+        <!-- Transcribe Commands Section -->
+        <div class="border-t border-border/50 pt-4 mt-4">
+          <div class="mb-3">
+            <label class="text-sm font-medium text-text-secondary"
+              >Transcribe-to-Input Commands</label
+            >
+            <p class="text-xs text-text-muted mt-0.5">
+              Say these commands to paste the transcription into the current app instead of sending to Claude
+            </p>
+          </div>
+
+          <!-- Preset Transcribe Commands -->
+          <div>
+            <label class="block text-xs font-medium text-text-muted mb-2"
+              >Preset Commands</label
+            >
+            <div class="flex flex-wrap gap-2">
+              {#each TRANSCRIBE_COMMAND_PRESETS as command}
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm rounded-full border transition-colors {isTranscribeCommandActive(
+                    command
+                  )
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-surface-elevated text-text-secondary border-border hover:border-blue-500 hover:text-text-primary'}"
+                  onclick={() => toggleTranscribeCommand(command)}
+                >
+                  "{command}"
+                </button>
+              {/each}
+            </div>
+          </div>
+
+          <!-- Custom Transcribe Commands -->
+          <div class="mt-3">
+            <label class="block text-xs font-medium text-text-muted mb-2"
+              >Custom Commands</label
+            >
+            <div class="flex gap-2">
+              <input
+                type="text"
+                placeholder="Add custom command..."
+                class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-blue-500"
+                bind:value={customTranscribeCommand}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomTranscribeCommand();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 transition-colors disabled:opacity-50"
+                onclick={addCustomTranscribeCommand}
+                disabled={!customTranscribeCommand.trim()}
+              >
+                Add
+              </button>
+            </div>
+            {#if customTranscribeCommandError}
+              <p class="text-xs text-red-500 mt-1">{customTranscribeCommandError}</p>
+            {/if}
+
+            {#if getCustomTranscribeCommands().length > 0}
+              <div class="flex flex-wrap gap-2 mt-2">
+                {#each getCustomTranscribeCommands() as command}
+                  <div
+                    class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-blue-600 text-white"
+                  >
+                    <span>"{command}"</span>
+                    <button
+                      type="button"
+                      class="ml-1 hover:bg-white/20 rounded-full p-0.5 transition-colors"
+                      onclick={() => removeCustomTranscribeCommand(command)}
+                      title="Remove command"
+                    >
+                      <svg
+                        class="w-3 h-3"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+
+          <!-- Active Transcribe Commands Summary -->
+          {#if ($settings.audio.voice_commands.transcribe_commands ?? []).length > 0}
+            <p class="text-xs text-text-muted mt-3">
+              Active transcribe commands: {($settings.audio.voice_commands.transcribe_commands ?? []).length}
+              - Commands will paste the transcript into the current app
+            </p>
+          {:else}
+            <p class="text-xs text-text-muted mt-3">
+              No transcribe commands selected. Optional: select commands to enable voice-triggered transcription.
+            </p>
+          {/if}
+        </div>
+
+        <!-- Cancel Commands Section -->
+        <div class="border-t border-border/50 pt-4 mt-4">
+          <div class="mb-3">
+            <label class="text-sm font-medium text-text-secondary"
+              >Cancel/Discard Commands</label
+            >
+            <p class="text-xs text-text-muted mt-0.5">
+              Say these commands to cancel and discard the current recording
+            </p>
+          </div>
+
+          <!-- Preset Cancel Commands -->
+          <div>
+            <label class="block text-xs font-medium text-text-muted mb-2"
+              >Preset Commands</label
+            >
+            <div class="flex flex-wrap gap-2">
+              {#each CANCEL_COMMAND_PRESETS as command}
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm rounded-full border transition-colors {isCancelCommandActive(
+                    command
+                  )
+                    ? 'bg-red-600 text-white border-red-600'
+                    : 'bg-surface-elevated text-text-secondary border-border hover:border-red-500 hover:text-text-primary'}"
+                  onclick={() => toggleCancelCommand(command)}
+                >
+                  "{command}"
+                </button>
+              {/each}
+            </div>
+          </div>
+
+          <!-- Custom Cancel Commands -->
+          <div class="mt-3">
+            <label class="block text-xs font-medium text-text-muted mb-2"
+              >Custom Commands</label
+            >
+            <div class="flex gap-2">
+              <input
+                type="text"
+                placeholder="Add custom command..."
+                class="flex-1 px-3 py-1.5 bg-background border border-border rounded text-sm focus:outline-none focus:border-red-500"
+                bind:value={customCancelCommand}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomCancelCommand();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700 transition-colors disabled:opacity-50"
+                onclick={addCustomCancelCommand}
+                disabled={!customCancelCommand.trim()}
+              >
+                Add
+              </button>
+            </div>
+            {#if customCancelCommandError}
+              <p class="text-xs text-red-500 mt-1">{customCancelCommandError}</p>
+            {/if}
+
+            {#if getCustomCancelCommands().length > 0}
+              <div class="flex flex-wrap gap-2 mt-2">
+                {#each getCustomCancelCommands() as command}
+                  <div
+                    class="flex items-center gap-1 px-3 py-1.5 text-sm rounded-full bg-red-600 text-white"
+                  >
+                    <span>"{command}"</span>
+                    <button
+                      type="button"
+                      class="ml-1 hover:bg-white/20 rounded-full p-0.5 transition-colors"
+                      onclick={() => removeCustomCancelCommand(command)}
+                      title="Remove command"
+                    >
+                      <svg
+                        class="w-3 h-3"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+
+          <!-- Active Cancel Commands Summary -->
+          {#if ($settings.audio.voice_commands.cancel_commands ?? []).length > 0}
+            <p class="text-xs text-text-muted mt-3">
+              Active cancel commands: {($settings.audio.voice_commands.cancel_commands ?? []).length}
+              - Recording will be discarded when these commands are detected
+            </p>
+          {:else}
+            <p class="text-xs text-text-muted mt-3">
+              No cancel commands selected. Optional: select commands to enable voice-triggered cancellation.
+            </p>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>

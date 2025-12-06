@@ -2,6 +2,7 @@
   import ModelSelector from './ModelSelector.svelte';
   import ThinkingSelector from './ThinkingSelector.svelte';
   import UsagePreview from './UsagePreview.svelte';
+  import OpenMicMarquee from './OpenMicMarquee.svelte';
   import type { ThinkingLevel } from '$lib/stores/sdkSessions';
   import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
 
@@ -223,6 +224,9 @@
   </div>
 
   <div class="flex items-center gap-2">
+    <!-- Open Mic Marquee (shows live transcription when listening) -->
+    <OpenMicMarquee />
+
     <!-- Usage Preview -->
     <UsagePreview />
 

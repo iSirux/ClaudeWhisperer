@@ -1,5 +1,8 @@
 import { get } from "svelte/store";
-import { settings, VOICE_COMMAND_PRESETS } from "$lib/stores/settings";
+import { settings, VOICE_COMMAND_PRESETS, TRANSCRIBE_COMMAND_PRESETS, CANCEL_COMMAND_PRESETS } from "$lib/stores/settings";
+
+/** Type of voice command action */
+export type VoiceCommandType = 'send' | 'transcribe' | 'cancel' | null;
 
 export interface VoiceCommandResult {
   /** The cleaned transcript with voice commands removed */
@@ -10,6 +13,12 @@ export interface VoiceCommandResult {
   detectedCommand: string | null;
   /** Whether the command should trigger sending the prompt */
   shouldSend: boolean;
+  /** Whether the command should trigger transcribe-to-input */
+  shouldTranscribe: boolean;
+  /** Whether the command should cancel/discard the recording */
+  shouldCancel: boolean;
+  /** The type of command detected */
+  commandType: VoiceCommandType;
 }
 
 /**
@@ -21,7 +30,7 @@ export function isVoiceCommandsEnabled(): boolean {
 }
 
 /**
- * Get the list of active voice commands
+ * Get the list of active voice commands (for sending)
  */
 export function getActiveVoiceCommands(): string[] {
   const currentSettings = get(settings);
@@ -29,8 +38,41 @@ export function getActiveVoiceCommands(): string[] {
 }
 
 /**
+ * Get the list of active transcription commands
+ */
+export function getActiveTranscribeCommands(): string[] {
+  const currentSettings = get(settings);
+  return currentSettings.audio.voice_commands.transcribe_commands ?? [];
+}
+
+/**
+ * Get the list of active cancel commands
+ */
+export function getActiveCancelCommands(): string[] {
+  const currentSettings = get(settings);
+  return currentSettings.audio.voice_commands.cancel_commands ?? [];
+}
+
+/**
+ * Normalize a string for voice command matching:
+ * - Lowercase
+ * - Remove trailing punctuation
+ * - Normalize internal punctuation/spaces (e.g., "go, go" -> "go go")
+ */
+function normalizeForMatching(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\s,.!?;:\-]+$/, "") // Remove trailing punctuation
+    .replace(/[,\-]+/g, " ") // Replace commas and hyphens with spaces
+    .replace(/\s+/g, " ") // Normalize multiple spaces
+    .trim();
+}
+
+/**
  * Process a transcript to detect and remove voice commands.
  * Voice commands are detected at the end of the transcript (case-insensitive).
+ * Handles common transcription variations like trailing punctuation, commas, etc.
+ * Checks both send commands and transcribe commands (send takes priority).
  *
  * @param transcript - The raw transcript text
  * @returns VoiceCommandResult with cleaned transcript and detection info
@@ -41,6 +83,9 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     commandDetected: false,
     detectedCommand: null,
     shouldSend: false,
+    shouldTranscribe: false,
+    shouldCancel: false,
+    commandType: null,
   };
 
   // If voice commands are disabled, return original transcript
@@ -48,61 +93,113 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
     return result;
   }
 
-  const activeCommands = getActiveVoiceCommands();
-  if (activeCommands.length === 0) {
+  const sendCommands = getActiveVoiceCommands();
+  const transcribeCommands = getActiveTranscribeCommands();
+  const cancelCommands = getActiveCancelCommands();
+
+  // Combine all commands with their types (cancel first for priority since it's destructive)
+  const allCommands: { command: string; type: VoiceCommandType }[] = [
+    ...cancelCommands.map(cmd => ({ command: cmd, type: 'cancel' as const })),
+    ...sendCommands.map(cmd => ({ command: cmd, type: 'send' as const })),
+    ...transcribeCommands.map(cmd => ({ command: cmd, type: 'transcribe' as const })),
+  ];
+
+  if (allCommands.length === 0) {
     return result;
   }
 
   // Normalize the transcript for comparison
   const trimmedTranscript = transcript.trim();
-  const lowerTranscript = trimmedTranscript.toLowerCase();
+  const normalizedTranscript = normalizeForMatching(trimmedTranscript);
 
-  // Check each active command (longest first to avoid partial matches)
-  const sortedCommands = [...activeCommands].sort(
-    (a, b) => b.length - a.length
+  // Sort by command length (longest first) to avoid partial matches
+  const sortedCommands = [...allCommands].sort(
+    (a, b) => b.command.length - a.command.length
   );
 
-  for (const command of sortedCommands) {
-    const lowerCommand = command.toLowerCase();
+  for (const { command, type } of sortedCommands) {
+    const normalizedCommand = normalizeForMatching(command);
 
-    // Check if transcript ends with the command
-    if (lowerTranscript.endsWith(lowerCommand)) {
-      // Remove the command from the end
-      const commandStartIndex = trimmedTranscript.length - command.length;
-      let cleanedTranscript = trimmedTranscript.slice(0, commandStartIndex);
+    // Check if normalized transcript ends with the normalized command
+    if (normalizedTranscript.endsWith(normalizedCommand)) {
+      // Find where to cut the original transcript
+      // We need to find the command in the original (case-insensitive, with possible punctuation)
+      const lowerTranscript = trimmedTranscript.toLowerCase();
 
-      // Clean up trailing punctuation and whitespace
-      cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:]+$/, "").trim();
+      // Try to find the command with various patterns
+      const patterns = [
+        // Direct match (with possible trailing punctuation in original)
+        new RegExp(`${escapeRegExp(normalizedCommand)}[\\s,.!?;:\\-]*$`, "i"),
+        // With internal punctuation variations (e.g., "go, go" or "go-go")
+        new RegExp(
+          normalizedCommand
+            .split(" ")
+            .map(escapeRegExp)
+            .join("[\\s,\\-]*") + "[\\s,.!?;:\\-]*$",
+          "i"
+        ),
+      ];
 
-      result.cleanedTranscript = cleanedTranscript;
-      result.commandDetected = true;
-      result.detectedCommand = command;
-      result.shouldSend = true;
-      break;
+      for (const pattern of patterns) {
+        const match = trimmedTranscript.match(pattern);
+        if (match) {
+          const matchIndex = match.index!;
+          let cleanedTranscript = trimmedTranscript.slice(0, matchIndex);
+
+          // Clean up trailing punctuation and whitespace
+          cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:\-]+$/, "").trim();
+
+          result.cleanedTranscript = cleanedTranscript;
+          result.commandDetected = true;
+          result.detectedCommand = command;
+          result.commandType = type;
+          result.shouldSend = type === 'send';
+          result.shouldTranscribe = type === 'transcribe';
+          result.shouldCancel = type === 'cancel';
+          break;
+        }
+      }
+
+      if (result.commandDetected) break;
     }
 
-    // Also check with common punctuation/spacing variations
+    // Also check with common punctuation/spacing before the command
     const punctuationVariants = [
-      `. ${lowerCommand}`,
-      `, ${lowerCommand}`,
-      `! ${lowerCommand}`,
-      `? ${lowerCommand}`,
-      `; ${lowerCommand}`,
-      `: ${lowerCommand}`,
-      ` - ${lowerCommand}`,
+      `. ${normalizedCommand}`,
+      `, ${normalizedCommand}`,
+      `! ${normalizedCommand}`,
+      `? ${normalizedCommand}`,
+      `; ${normalizedCommand}`,
+      `: ${normalizedCommand}`,
+      ` - ${normalizedCommand}`,
     ];
 
     for (const variant of punctuationVariants) {
-      if (lowerTranscript.endsWith(variant)) {
-        const variantStartIndex = trimmedTranscript.length - variant.length;
-        let cleanedTranscript = trimmedTranscript.slice(0, variantStartIndex);
-        cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:]+$/, "").trim();
+      if (normalizedTranscript.endsWith(variant)) {
+        // Find where to cut using regex
+        const pattern = new RegExp(
+          `[.!?;:\\-]\\s*${normalizedCommand
+            .split(" ")
+            .map(escapeRegExp)
+            .join("[\\s,\\-]*")}[\\s,.!?;:\\-]*$`,
+          "i"
+        );
+        const match = trimmedTranscript.match(pattern);
 
-        result.cleanedTranscript = cleanedTranscript;
-        result.commandDetected = true;
-        result.detectedCommand = command;
-        result.shouldSend = true;
-        break;
+        if (match) {
+          const matchIndex = match.index!;
+          let cleanedTranscript = trimmedTranscript.slice(0, matchIndex);
+          cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:\-]+$/, "").trim();
+
+          result.cleanedTranscript = cleanedTranscript;
+          result.commandDetected = true;
+          result.detectedCommand = command;
+          result.commandType = type;
+          result.shouldSend = type === 'send';
+          result.shouldTranscribe = type === 'transcribe';
+          result.shouldCancel = type === 'cancel';
+          break;
+        }
       }
     }
 
@@ -113,8 +210,16 @@ export function processVoiceCommand(transcript: string): VoiceCommandResult {
 }
 
 /**
+ * Escape special regex characters in a string
+ */
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Strip voice commands from a transcript without checking if enabled.
  * Useful for cleaning up transcripts regardless of settings.
+ * Handles common transcription variations like trailing punctuation, commas, etc.
  *
  * @param transcript - The raw transcript text
  * @param commands - List of commands to strip
@@ -129,39 +234,67 @@ export function stripVoiceCommands(
   }
 
   const trimmedTranscript = transcript.trim();
-  const lowerTranscript = trimmedTranscript.toLowerCase();
+  const normalizedTranscript = normalizeForMatching(trimmedTranscript);
 
   // Check each command (longest first)
   const sortedCommands = [...commands].sort((a, b) => b.length - a.length);
 
   for (const command of sortedCommands) {
-    const lowerCommand = command.toLowerCase();
+    const normalizedCommand = normalizeForMatching(command);
 
-    // Check if transcript ends with the command
-    if (lowerTranscript.endsWith(lowerCommand)) {
-      const commandStartIndex = trimmedTranscript.length - command.length;
-      let cleanedTranscript = trimmedTranscript.slice(0, commandStartIndex);
-      cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:]+$/, "").trim();
-      return cleanedTranscript;
+    // Check if normalized transcript ends with the normalized command
+    if (normalizedTranscript.endsWith(normalizedCommand)) {
+      // Try to find the command with various patterns
+      const patterns = [
+        // Direct match (with possible trailing punctuation in original)
+        new RegExp(`${escapeRegExp(normalizedCommand)}[\\s,.!?;:\\-]*$`, "i"),
+        // With internal punctuation variations (e.g., "go, go" or "go-go")
+        new RegExp(
+          normalizedCommand
+            .split(" ")
+            .map(escapeRegExp)
+            .join("[\\s,\\-]*") + "[\\s,.!?;:\\-]*$",
+          "i"
+        ),
+      ];
+
+      for (const pattern of patterns) {
+        const match = trimmedTranscript.match(pattern);
+        if (match) {
+          let cleanedTranscript = trimmedTranscript.slice(0, match.index!);
+          cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:\-]+$/, "").trim();
+          return cleanedTranscript;
+        }
+      }
     }
 
-    // Also check with common punctuation/spacing variations
+    // Also check with common punctuation/spacing before the command
     const punctuationVariants = [
-      `. ${lowerCommand}`,
-      `, ${lowerCommand}`,
-      `! ${lowerCommand}`,
-      `? ${lowerCommand}`,
-      `; ${lowerCommand}`,
-      `: ${lowerCommand}`,
-      ` - ${lowerCommand}`,
+      `. ${normalizedCommand}`,
+      `, ${normalizedCommand}`,
+      `! ${normalizedCommand}`,
+      `? ${normalizedCommand}`,
+      `; ${normalizedCommand}`,
+      `: ${normalizedCommand}`,
+      ` - ${normalizedCommand}`,
     ];
 
     for (const variant of punctuationVariants) {
-      if (lowerTranscript.endsWith(variant)) {
-        const variantStartIndex = trimmedTranscript.length - variant.length;
-        let cleanedTranscript = trimmedTranscript.slice(0, variantStartIndex);
-        cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:]+$/, "").trim();
-        return cleanedTranscript;
+      if (normalizedTranscript.endsWith(variant)) {
+        const pattern = new RegExp(
+          `[.!?;:\\-]\\s*${normalizedCommand
+            .split(" ")
+            .map(escapeRegExp)
+            .join("[\\s,\\-]*")}[\\s,.!?;:\\-]*$`,
+          "i"
+        );
+        const match = trimmedTranscript.match(pattern);
+
+        if (match) {
+          let cleanedTranscript = trimmedTranscript.slice(0, match.index!);
+          cleanedTranscript = cleanedTranscript.replace(/[\s,.!?;:\-]+$/, "").trim();
+          return cleanedTranscript;
+        }
       }
     }
   }
@@ -170,10 +303,24 @@ export function stripVoiceCommands(
 }
 
 /**
- * Get all available voice command presets
+ * Get all available voice command presets (for sending)
  */
 export function getVoiceCommandPresets(): readonly string[] {
   return VOICE_COMMAND_PRESETS;
+}
+
+/**
+ * Get all available transcribe command presets
+ */
+export function getTranscribeCommandPresets(): readonly string[] {
+  return TRANSCRIBE_COMMAND_PRESETS;
+}
+
+/**
+ * Get all available cancel command presets
+ */
+export function getCancelCommandPresets(): readonly string[] {
+  return CANCEL_COMMAND_PRESETS;
 }
 
 /**

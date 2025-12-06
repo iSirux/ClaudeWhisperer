@@ -53,6 +53,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 **Components (`src/lib/components/`):**
 
 Core UI:
+
 - `AppHeader.svelte` - Application header with global controls
 - `SessionList.svelte` - Unified list of PTY and SDK sessions with status indicators and unread markers
 - `SessionCard.svelte` - Card component for sessions-view grid display
@@ -263,6 +264,15 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - **Unread Markers:** Sessions marked as unread when completed while not viewing
 - **AI Metadata:** LLM-generated session names, summaries, and categories
 
+## Session Auto-Persistence System
+
+The session persistence layer (`src/lib/stores/sessionPersistence.ts`) uses an **auto-persist by exclusion** pattern. This means:
+
+- **All session fields are automatically persisted by default**
+- **To add new persistable fields:** Just add them to the type definition - they'll be auto-persisted
+- **To exclude non-persistable fields:** Add them to `NON_PERSISTABLE_FIELDS`
+- **For fields needing transformation:** Add them to `FIELD_TRANSFORMERS`
+
 ## Vosk Real-Time Transcription
 
 The app supports optional real-time transcription using Vosk, which runs alongside Whisper:
@@ -295,14 +305,15 @@ The app supports voice-triggered actions for hands-free operation:
 ### Configuration (`voice_commands` in config)
 
 - `enabled` - Whether voice commands are active
-- `send_phrases` - Phrases that trigger sending the prompt (e.g., "send it", "go ahead")
-- `cancel_phrases` - Phrases that cancel the current recording
-- `confirmation_phrases` - Phrases that confirm actions
+- `active_commands` - Phrases that trigger sending the prompt (e.g., "go go", "send it")
+- `transcribe_commands` - Phrases that trigger transcribe-to-input (e.g., "paste it", "type it")
+- `cancel_commands` - Phrases that cancel/discard the current recording (e.g., "cancel that", "never mind", "abort abort")
 
 ### Supported Commands
 
 - **Send Prompt** - Say a trigger phrase after recording to automatically send
-- **Cancel Recording** - Say a cancel phrase to discard the current recording
+- **Transcribe to Input** - Say a transcribe phrase to paste the transcription into the current app
+- **Cancel Recording** - Say a cancel phrase to discard the current recording (e.g., "cancel that", "never mind", "scratch that", "abort abort")
 
 ## Open Mic Mode
 

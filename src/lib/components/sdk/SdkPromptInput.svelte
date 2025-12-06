@@ -34,6 +34,11 @@
   let isProcessingImages = $state(false);
   let textareaEl: HTMLTextAreaElement;
 
+  // Expose focus function for external use
+  export function focus() {
+    textareaEl?.focus();
+  }
+
   async function handleSendPrompt() {
     if (!prompt.trim() && pendingImages.length === 0) return;
 

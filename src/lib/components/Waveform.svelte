@@ -118,16 +118,28 @@
 
     const barTotalWidth = barWidth + barGap;
     const barCount = Math.floor(displayWidth / barTotalWidth);
+    const halfBarCount = Math.floor(barCount / 2);
 
-    // Sample the data array evenly
-    const step = Math.max(1, Math.floor(data.length / barCount));
+    // Only use first 50% of frequency data (voice range) for left half
+    const voiceDataLength = Math.floor(data.length * 0.5);
+    const step = Math.max(1, Math.floor(voiceDataLength / halfBarCount));
+
+    // Noise floor detection: low variance AND low max value (must have BOTH)
+    const voiceData = data.slice(0, voiceDataLength);
+    const min = Math.min(...voiceData);
+    const max = Math.max(...voiceData);
+    const variance = max - min;
+    // Noise floor = low variance (<15) AND max is low (<50) - both required
+    const isNoiseFloor = variance < 15 && max < 50;
 
     for (let i = 0; i < barCount; i++) {
-      const dataIndex = Math.min(i * step, data.length - 1);
+      // Mirror: left half uses normal index, right half mirrors from center
+      const mirrorIndex = i < halfBarCount ? i : barCount - 1 - i;
+      const dataIndex = Math.min(mirrorIndex * step, voiceDataLength - 1);
       const value = data[dataIndex] || 0;
 
-      // Normalize value to 0-1 range
-      const normalized = value / 255;
+      // Normalize value to 0-1 range, but zero out if it's just noise floor
+      const normalized = isNoiseFloor ? 0 : value / 255;
 
       // Calculate bar height (minimum 2px for visibility even at low volumes)
       const barHeight = Math.max(2, normalized * displayHeight);

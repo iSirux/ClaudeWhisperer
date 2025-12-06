@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import Terminal from '$lib/components/Terminal.svelte';
   import SdkView from '$lib/components/SdkView.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
@@ -36,7 +36,8 @@
   // Utils
   import { cleanTranscription, recommendModel, recommendRepo, getRepoConfirmationSystemPrompt, isTranscriptionCleanupEnabled, isModelRecommendationEnabled, isRepoAutoSelectEnabled, needsUserConfirmation, buildRepoContextForCleanup, buildAllReposContextForCleanup } from '$lib/utils/llm';
   import { isAutoModel } from '$lib/utils/models';
-  import { processVoiceCommand } from '$lib/utils/voiceCommands';
+  import { processVoiceCommand, type VoiceCommandType } from '$lib/utils/voiceCommands';
+  import { playRepoSelectedSound, playOpenMicTriggerSound, playVoiceCommandSound } from '$lib/utils/sound';
   import { goto } from '$app/navigation';
 
   // System prompt for voice-transcribed sessions
@@ -66,9 +67,13 @@
 
   // Pending transcription session tracking
   let pendingTranscriptionSessionId: string | null = null;
+
+  // Reference to SdkView for focusing prompt input
+  let sdkViewRef: { focusPromptInput: () => void } | undefined;
   let unlistenAudioVisualization: UnlistenFn | null = null;
   let unlistenDiscardRecording: UnlistenFn | null = null;
   let unlistenOpenMicTriggered: UnlistenFn | null = null;
+  let unlistenVoiceCommandTriggered: UnlistenFn | null = null;
 
   // Model cycling uses enabled models from settings
   // Note: Sonnet 1M is excluded from cycling as it's a variant
@@ -81,6 +86,18 @@
   function handleCloseSettings() {
     // Return to sessions view when closing settings
     showSessionsView();
+  }
+
+  // Handle repo selection for session event from SessionList
+  function handleSelectRepoForSessionEvent(event: CustomEvent<{ sessionId: string; repoIndex: number }>) {
+    handleRepoSelectionForSession(event.detail.sessionId, event.detail.repoIndex);
+  }
+
+  // Handle focus-sdk-prompt event from SessionList (when new session is created)
+  async function handleFocusSdkPrompt() {
+    // Wait for the component to be mounted/updated
+    await tick();
+    sdkViewRef?.focusPromptInput();
   }
 
   // Track the currently registered toggle_recording hotkey so we can detect changes
@@ -119,6 +136,10 @@
     window.addEventListener('retry-transcription', handleRetryTranscription as unknown as EventListener);
     // Listen for approve-transcription events from SdkView
     window.addEventListener('approve-transcription', handleApproveTranscription as unknown as EventListener);
+    // Listen for repo selection events from SessionList
+    window.addEventListener('select-repo-for-session', handleSelectRepoForSessionEvent as unknown as EventListener);
+    // Listen for focus-sdk-prompt events from SessionList (new session created)
+    window.addEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
 
     // Listen for discard-recording events from overlay
     unlistenDiscardRecording = await listen('discard-recording', async () => {
@@ -161,9 +182,151 @@
         return;
       }
 
+      // Play sound cue if enabled
+      if ($settings.audio.play_sound_on_open_mic_trigger) {
+        playOpenMicTriggerSound();
+      }
+
       // Trigger the same flow as pressing the hotkey to start recording
       await startRecordingFromOpenMic();
     });
+
+    // Listen for voice-command-triggered events (e.g., "go go" detected in Vosk stream)
+    unlistenVoiceCommandTriggered = await listen<{ command: string; cleanedTranscript: string; originalTranscript: string; commandType: VoiceCommandType }>(
+      'voice-command-triggered',
+      async (event) => {
+        const commandType = event.payload?.commandType || 'send';
+        console.log('[voice-command] Triggered:', event.payload?.command, 'type:', commandType);
+
+        // Only process if currently recording
+        if (!$isRecording) {
+          console.log('[voice-command] Not recording, ignoring trigger');
+          return;
+        }
+
+        // Play sound cue if enabled
+        if ($settings.audio.play_sound_on_voice_command) {
+          playVoiceCommandSound();
+        }
+
+        // Unregister hotkeys
+        await unregisterTranscribeHotkey();
+        await unregisterCycleRepoHotkey();
+        await unregisterCycleModelHotkey();
+
+        // Hide overlay
+        await overlay.hide();
+        overlay.clearSessionInfo();
+
+        // Stop audio visualization listener
+        if (unlistenAudioVisualization) {
+          unlistenAudioVisualization();
+          unlistenAudioVisualization = null;
+        }
+
+        // Use the cleaned transcript from the voice command (Vosk real-time)
+        const cleanedVoskTranscript = event.payload.cleanedTranscript;
+
+        // Handle transcribe-to-input command type
+        if (commandType === 'transcribe') {
+          console.log('[voice-command] Stopping recording and transcribing to input...');
+
+          // Cancel the pending transcription session since we're pasting instead of sending
+          if (pendingTranscriptionSessionId) {
+            sdkSessions.cancelPendingTranscription(pendingTranscriptionSessionId);
+            pendingTranscriptionSessionId = null;
+          }
+
+          // Reset recording-for-new-session flag
+          isRecordingForNewSession = false;
+
+          // Stop recording - don't await so user can start new recording while transcribing
+          recording.stopRecording(true).then(async (whisperTranscript) => {
+            // Use Whisper transcript if available (more accurate), but strip the voice command
+            // If Whisper fails, fall back to the cleaned Vosk transcript
+            const transcriptToUse = whisperTranscript
+              ? processVoiceCommand(whisperTranscript).cleanedTranscript
+              : cleanedVoskTranscript;
+
+            if (transcriptToUse) {
+              // Paste the transcript into the currently focused app
+              await invoke('paste_text', { text: transcriptToUse });
+            }
+          });
+          return;
+        }
+
+        // Handle cancel command type - discard the recording entirely
+        if (commandType === 'cancel') {
+          console.log('[voice-command] Cancel command detected, discarding recording...');
+
+          // Cancel the pending transcription session
+          if (pendingTranscriptionSessionId) {
+            sdkSessions.cancelPendingTranscription(pendingTranscriptionSessionId);
+            pendingTranscriptionSessionId = null;
+          }
+
+          // Reset recording-for-new-session flag
+          isRecordingForNewSession = false;
+
+          // Cancel recording - this discards all audio data
+          await recording.cancelRecording();
+          return;
+        }
+
+        // Handle send command type (default)
+        console.log('[voice-command] Stopping recording and auto-sending...');
+
+        // Update pending session to transcribing status
+        const sessionIdToProcess = pendingTranscriptionSessionId;
+        if (sessionIdToProcess) {
+          sdkSessions.updatePendingTranscription(sessionIdToProcess, { status: 'transcribing' });
+        }
+
+        // Stop recording - this will also trigger Whisper transcription
+        // But we'll use the Vosk transcript directly for the voice command flow
+        recording.stopRecording(true).then(async (whisperTranscript) => {
+          // Store audio data for retry capability
+          if (sessionIdToProcess) {
+            const audioData = get(recording).audioData;
+            if (audioData) {
+              sdkSessions.storeAudioData(sessionIdToProcess, audioData);
+            }
+          }
+
+          // Use Whisper transcript if available (more accurate), but strip the voice command
+          // If Whisper fails, fall back to the cleaned Vosk transcript
+          if (whisperTranscript) {
+            // Process the Whisper transcript to also strip the voice command
+            await sendTranscriptDirectly(whisperTranscript, sessionIdToProcess, cleanedVoskTranscript);
+          } else if (cleanedVoskTranscript) {
+            // Fall back to Vosk transcript if Whisper failed
+            await sendTranscriptDirectly(cleanedVoskTranscript, sessionIdToProcess);
+          } else if (sessionIdToProcess) {
+            // Both failed
+            sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+              transcriptionError: 'No transcription available',
+            });
+          }
+
+          // Only clear if still the same session (avoid orphaning sessions created by concurrent flows)
+          if (pendingTranscriptionSessionId === sessionIdToProcess) {
+            pendingTranscriptionSessionId = null;
+          }
+        }).catch((error) => {
+          console.error('[voice-command] Error stopping recording:', error);
+          if (sessionIdToProcess) {
+            sdkSessions.updatePendingTranscription(sessionIdToProcess, {
+              transcriptionError: error?.message || 'Recording stop failed',
+            });
+          }
+          // Only clear if still the same session (avoid orphaning sessions created by concurrent flows)
+          if (pendingTranscriptionSessionId === sessionIdToProcess) {
+            pendingTranscriptionSessionId = null;
+          }
+        });
+      }
+    );
 
     // Start open mic listening if enabled
     if ($settings.audio.open_mic.enabled && $settings.vosk?.enabled) {
@@ -194,6 +357,8 @@
     window.removeEventListener('close-settings', handleCloseSettings);
     window.removeEventListener('retry-transcription', handleRetryTranscription as unknown as EventListener);
     window.removeEventListener('approve-transcription', handleApproveTranscription as unknown as EventListener);
+    window.removeEventListener('select-repo-for-session', handleSelectRepoForSessionEvent as unknown as EventListener);
+    window.removeEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
 
     // Cleanup audio visualization listener
     if (unlistenAudioVisualization) {
@@ -211,6 +376,12 @@
     if (unlistenOpenMicTriggered) {
       unlistenOpenMicTriggered();
       unlistenOpenMicTriggered = null;
+    }
+
+    // Cleanup voice command listener
+    if (unlistenVoiceCommandTriggered) {
+      unlistenVoiceCommandTriggered();
+      unlistenVoiceCommandTriggered = null;
     }
 
     // Stop open mic listening
@@ -456,7 +627,7 @@
               return; // Exit here - continuation happens via SessionPendingView
             } else {
               // Create a pending session that shows repo selection in the main view
-              const sessionId = sdkSessions.createPendingRepoSession(
+              sdkSessions.createPendingRepoSession(
                 model,
                 thinkingLevel,
                 {
@@ -466,10 +637,8 @@
                   confidence: 'low',
                 }
               );
-              activeSdkSessionId.set(sessionId);
-              activeSessionId.set(null);
-              currentView = 'sessions';
-              return; // Exit here - continuation happens via SessionPendingView
+              // Don't switch to the session - user can select repo from session list
+              return; // Exit here - repo selection happens via SessionList
             }
           }
 
@@ -506,7 +675,7 @@
               return; // Exit here - continuation happens via SessionPendingView
             } else {
               // Create a pending session that shows repo selection in the main view
-              const sessionId = sdkSessions.createPendingRepoSession(
+              sdkSessions.createPendingRepoSession(
                 model,
                 thinkingLevel,
                 {
@@ -516,10 +685,8 @@
                   confidence: repoRecommendation.confidence,
                 }
               );
-              activeSdkSessionId.set(sessionId);
-              activeSessionId.set(null);
-              currentView = 'sessions';
-              return; // Exit here - continuation happens via SessionPendingView
+              // Don't switch to the session - user can select repo from session list
+              return; // Exit here - repo selection happens via SessionList
             }
           }
 
@@ -549,7 +716,7 @@
             currentView = 'sessions';
             return;
           } else {
-            const sessionId = sdkSessions.createPendingRepoSession(
+            sdkSessions.createPendingRepoSession(
               model,
               thinkingLevel,
               {
@@ -559,9 +726,7 @@
                 confidence: 'low',
               }
             );
-            activeSdkSessionId.set(sessionId);
-            activeSessionId.set(null);
-            currentView = 'sessions';
+            // Don't switch to the session - user can select repo from session list
             return;
           }
         }
@@ -872,30 +1037,28 @@
     activeSessionId.set(null); // Clear PTY session selection
   }
 
-  // Handle repo selection from SessionPendingView
-  async function handlePendingRepoSelection(index: number, editedPrompt?: string) {
-    // Capture all values from reactive stores BEFORE any async operations
-    // to avoid stale/changed values after awaits
-    const session = $activeSdkSession;
+  // Handle repo selection for any session (not just active)
+  async function handleRepoSelectionForSession(sessionId: string, repoIndex: number, editedPrompt?: string) {
+    const session = $sdkSessions.find(s => s.id === sessionId);
     if (!session || session.status !== 'pending_repo') return;
 
-    const sessionId = session.id;
-    const selectedRepo = $settings.repos[index];
+    const selectedRepo = $settings.repos[repoIndex];
     if (!selectedRepo) return;
 
     // Use edited prompt if provided, otherwise capture the original transcript
     const rawTranscript = editedPrompt || session.pendingPrompt || session.pendingRepoSelection?.transcript || '';
 
-    console.log('[llm] User selected repo:', selectedRepo.name);
+    console.log('[llm] User selected repo for session:', selectedRepo.name);
 
-    // Ensure we stay on sessions view (set before async operations)
-    currentView = 'sessions';
+    // Play confirmation sound if enabled
+    if ($settings.audio.play_sound_on_repo_select) {
+      playRepoSelectedSound();
+    }
 
     // Update the active repo setting
-    await settings.setActiveRepo(index);
+    await settings.setActiveRepo(repoIndex);
 
     // Step 1: Clean up transcription with repo context (now that we know the repo)
-    // Note: Vosk transcript not available here since this is a deferred repo selection
     let finalTranscript = rawTranscript;
     if (isTranscriptionCleanupEnabled() && rawTranscript) {
       try {
@@ -933,11 +1096,14 @@
     const systemPrompt = systemPromptParts.length > 0 ? systemPromptParts.join('\n\n') : undefined;
 
     // Complete the repo selection and initialize the session with the cleaned transcript
-    // Use the captured sessionId to avoid any issues with reactive store changes
     await sdkSessions.completeRepoSelection(sessionId, repoPath, systemPrompt, finalTranscript);
+  }
 
-    // Ensure view stays on sessions after completion
-    currentView = 'sessions';
+  // Handle repo selection from SessionPendingView (wrapper for active session)
+  async function handlePendingRepoSelection(index: number, editedPrompt?: string) {
+    const session = $activeSdkSession;
+    if (!session || session.status !== 'pending_repo') return;
+    await handleRepoSelectionForSession(session.id, index, editedPrompt);
   }
 
   // Handle cancel from SessionPendingView
@@ -1249,8 +1415,10 @@
                   transcriptionError: 'No transcription returned',
                 });
               }
-              // Clear the pending session ID after processing
-              pendingTranscriptionSessionId = null;
+              // Only clear if still the same session (avoid orphaning sessions created by concurrent flows)
+              if (pendingTranscriptionSessionId === sessionIdToProcess) {
+                pendingTranscriptionSessionId = null;
+              }
             }).catch((error) => {
               // Handle transcription error - also try to store audio data for retry
               if (sessionIdToProcess) {
@@ -1262,9 +1430,15 @@
                   transcriptionError: error?.message || 'Transcription failed',
                 });
               }
-              pendingTranscriptionSessionId = null;
+              // Only clear if still the same session (avoid orphaning sessions created by concurrent flows)
+              if (pendingTranscriptionSessionId === sessionIdToProcess) {
+                pendingTranscriptionSessionId = null;
+              }
             });
           } else {
+            // Stop open mic to avoid two Vosk sessions running simultaneously
+            await openMic.stop();
+
             // Check if main window is focused before starting
             const mainWindow = getCurrentWindow();
             wasAppFocusedOnRecordStart = await mainWindow.isFocused();
@@ -1286,11 +1460,10 @@
             overlay.setSessionInfo(branch, model, false);
 
             // Create pending transcription session immediately (SDK mode only)
+            // Note: We don't switch the view here (via hotkey) - user stays on their current view
+            // The UI button path (startRecordingNewSession) does switch the view
             if ($settings.terminal_mode === 'Sdk') {
               pendingTranscriptionSessionId = sdkSessions.createPendingTranscriptionSession(model, thinkingLevel);
-              activeSdkSessionId.set(pendingTranscriptionSessionId);
-              activeSessionId.set(null);
-              currentView = 'sessions';
 
               // Set up audio visualization listener to capture waveform data
               unlistenAudioVisualization = await listen<{ data: number[] | null }>('audio-visualization', (event) => {
@@ -1371,6 +1544,9 @@
   async function startRecordingNewSession() {
     if ($isRecording) return;
     isRecordingForNewSession = true;
+
+    // Stop open mic to avoid two Vosk sessions running simultaneously
+    await openMic.stop();
 
     const repoPath = $activeRepo?.path || '.';
     const model = $settings.default_model;
@@ -1463,8 +1639,10 @@
           transcriptionError: 'No transcription returned',
         });
       }
-      // Clear the pending session ID after processing
-      pendingTranscriptionSessionId = null;
+      // Only clear if still the same session (avoid orphaning sessions created by concurrent flows)
+      if (pendingTranscriptionSessionId === sessionIdToProcess) {
+        pendingTranscriptionSessionId = null;
+      }
     }).catch((error) => {
       // Handle transcription error - also try to store audio data for retry
       if (sessionIdToProcess) {
@@ -1476,7 +1654,10 @@
           transcriptionError: error?.message || 'Transcription failed',
         });
       }
-      pendingTranscriptionSessionId = null;
+      // Only clear if still the same session (avoid orphaning sessions created by concurrent flows)
+      if (pendingTranscriptionSessionId === sessionIdToProcess) {
+        pendingTranscriptionSessionId = null;
+      }
     });
   }
 </script>
@@ -1561,7 +1742,7 @@
         {:else}
           <div class="terminal-wrapper flex-1 overflow-hidden">
             {#key $activeSdkSession.id}
-              <SdkView sessionId={$activeSdkSession.id} />
+              <SdkView bind:this={sdkViewRef} sessionId={$activeSdkSession.id} />
             {/key}
           </div>
         {/if}

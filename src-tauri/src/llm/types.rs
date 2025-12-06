@@ -32,7 +32,7 @@ pub struct ModelRecommendation {
     pub recommended_model: String, // haiku, sonnet, opus
     pub reasoning: String,
     pub confidence: String, // low, medium, high
-    pub suggested_thinking: Option<String>, // null, think, megathink, ultrathink
+    pub suggested_thinking: Option<String>, // null or on (31999 tokens)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

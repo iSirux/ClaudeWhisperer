@@ -251,11 +251,9 @@ Model capabilities:
 - **Sonnet**: Balanced. Good for typical coding tasks, debugging, feature implementation, code review, refactoring.
 - **Opus**: Most capable, expensive. Best for complex architecture, multi-file refactoring, difficult debugging, system design, novel problem-solving.
 
-Extended thinking levels (for complex reasoning):
+Extended thinking (for complex reasoning):
 - **null**: No extended thinking needed (most tasks)
-- **think**: Basic extended thinking for moderate complexity
-- **megathink**: For architectural decisions, complex algorithms
-- **ultrathink**: Deep analysis, very complex system design
+- **on**: Extended thinking enabled (31999 tokens) - for complex architecture, debugging, system design
 
 Prompt to analyze:
 {}
@@ -263,7 +261,7 @@ Prompt to analyze:
 Choose the most cost-effective model that can handle this task well. Prefer cheaper models when the task is simple.
 
 Respond with ONLY a JSON object in this exact format:
-{{"recommended_model": "haiku|sonnet|opus", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_thinking": "null|think|megathink|ultrathink"}}"#,
+{{"recommended_model": "haiku|sonnet|opus", "reasoning": "brief explanation", "confidence": "low|medium|high", "suggested_thinking": "null|on"}}"#,
             truncate_text(prompt, 1500)
         );
 
@@ -286,8 +284,8 @@ Respond with ONLY a JSON object in this exact format:
                 },
                 "suggested_thinking": {
                     "type": "string",
-                    "enum": ["null", "think", "megathink", "ultrathink"],
-                    "description": "Suggested extended thinking level"
+                    "enum": ["null", "on"],
+                    "description": "Suggested extended thinking: null (off) or on (31999 tokens)"
                 }
             },
             "required": ["recommended_model", "reasoning", "confidence", "suggested_thinking"]

@@ -28,7 +28,7 @@ export interface ModelRecommendation {
   recommended_model: 'haiku' | 'sonnet' | 'opus';
   reasoning: string;
   confidence: 'low' | 'medium' | 'high';
-  suggested_thinking: 'null' | 'think' | 'megathink' | 'ultrathink' | null;
+  suggested_thinking: 'null' | 'on' | null;
 }
 
 export interface RepoRecommendation {
@@ -323,12 +323,15 @@ const MODEL_ID_MAP: Record<string, string> = {
 
 /**
  * Thinking level mapping from LLM recommendation
+ * Maps any non-null thinking suggestion to 'on' (31999 tokens)
  */
 const THINKING_LEVEL_MAP: Record<string, string | null> = {
   null: null,
-  think: 'think',
-  megathink: 'megathink',
-  ultrathink: 'ultrathink',
+  on: 'on',
+  // Legacy mappings - all map to 'on'
+  think: 'on',
+  megathink: 'on',
+  ultrathink: 'on',
 };
 
 /**

@@ -17,11 +17,16 @@
         const sessionId = await sdkSessions.createSession(repoPath, model, thinkingLevel);
         activeSdkSessionId.set(sessionId);
         activeSessionId.set(null); // Clear PTY selection
+        // Switch to sessions view and focus prompt input
+        window.dispatchEvent(new CustomEvent('switch-to-sessions'));
+        window.dispatchEvent(new CustomEvent('focus-sdk-prompt'));
       } else {
         // PTY mode: create interactive session
         const sessionId = await sessions.createInteractiveSession();
         activeSessionId.set(sessionId);
         activeSdkSessionId.set(null); // Clear SDK selection
+        // Switch to sessions view
+        window.dispatchEvent(new CustomEvent('switch-to-sessions'));
       }
     } catch (error) {
       console.error('Failed to create session:', error);
@@ -35,10 +40,13 @@
     interval = setInterval(() => {
       now = Math.floor(Date.now() / 1000);
     }, 1000);
+    // Listen for clicks outside repo dropdown to close it
+    document.addEventListener('click', handleGlobalClick);
   });
 
   onDestroy(() => {
     if (interval) clearInterval(interval);
+    document.removeEventListener('click', handleGlobalClick);
   });
 
   // Format elapsed time in seconds to human-readable string
@@ -112,6 +120,13 @@
     latestMessage?: string; // Latest assistant text message snippet for SDK sessions
     // AI-generated metadata (from Gemini)
     aiMetadata?: SessionAiMetadata;
+    // Pending repo selection info (for pending_repo status)
+    pendingRepoSelection?: {
+      transcript: string;
+      recommendedIndex: number | null;
+      reasoning: string;
+      confidence: string;
+    };
   }
 
   // Cache for git branches to avoid repeated calls
@@ -295,6 +310,31 @@
     sessionType: 'pty' | 'sdk';
   }>({ show: false, sessionId: '', sessionType: 'pty' });
 
+  // State for repo selection dropdown
+  let repoDropdownSessionId = $state<string | null>(null);
+
+  function toggleRepoDropdown(sessionId: string, event: MouseEvent) {
+    event.stopPropagation();
+    repoDropdownSessionId = repoDropdownSessionId === sessionId ? null : sessionId;
+  }
+
+  function selectRepoForSession(sessionId: string, repoIndex: number, event: MouseEvent) {
+    event.stopPropagation();
+    repoDropdownSessionId = null;
+    // Dispatch event to parent to handle the repo selection
+    window.dispatchEvent(new CustomEvent('select-repo-for-session', {
+      detail: { sessionId, repoIndex }
+    }));
+  }
+
+  // Close repo dropdown when clicking outside
+  function handleGlobalClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    if (!target.closest('.repo-dropdown-container')) {
+      repoDropdownSessionId = null;
+    }
+  }
+
   function closePtySession(id: string, event: MouseEvent) {
     event.stopPropagation();
 
@@ -466,6 +506,7 @@
           unread: s.unread,
           latestMessage: getLatestTextMessage(s.messages),
           aiMetadata: s.aiMetadata,
+          pendingRepoSelection: s.pendingRepoSelection,
         };
       })
     ];
@@ -647,8 +688,53 @@
           </p>
         {/if}
 
-        <!-- Repo name, branch, and model (hide when pending repo selection or no repo) -->
-        {#if session.status !== 'pending_repo' && session.repoPath && session.repoPath !== '.'}
+        <!-- Repo selector for pending_repo sessions -->
+        {#if session.status === 'pending_repo'}
+          <div class="repo-dropdown-container relative">
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="flex items-center gap-1.5 text-amber-400 cursor-pointer hover:text-amber-300 transition-colors"
+              onclick={(e) => toggleRepoDropdown(session.id, e)}
+            >
+              <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              <span class="text-xs font-medium">Select Repository</span>
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+
+            <!-- Repo dropdown menu -->
+            {#if repoDropdownSessionId === session.id}
+              <div class="absolute left-0 bottom-full mb-1 z-50 min-w-[200px] max-w-[300px] bg-surface border border-border rounded-lg shadow-lg py-1 max-h-[300px] overflow-y-auto">
+                {#if session.pendingRepoSelection?.reasoning}
+                  <div class="px-3 py-2 text-xs text-text-muted border-b border-border italic">
+                    {session.pendingRepoSelection.reasoning}
+                  </div>
+                {/if}
+                {#each $settings.repos as repo, i}
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div
+                    class="px-3 py-2 hover:bg-surface-elevated cursor-pointer flex items-center gap-2 transition-colors {session.pendingRepoSelection?.recommendedIndex === i ? 'bg-amber-500/10' : ''}"
+                    onclick={(e) => selectRepoForSession(session.id, i, e)}
+                  >
+                    <svg class="w-3.5 h-3.5 flex-shrink-0 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                    <span class="text-sm text-text-primary truncate">{repo.name}</span>
+                    {#if session.pendingRepoSelection?.recommendedIndex === i}
+                      <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-medium">Suggested</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {:else if session.repoPath && session.repoPath !== '.'}
+          <!-- Repo name, branch, and model for non-pending sessions -->
           <div class="flex items-center gap-1.5 text-text-muted">
             <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />

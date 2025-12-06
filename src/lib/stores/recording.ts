@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { usageStats } from './usageStats';
 import { settings } from './settings';
+import { processVoiceCommand } from '$lib/utils/voiceCommands';
 
 export type RecordingState = 'idle' | 'recording' | 'recorded' | 'processing' | 'error';
 
@@ -58,6 +59,8 @@ function createRecordingStore() {
   let voskUnlistenError: UnlistenFn | null = null;
   // Accumulated final text from Vosk (when accumulate_transcript is enabled)
   let voskAccumulatedText: string = '';
+  // Flag to prevent double-triggering of voice commands
+  let voiceCommandTriggered: boolean = false;
 
   // Convert Float32 audio samples to Int16 for Vosk
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
@@ -72,7 +75,22 @@ function createRecordingStore() {
   // Start Vosk real-time transcription session
   async function startVoskSession(stream: MediaStream, sessionId: string) {
     const currentSettings = get(settings);
-    if (!currentSettings.vosk?.enabled) return;
+    console.log('[recording] startVoskSession called', {
+      sessionId,
+      voskEnabled: currentSettings.vosk?.enabled,
+    });
+    if (!currentSettings.vosk?.enabled) {
+      console.log('[recording] Vosk disabled, skipping');
+      return;
+    }
+
+    // Reset voice command flag for new session
+    voiceCommandTriggered = false;
+
+    // Clear accumulated text FIRST before anything else
+    voskAccumulatedText = '';
+    // Emit clear event immediately
+    emit('vosk-realtime-transcript', { text: '' });
 
     try {
       // Create audio context at Vosk's required sample rate (16kHz)
@@ -101,21 +119,62 @@ function createRecordingStore() {
       voskProcessor.connect(voskAudioContext.destination);
 
       // Listen for Vosk events
+      let lastPartialTime = Date.now();
+      let lastPartialText = '';
       voskUnlistenPartial = await listen(`vosk-partial-${sessionId}`, (event: any) => {
         const partial = event.payload?.partial || '';
+
         const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
         // When accumulating, prepend accumulated text to partial
         const displayText = shouldAccumulate && voskAccumulatedText
           ? `${voskAccumulatedText} ${partial}`.trim()
           : partial;
+
+        // Skip if displayText hasn't changed (avoid duplicate updates)
+        if (displayText === lastPartialText) {
+          return;
+        }
+        lastPartialText = displayText;
+
+        const now = Date.now();
+        const delta = now - lastPartialTime;
+        lastPartialTime = now;
+
+        console.log('[recording][partial]', {
+          partial,
+          deltaMs: delta,
+          displayText,
+        });
+
         update((s) => ({ ...s, realtimeTranscript: displayText }));
         emit('vosk-realtime-transcript', { text: displayText });
+
+        // Check for voice commands in partial transcript for instant detection
+        if (displayText && !voiceCommandTriggered) {
+          const voiceCommandResult = processVoiceCommand(displayText);
+          if (voiceCommandResult.commandDetected) {
+            voiceCommandTriggered = true;
+            console.log('[vosk] Voice command detected in partial:', voiceCommandResult.detectedCommand, 'type:', voiceCommandResult.commandType);
+            emit('voice-command-triggered', {
+              command: voiceCommandResult.detectedCommand,
+              cleanedTranscript: voiceCommandResult.cleanedTranscript,
+              originalTranscript: displayText,
+              commandType: voiceCommandResult.commandType,
+            });
+          }
+        }
       });
 
       voskUnlistenFinal = await listen(`vosk-final-${sessionId}`, (event: any) => {
         const text = event.payload?.text || '';
+        console.log('[recording][final]', {
+          raw: event.payload?.text,
+          text,
+          hasText: !!text,
+        });
         if (text) {
           const shouldAccumulate = currentSettings.vosk?.accumulate_transcript ?? false;
+          const prevAccumulated = voskAccumulatedText;
           if (shouldAccumulate) {
             // Append this final text to accumulated text
             voskAccumulatedText = voskAccumulatedText
@@ -123,8 +182,33 @@ function createRecordingStore() {
               : text;
           }
           const displayText = shouldAccumulate ? voskAccumulatedText : text;
+
+          console.log('[recording][final] processed', {
+            shouldAccumulate,
+            prevAccumulated,
+            newAccumulated: voskAccumulatedText,
+            displayText,
+          });
+
           update((s) => ({ ...s, realtimeTranscript: displayText }));
           emit('vosk-realtime-transcript', { text: displayText });
+
+          // Check for voice commands in the accumulated/final transcript
+          if (!voiceCommandTriggered) {
+            const voiceCommandResult = processVoiceCommand(displayText);
+            if (voiceCommandResult.commandDetected) {
+              voiceCommandTriggered = true;
+              console.log('[vosk] Voice command detected:', voiceCommandResult.detectedCommand, 'type:', voiceCommandResult.commandType);
+              console.log('[vosk] Cleaned transcript:', voiceCommandResult.cleanedTranscript);
+              // Emit event to trigger action (will be handled by +page.svelte)
+              emit('voice-command-triggered', {
+                command: voiceCommandResult.detectedCommand,
+                cleanedTranscript: voiceCommandResult.cleanedTranscript,
+                originalTranscript: displayText,
+                commandType: voiceCommandResult.commandType,
+              });
+            }
+          }
         }
       });
 
@@ -133,7 +217,9 @@ function createRecordingStore() {
       });
 
       // Start the Vosk session on the backend
+      console.log('[recording] Starting Vosk backend session...');
       await invoke('start_vosk_session', { sessionId });
+      console.log('[recording] Vosk backend session started, listening for events on:', `vosk-partial-${sessionId}`);
 
       update((s) => ({ ...s, voskSessionId: sessionId }));
     } catch (error) {
@@ -203,7 +289,6 @@ function createRecordingStore() {
 
         analyser.getByteFrequencyData(dataArray);
 
-        // Emit audio data to all windows
         emit('audio-visualization', { data: Array.from(dataArray) });
 
         visualizationAnimationId = requestAnimationFrame(broadcastVisualization);

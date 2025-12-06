@@ -55,15 +55,20 @@ pub fn run() {
     let sidecar_manager = Arc::new(SidecarManager::new());
     let vosk_manager = Arc::new(VoskManager::new());
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // Another instance tried to start - focus the existing window
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
+    let builder = tauri::Builder::default();
+
+    // Only enforce single instance in release builds - allows running debug and release simultaneously
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // Another instance tried to start - focus the existing window
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())

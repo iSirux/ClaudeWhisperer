@@ -10,7 +10,9 @@
 
   let newRepoPath = $state("");
   let newRepoName = $state("");
-  let generatingDescriptionForIndex: number | null = $state(null);
+  let generatingIndices = $state(new Set<number>());
+  let generatingBatch = $state(false);
+  let batchProgress = $state({ current: 0, total: 0, failed: 0 });
 
   async function addRepo() {
     console.log(
@@ -44,11 +46,11 @@
     }
   }
 
-  async function generateRepoDescription(index: number) {
+  async function generateRepoDescription(index: number, silent = false) {
     const repo = $settings.repos[index];
-    if (!repo) return;
+    if (!repo || generatingIndices.has(index)) return false;
 
-    generatingDescriptionForIndex = index;
+    generatingIndices = new Set([...generatingIndices, index]);
     try {
       const result = await invoke<RepoDescriptionResult>(
         "generate_repo_description",
@@ -67,11 +69,57 @@
         vocabulary: result.vocabulary,
       };
       settings.update((s) => ({ ...s, repos: updatedRepos }));
+      return true;
     } catch (error) {
       console.error("Failed to generate repo description:", error);
-      alert(`Failed to generate description: ${error}`);
+      if (!silent) {
+        alert(`Failed to generate description: ${error}`);
+      }
+      return false;
+    } finally {
+      generatingIndices = new Set([...generatingIndices].filter(i => i !== index));
     }
-    generatingDescriptionForIndex = null;
+  }
+
+  // Get repos that need descriptions generated
+  function getReposNeedingDescriptions(): number[] {
+    return $settings.repos
+      .map((repo, index) => ({ repo, index }))
+      .filter(({ repo }) => !repo.description)
+      .map(({ index }) => index);
+  }
+
+  async function generateAllDescriptions() {
+    const indices = getReposNeedingDescriptions();
+    if (indices.length === 0) {
+      alert("All repositories already have descriptions.");
+      return;
+    }
+
+    generatingBatch = true;
+    batchProgress = { current: 0, total: indices.length, failed: 0 };
+
+    // Process all repos in parallel
+    const results = await Promise.all(
+      indices.map(async (index) => {
+        const success = await generateRepoDescription(index, true);
+        batchProgress = {
+          ...batchProgress,
+          current: batchProgress.current + 1,
+          failed: batchProgress.failed + (success ? 0 : 1),
+        };
+        return success;
+      })
+    );
+
+    generatingBatch = false;
+
+    const failed = results.filter((r) => !r).length;
+    if (failed > 0) {
+      alert(
+        `Generated ${batchProgress.total - failed} of ${batchProgress.total} descriptions. ${failed} failed.`
+      );
+    }
   }
 
   async function browseFolder() {
@@ -103,6 +151,37 @@
 </script>
 
 <div class="space-y-4">
+  <!-- Generate All button -->
+  {#if $settings.repos.length > 0 && $settings.llm.enabled}
+    <div class="flex items-center justify-between">
+      <div class="text-xs text-text-muted">
+        {#if generatingBatch}
+          Generating {batchProgress.current}/{batchProgress.total}...
+        {:else}
+          {getReposNeedingDescriptions().length} of {$settings.repos.length} repos need descriptions
+        {/if}
+      </div>
+      <button
+        class="flex items-center gap-1.5 px-3 py-1.5 bg-accent/10 hover:bg-accent/20 text-accent rounded text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        onclick={generateAllDescriptions}
+        disabled={generatingBatch || generatingIndices.size > 0 || getReposNeedingDescriptions().length === 0}
+      >
+        {#if generatingBatch}
+          <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Generating...
+        {:else}
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+          </svg>
+          Generate All
+        {/if}
+      </button>
+    </div>
+  {/if}
+
   <div class="space-y-3">
     {#each $settings.repos as repo, index}
       <div class="p-3 bg-surface-elevated rounded space-y-2">
@@ -120,13 +199,12 @@
             <button
               class="p-1.5 text-text-muted hover:text-accent transition-colors rounded hover:bg-border disabled:opacity-50"
               onclick={() => generateRepoDescription(index)}
-              disabled={!$settings.llm.enabled ||
-                generatingDescriptionForIndex !== null}
+              disabled={!$settings.llm.enabled || generatingIndices.has(index)}
               title={!$settings.llm.enabled
                 ? "Enable LLM integration in LLM settings to generate descriptions"
                 : "Generate description from CLAUDE.md or README"}
             >
-              {#if generatingDescriptionForIndex === index}
+              {#if generatingIndices.has(index)}
                 <svg
                   class="w-4 h-4 animate-spin"
                   fill="none"

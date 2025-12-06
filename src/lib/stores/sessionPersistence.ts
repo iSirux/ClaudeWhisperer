@@ -1,34 +1,192 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
-import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type ThinkingLevel, type SessionAiMetadata, type PendingRepoSelection } from './sdkSessions';
+import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type ThinkingLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo } from './sdkSessions';
 import { sessions, activeSessionId, type TerminalSession } from './sessions';
 
-// Persisted session types that match Rust backend
+// ============================================================================
+// AUTO-PERSISTENCE SYSTEM
+// ============================================================================
+//
+// This system automatically persists ALL session fields by default.
+// Instead of manually listing what to persist, we define what NOT to persist.
+//
+// To add new fields to sessions:
+// 1. Just add them to the type definition - they'll be auto-persisted
+// 2. If a field can't/shouldn't be persisted, add it to NON_PERSISTABLE_FIELDS
+// 3. If a field needs transformation, add it to FIELD_TRANSFORMERS
+//
+// ============================================================================
+
+/**
+ * Fields that should NOT be persisted.
+ * These are either non-serializable (Uint8Array, functions) or runtime-only state.
+ */
+const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
+  // SdkSession fields that shouldn't be persisted
+  SdkSession: new Set([
+    'currentWorkStartedAt', // Runtime-only timer, accumulated time is persisted instead
+  ]),
+  // PendingTranscriptionInfo fields that shouldn't be persisted
+  PendingTranscriptionInfo: new Set([
+    'audioData', // Uint8Array - can't be JSON serialized, also large binary data
+  ]),
+  // SdkMessage doesn't have non-persistable fields currently
+  SdkMessage: new Set([]),
+};
+
+/**
+ * Fields that need special transformation for serialization.
+ * Key: field path (e.g., "messages.images")
+ * Value: transform function that makes it JSON-safe, or null to exclude
+ */
+type TransformFn = (value: unknown) => unknown;
+const FIELD_TRANSFORMERS: Record<string, TransformFn> = {
+  // Currently no complex transformations needed - images are already base64 strings
+  // Add transformers here if needed in the future, e.g.:
+  // 'someField': (value) => value ? convertToJsonSafe(value) : null,
+};
+
+/**
+ * Deep clone an object, excluding non-persistable fields and applying transformers.
+ * This is the core of the auto-persistence system.
+ */
+function serializeForPersistence<T>(
+  obj: T,
+  typeName: string,
+  parentPath: string = ''
+): T {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
+  // Handle primitives
+  if (typeof obj !== 'object') {
+    return obj;
+  }
+
+  // Handle arrays
+  if (Array.isArray(obj)) {
+    return obj.map((item, index) =>
+      serializeForPersistence(item, typeName, `${parentPath}[${index}]`)
+    ) as T;
+  }
+
+  // Handle Uint8Array and other typed arrays - skip them
+  if (obj instanceof Uint8Array || ArrayBuffer.isView(obj)) {
+    return undefined as T;
+  }
+
+  // Handle Date objects - convert to ISO string for JSON
+  if (obj instanceof Date) {
+    return obj.toISOString() as T;
+  }
+
+  const nonPersistableSet = NON_PERSISTABLE_FIELDS[typeName] || new Set();
+  const result: Record<string, unknown> = {};
+
+  for (const key of Object.keys(obj as object)) {
+    // Skip non-persistable fields
+    if (nonPersistableSet.has(key)) {
+      continue;
+    }
+
+    const fullPath = parentPath ? `${parentPath}.${key}` : key;
+    let value = (obj as Record<string, unknown>)[key];
+
+    // Apply transformer if defined
+    const transformer = FIELD_TRANSFORMERS[fullPath];
+    if (transformer) {
+      value = transformer(value);
+    }
+
+    // Skip undefined values
+    if (value === undefined) {
+      continue;
+    }
+
+    // Determine child type name for nested objects
+    let childTypeName = typeName;
+    if (key === 'pendingTranscription') {
+      childTypeName = 'PendingTranscriptionInfo';
+    } else if (key === 'messages') {
+      childTypeName = 'SdkMessage';
+    } else if (key === 'usage') {
+      childTypeName = 'SdkSessionUsage';
+    }
+
+    // Recursively serialize
+    result[key] = serializeForPersistence(value, childTypeName, fullPath);
+  }
+
+  return result as T;
+}
+
+/**
+ * Deserialize persisted data back to the session type.
+ * Applies any necessary transformations and defaults.
+ */
+function deserializeFromPersistence<T extends object>(
+  persisted: Record<string, unknown>,
+  defaults: Partial<T> = {}
+): T {
+  // Start with defaults
+  const result: Record<string, unknown> = { ...defaults };
+
+  // Copy all persisted fields
+  for (const key of Object.keys(persisted)) {
+    const value = persisted[key];
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+
+  return result as T;
+}
+
+// ============================================================================
+// PERSISTED TYPES
+// ============================================================================
+// These are now just documentation/type hints - the actual serialization
+// preserves all fields from the source types automatically.
+
+/**
+ * Persisted SDK message - all fields from SdkMessage are preserved.
+ */
 export interface PersistedSdkMessage {
   type: string;
   content?: string;
+  images?: Array<{
+    mediaType: string;
+    base64Data: string;
+    width?: number;
+    height?: number;
+  }>;
   tool?: string;
   input?: Record<string, unknown>;
   output?: string;
+  agentId?: string;
+  agentType?: string;
+  transcriptPath?: string;
   timestamp: number;
 }
 
-// Serializable version of PendingTranscriptionInfo (no Uint8Array, no MediaStream)
+/**
+ * Persisted pending transcription info - all fields except audioData (Uint8Array).
+ */
 export interface PersistedPendingTranscriptionInfo {
   status: 'recording' | 'transcribing' | 'processing';
-  // Audio visualization data (frequency array from recording)
   audioVisualizationHistory?: number[][];
-  // Recording timing
   recordingStartedAt?: number;
   recordingDurationMs?: number;
-  // Note: audioData (Uint8Array) is NOT persisted - it's transient
-  // Transcription result
+  // audioData is NOT persisted (Uint8Array)
   transcript?: string;
   transcriptionError?: string;
-  // LLM processing results
+  voskTranscript?: string;
   cleanedTranscript?: string;
   wasCleanedUp?: boolean;
+  cleanupCorrections?: string[];
+  usedDualSource?: boolean;
   modelRecommendation?: {
     modelId: string;
     reasoning: string;
@@ -42,25 +200,28 @@ export interface PersistedPendingTranscriptionInfo {
   };
 }
 
+/**
+ * Persisted SDK session - all fields are preserved.
+ */
 export interface PersistedSdkSession {
   id: string;
   cwd: string;
   model: string;
-  thinkingLevel?: ThinkingLevel; // Now persisted
+  thinkingLevel?: ThinkingLevel;
   messages: PersistedSdkMessage[];
   status: string;
   createdAt: number;
   startedAt?: number;
-  // Timer-based duration tracking
   accumulatedDurationMs?: number;
-  // AI-generated metadata
+  // Usage is now persisted!
+  usage?: SdkSessionUsage;
+  // Unread flag is now persisted!
+  unread?: boolean;
   aiMetadata?: SessionAiMetadata;
-  // Pending transcription state (for sessions in pending_transcription status)
   pendingTranscription?: PersistedPendingTranscriptionInfo;
-  // Pending repo selection (for sessions in pending_repo status)
   pendingRepoSelection?: PendingRepoSelection;
-  // Pending prompt (waiting to be sent after initialization)
   pendingPrompt?: string;
+  pendingApprovalPrompt?: string;
 }
 
 export interface PersistedTerminalSession {
@@ -80,132 +241,78 @@ export interface PersistedSessions {
   saved_at: number;
 }
 
-/**
- * Convert pending transcription info to persisted format (strips non-serializable data)
- */
-function pendingTranscriptionToPersisted(
-  info: SdkSession['pendingTranscription']
-): PersistedPendingTranscriptionInfo | undefined {
-  if (!info) return undefined;
-
-  return {
-    status: info.status,
-    audioVisualizationHistory: info.audioVisualizationHistory,
-    recordingStartedAt: info.recordingStartedAt,
-    recordingDurationMs: info.recordingDurationMs,
-    // Note: audioData (Uint8Array) is intentionally NOT persisted
-    transcript: info.transcript,
-    transcriptionError: info.transcriptionError,
-    cleanedTranscript: info.cleanedTranscript,
-    wasCleanedUp: info.wasCleanedUp,
-    modelRecommendation: info.modelRecommendation,
-    repoRecommendation: info.repoRecommendation,
-  };
-}
+// ============================================================================
+// CONVERSION FUNCTIONS
+// ============================================================================
 
 /**
- * Convert frontend SDK session to persisted format
+ * Convert frontend SDK session to persisted format.
+ * Uses auto-serialization - all fields are preserved except those in NON_PERSISTABLE_FIELDS.
  */
 function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
-  // When saving, calculate the final accumulated duration
-  // If session is currently working, include that time too
+  // Calculate final accumulated duration including current work period
   let accumulatedDurationMs = session.accumulatedDurationMs || 0;
   if (session.currentWorkStartedAt) {
     accumulatedDurationMs += Date.now() - session.currentWorkStartedAt;
   }
 
+  // Use auto-serialization
+  const persisted = serializeForPersistence(session, 'SdkSession');
+
+  // Override accumulated duration with calculated value
   return {
-    id: session.id,
-    cwd: session.cwd,
-    model: session.model,
-    thinkingLevel: session.thinkingLevel,
-    messages: session.messages.map(msg => ({
-      type: msg.type,
-      content: msg.content,
-      tool: msg.tool,
-      input: msg.input,
-      output: msg.output,
-      timestamp: msg.timestamp,
-    })),
-    status: session.status,
-    createdAt: session.createdAt,
-    startedAt: session.startedAt,
+    ...persisted,
     accumulatedDurationMs,
-    aiMetadata: session.aiMetadata,
-    pendingTranscription: pendingTranscriptionToPersisted(session.pendingTranscription),
-    pendingRepoSelection: session.pendingRepoSelection,
-    pendingPrompt: session.pendingPrompt,
   };
 }
 
 /**
- * Convert persisted pending transcription to frontend format
- */
-function persistedToPendingTranscription(
-  persisted: PersistedPendingTranscriptionInfo | undefined
-): SdkSession['pendingTranscription'] {
-  if (!persisted) return undefined;
-
-  return {
-    status: persisted.status,
-    audioVisualizationHistory: persisted.audioVisualizationHistory,
-    recordingStartedAt: persisted.recordingStartedAt,
-    recordingDurationMs: persisted.recordingDurationMs,
-    // audioData is not restored - it was not persisted
-    transcript: persisted.transcript,
-    transcriptionError: persisted.transcriptionError,
-    cleanedTranscript: persisted.cleanedTranscript,
-    wasCleanedUp: persisted.wasCleanedUp,
-    modelRecommendation: persisted.modelRecommendation,
-    repoRecommendation: persisted.repoRecommendation,
-  };
-}
-
-/**
- * Convert persisted SDK session to frontend format
+ * Convert persisted SDK session to frontend format.
+ * Applies defaults for fields that need runtime initialization.
  */
 function persistedToSdkSession(persisted: PersistedSdkSession): SdkSession {
-  // For pending_transcription sessions that were persisted mid-flow,
-  // we restore them in a 'processing' state so the UI shows the LLM reasoning
-  // but the user knows they need to re-record or continue manually
-  const isPending = persisted.status === 'pending_transcription' || persisted.status === 'pending_repo';
+  // Determine if this is a pending session
+  const isPending = persisted.status === 'pending_transcription' ||
+                    persisted.status === 'pending_repo' ||
+                    persisted.status === 'pending_approval';
 
-  return {
-    id: persisted.id,
-    cwd: persisted.cwd,
-    model: persisted.model,
-    thinkingLevel: persisted.thinkingLevel ?? null, // Restore thinking level
-    messages: persisted.messages.map(msg => ({
-      type: msg.type as SdkMessage['type'],
-      content: msg.content,
-      tool: msg.tool,
-      input: msg.input,
-      output: msg.output,
-      timestamp: msg.timestamp,
-    })),
-    // Restored sessions should be in 'done' or 'idle' state, never 'querying'
-    // But pending sessions retain their status
-    status: isPending
-      ? (persisted.status as SdkSession['status'])
-      : (persisted.status === 'querying' ? 'idle' : (persisted.status as SdkSession['status'])),
-    createdAt: persisted.createdAt,
-    startedAt: persisted.startedAt,
-    // Restore accumulated duration, reset current work timer (not working when restored)
-    accumulatedDurationMs: persisted.accumulatedDurationMs || 0,
+  // Deserialize with runtime defaults
+  const session = deserializeFromPersistence<SdkSession>(persisted as unknown as Record<string, unknown>, {
+    // Runtime-only fields that need defaults
     currentWorkStartedAt: undefined, // Session is idle when restored
-    // Restore AI metadata
-    aiMetadata: persisted.aiMetadata,
-    // Restore pending transcription info (for display of LLM reasoning)
-    pendingTranscription: persistedToPendingTranscription(persisted.pendingTranscription),
-    // Restore pending repo selection
-    pendingRepoSelection: persisted.pendingRepoSelection,
-    // Restore pending prompt
-    pendingPrompt: persisted.pendingPrompt,
-  };
+    thinkingLevel: null, // Default thinking level
+    accumulatedDurationMs: 0,
+    messages: [],
+  });
+
+  // Fix up the status - querying sessions become idle since we can't resume mid-query
+  if (!isPending && persisted.status === 'querying') {
+    session.status = 'idle';
+  }
+
+  // Ensure message types are properly typed
+  if (persisted.messages) {
+    session.messages = persisted.messages.map(msg => ({
+      ...msg,
+      type: msg.type as SdkMessage['type'],
+      // Cast images mediaType back to the union type
+      images: msg.images?.map(img => ({
+        ...img,
+        mediaType: img.mediaType as SdkImageContent['mediaType'],
+      })),
+    }));
+  }
+
+  // Ensure thinking level is properly handled
+  if (persisted.thinkingLevel === undefined) {
+    session.thinkingLevel = null;
+  }
+
+  return session;
 }
 
 /**
- * Convert frontend terminal session to persisted format
+ * Convert frontend terminal session to persisted format.
  */
 function terminalSessionToPersisted(session: TerminalSession, outputBuffer?: string): PersistedTerminalSession {
   return {
@@ -220,7 +327,7 @@ function terminalSessionToPersisted(session: TerminalSession, outputBuffer?: str
 }
 
 /**
- * Convert persisted terminal session to frontend format
+ * Convert persisted terminal session to frontend format.
  */
 function persistedToTerminalSession(persisted: PersistedTerminalSession): TerminalSession {
   return {
@@ -232,8 +339,13 @@ function persistedToTerminalSession(persisted: PersistedTerminalSession): Termin
   };
 }
 
+// ============================================================================
+// PUBLIC API
+// ============================================================================
+
 /**
- * Save current sessions to disk
+ * Save current sessions to disk.
+ * All session fields are automatically persisted except those in NON_PERSISTABLE_FIELDS.
  */
 export async function saveSessionsToDisk(): Promise<void> {
   const currentSettings = get(settings);
@@ -247,12 +359,12 @@ export async function saveSessionsToDisk(): Promise<void> {
   const currentActiveSdkId = get(activeSdkSessionId);
   const currentActiveTerminalId = get(activeSessionId);
 
-  // Filter out sessions that are still actively recording (no useful data yet).
-  // Sessions with transcription data, LLM reasoning, etc. are now persisted so
+  // Filter out sessions that are still actively recording with no useful data yet.
+  // Sessions with transcription data, LLM reasoning, etc. are persisted so
   // users can see the processing state and resume or restart.
   const persistableSdkSessions = currentSdkSessions.filter(s => {
     if (s.status !== 'pending_transcription') {
-      return true; // Not pending, include it
+      return true; // Not pending transcription, include it
     }
     // For pending_transcription sessions, only exclude if still recording with no transcript
     const hasTranscript = s.pendingTranscription?.transcript;
@@ -285,7 +397,7 @@ export async function saveSessionsToDisk(): Promise<void> {
 }
 
 /**
- * Load sessions from disk and restore state
+ * Load sessions from disk and restore state.
  */
 export async function loadSessionsFromDisk(): Promise<void> {
   const currentSettings = get(settings);
@@ -346,7 +458,7 @@ export async function loadSessionsFromDisk(): Promise<void> {
 }
 
 /**
- * Clear all persisted sessions
+ * Clear all persisted sessions.
  */
 export async function clearPersistedSessions(): Promise<void> {
   try {
@@ -358,7 +470,7 @@ export async function clearPersistedSessions(): Promise<void> {
 }
 
 /**
- * Setup auto-save on visibility change (when user switches away from app)
+ * Setup auto-save on visibility change (when user switches away from app).
  */
 export function setupAutoSave(): () => void {
   const handleVisibilityChange = () => {
@@ -383,7 +495,7 @@ export function setupAutoSave(): () => void {
 }
 
 /**
- * Setup periodic auto-save (every 5 minutes)
+ * Setup periodic auto-save (every 5 minutes).
  */
 export function setupPeriodicAutoSave(intervalMs: number = 5 * 60 * 1000): () => void {
   const intervalId = setInterval(() => {

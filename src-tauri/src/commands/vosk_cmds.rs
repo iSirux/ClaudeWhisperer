@@ -36,6 +36,9 @@ pub async fn start_vosk_session(
         return Err("Vosk is not enabled".to_string());
     }
 
+    // Close any existing session with this ID first to prevent duplicate polling tasks
+    let _ = vosk_manager.remove_session(&session_id).await;
+
     vosk_manager
         .create_session(session_id.clone(), &cfg.vosk.endpoint, cfg.vosk.sample_rate)
         .await?;

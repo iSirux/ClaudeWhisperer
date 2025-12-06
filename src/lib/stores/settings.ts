@@ -67,9 +67,13 @@ export interface VoiceCommandConfig {
   enabled: boolean;
   /** List of active voice commands that will trigger send */
   active_commands: string[];
+  /** List of active voice commands that will trigger transcribe-to-input */
+  transcribe_commands: string[];
+  /** List of active voice commands that will cancel/discard the recording */
+  cancel_commands: string[];
 }
 
-/** Default voice command presets */
+/** Default voice command presets for sending prompts */
 export const VOICE_COMMAND_PRESETS = [
   "go go",
   "send it",
@@ -77,6 +81,24 @@ export const VOICE_COMMAND_PRESETS = [
   "make it so",
   "do it",
   "run it",
+] as const;
+
+/** Default voice command presets for transcribe-to-input */
+export const TRANSCRIBE_COMMAND_PRESETS = [
+  "paste it",
+  "type it",
+  "transcribe",
+  "copy it",
+  "text it",
+] as const;
+
+/** Default voice command presets for canceling/discarding recordings */
+export const CANCEL_COMMAND_PRESETS = [
+  "cancel that",
+  "never mind",
+  "discard recording",
+  "scratch that",
+  "abort abort",
 ] as const;
 
 /** Open mic configuration for passive voice listening */
@@ -101,6 +123,11 @@ export interface AudioConfig {
   device_id: string | null;
   use_hotkey: boolean;
   play_sound_on_completion: boolean;
+  play_sound_on_repo_select: boolean;
+  /** Play sound when open mic wake command is detected and recording starts */
+  play_sound_on_open_mic_trigger: boolean;
+  /** Play sound when a voice command (like "send it") is detected */
+  play_sound_on_voice_command: boolean;
   recording_linger_ms: number;
   include_transcription_notice: boolean;
   require_transcription_approval: boolean;
@@ -159,8 +186,8 @@ export interface SessionsViewConfig {
   card_size: SessionsGridSize;
 }
 
-// Thinking level for extended thinking mode (matches Claude Code)
-export type ThinkingLevel = "off" | "think" | "megathink" | "ultrathink";
+// Thinking level for extended thinking mode: off or on (31999 tokens)
+export type ThinkingLevel = "off" | "on";
 
 export type LlmProvider = "Gemini" | "OpenAI" | "Groq" | "Local" | "Custom";
 // Alias for backwards compatibility
@@ -290,12 +317,17 @@ const defaultConfig: AppConfig = {
     device_id: null,
     use_hotkey: true,
     play_sound_on_completion: false,
+    play_sound_on_repo_select: true,
+    play_sound_on_open_mic_trigger: true,
+    play_sound_on_voice_command: true,
     recording_linger_ms: 500,
     include_transcription_notice: true,
     require_transcription_approval: false,
     voice_commands: {
       enabled: false,
       active_commands: ["go go"],
+      transcribe_commands: [],
+      cancel_commands: [],
     },
     open_mic: {
       enabled: false,

@@ -81,27 +81,30 @@ export interface SessionAiMetadata {
   waitingFor?: string; // approval, clarification, input, review, decision
 }
 
-// Thinking mode levels matching Claude Code's implementation
-// null = off, numbers represent token budgets
-export type ThinkingLevel = null | 'think' | 'megathink' | 'ultrathink';
+// Thinking mode: off (null) or on (31999 token budget)
+export type ThinkingLevel = null | 'on';
 
 // Settings format uses "off" string instead of null
-export type SettingsThinkingLevel = 'off' | 'think' | 'megathink' | 'ultrathink';
+export type SettingsThinkingLevel = 'off' | 'on';
 
 // Convert from settings format to store format
 export function settingsToStoreThinking(level: SettingsThinkingLevel): ThinkingLevel {
-  return level === 'off' ? null : level;
+  return level === 'off' ? null : 'on';
 }
 
 // Convert from store format to settings format
 export function storeToSettingsThinking(level: ThinkingLevel): SettingsThinkingLevel {
-  return level === null ? 'off' : level;
+  return level === null ? 'off' : 'on';
 }
 
-// Token budgets for each thinking level (matching Claude Code)
-export const THINKING_BUDGETS: Record<Exclude<ThinkingLevel, null>, number> = {
-  think: 4000,
-  megathink: 10000,
+// Token budget for thinking mode (31999 when on)
+export const THINKING_BUDGET = 31999;
+
+// Legacy support: map any thinking level to the budget
+export const THINKING_BUDGETS: Record<string, number> = {
+  on: 31999,
+  think: 31999,
+  megathink: 31999,
   ultrathink: 31999,
 };
 

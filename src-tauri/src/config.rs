@@ -569,6 +569,12 @@ pub struct VoiceCommandConfig {
     /// List of active voice commands that will trigger send
     #[serde(default = "default_voice_commands")]
     pub active_commands: Vec<String>,
+    /// List of active voice commands that will trigger transcribe-to-input
+    #[serde(default)]
+    pub transcribe_commands: Vec<String>,
+    /// List of active voice commands that will cancel/discard the recording
+    #[serde(default)]
+    pub cancel_commands: Vec<String>,
 }
 
 fn default_voice_commands() -> Vec<String> {
@@ -580,6 +586,8 @@ impl Default for VoiceCommandConfig {
         Self {
             enabled: false,
             active_commands: default_voice_commands(),
+            transcribe_commands: Vec::new(),
+            cancel_commands: Vec::new(),
         }
     }
 }
@@ -614,6 +622,14 @@ pub struct AudioConfig {
     pub use_hotkey: bool,
     #[serde(default)]
     pub play_sound_on_completion: bool,
+    #[serde(default = "default_play_sound_on_repo_select")]
+    pub play_sound_on_repo_select: bool,
+    /// Play sound when open mic wake command is detected and recording starts
+    #[serde(default = "default_play_sound_on_open_mic_trigger")]
+    pub play_sound_on_open_mic_trigger: bool,
+    /// Play sound when a voice command (like "send it") is detected
+    #[serde(default = "default_play_sound_on_voice_command")]
+    pub play_sound_on_voice_command: bool,
     #[serde(default = "default_recording_linger_ms")]
     pub recording_linger_ms: u32,
     #[serde(default = "default_include_transcription_notice")]
@@ -632,6 +648,18 @@ fn default_recording_linger_ms() -> u32 {
     500
 }
 
+fn default_play_sound_on_repo_select() -> bool {
+    true
+}
+
+fn default_play_sound_on_open_mic_trigger() -> bool {
+    true
+}
+
+fn default_play_sound_on_voice_command() -> bool {
+    true
+}
+
 fn default_include_transcription_notice() -> bool {
     true
 }
@@ -642,6 +670,9 @@ impl Default for AudioConfig {
             device_id: None,
             use_hotkey: true,
             play_sound_on_completion: false,
+            play_sound_on_repo_select: true,
+            play_sound_on_open_mic_trigger: true,
+            play_sound_on_voice_command: true,
             recording_linger_ms: 500,
             include_transcription_notice: true,
             require_transcription_approval: false,

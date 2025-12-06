@@ -3,20 +3,40 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
   let transcript = $state('');
-  let unlisten: UnlistenFn | null = null;
+  let unlistenTranscript: UnlistenFn | null = null;
+  let unlistenRecording: UnlistenFn | null = null;
+
+  // Reset function to clear transcript
+  function resetTranscript() {
+    console.log('[TranscriptMarquee] resetting transcript');
+    transcript = '';
+  }
 
   onMount(async () => {
-    // Listen for real-time transcript updates from Vosk
-    unlisten = await listen<{ text: string }>('vosk-realtime-transcript', (event) => {
-      const text = event.payload?.text || '';
-      if (text) {
-        transcript = text;
+    // Reset transcript on mount (when overlay opens / recording starts)
+    resetTranscript();
+
+    // Also reset when recording starts (set up listener FIRST to catch early events)
+    unlistenRecording = await listen<{ state: string }>('recording-state', (event) => {
+      if (event.payload.state === 'recording') {
+        resetTranscript();
       }
+    });
+
+    // Listen for real-time transcript updates from Vosk
+    unlistenTranscript = await listen<{ text: string }>('vosk-realtime-transcript', (event) => {
+      const text = event.payload?.text ?? '';
+      console.log('[TranscriptMarquee] received', { text, prevTranscript: transcript });
+      // Always update transcript - empty string clears it
+      transcript = text;
     });
   });
 
   onDestroy(() => {
-    unlisten?.();
+    unlistenTranscript?.();
+    unlistenRecording?.();
+    // Clear on unmount too
+    transcript = '';
   });
 </script>
 
