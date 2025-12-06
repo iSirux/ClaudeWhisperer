@@ -711,14 +711,10 @@ pub enum Theme {
     #[default]
     Midnight,
     Slate,
-    Snow,
-    Sand,
-    // New themes
-    Ocean,
-    Forest,
-    Rose,
-    Mocha,
-    Torch,
+    Void,
+    Ember,
+    Pearl,
+    Latte,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

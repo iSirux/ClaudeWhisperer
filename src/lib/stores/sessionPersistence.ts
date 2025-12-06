@@ -344,6 +344,26 @@ function persistedToTerminalSession(persisted: PersistedTerminalSession): Termin
 // ============================================================================
 
 /**
+ * Track whether sessions have already been loaded from disk.
+ * This prevents reloading (and overwriting in-memory state) when navigating between routes.
+ */
+let sessionsLoadedFromDisk = false;
+
+/**
+ * Reset the loaded flag. Used for testing or when app state needs to be reset.
+ */
+export function resetSessionLoadedFlag(): void {
+  sessionsLoadedFromDisk = false;
+}
+
+/**
+ * Check if sessions have been loaded from disk.
+ */
+export function hasLoadedSessionsFromDisk(): boolean {
+  return sessionsLoadedFromDisk;
+}
+
+/**
  * Save current sessions to disk.
  * All session fields are automatically persisted except those in NON_PERSISTABLE_FIELDS.
  */
@@ -398,11 +418,21 @@ export async function saveSessionsToDisk(): Promise<void> {
 
 /**
  * Load sessions from disk and restore state.
+ * Only loads on the first call - subsequent calls are no-ops to prevent
+ * overwriting in-memory state when navigating between routes.
  */
 export async function loadSessionsFromDisk(): Promise<void> {
+  // Prevent re-loading from disk on route navigation
+  // This protects in-memory session state (like querying status)
+  if (sessionsLoadedFromDisk) {
+    console.log('[sessionPersistence] Sessions already loaded, skipping reload');
+    return;
+  }
+
   const currentSettings = get(settings);
 
   if (!currentSettings.session_persistence.enabled) {
+    sessionsLoadedFromDisk = true; // Mark as "loaded" even if disabled
     return;
   }
 
@@ -413,6 +443,7 @@ export async function loadSessionsFromDisk(): Promise<void> {
 
     if (!persistedData || (!persistedData.sdk_sessions.length && !persistedData.terminal_sessions.length)) {
       console.log('[sessionPersistence] No persisted sessions found');
+      sessionsLoadedFromDisk = true;
       return;
     }
 
@@ -451,9 +482,12 @@ export async function loadSessionsFromDisk(): Promise<void> {
       }
     }
 
+    sessionsLoadedFromDisk = true;
     console.log('[sessionPersistence] Sessions restored successfully');
   } catch (error) {
     console.error('[sessionPersistence] Failed to load sessions:', error);
+    // Still mark as loaded to prevent retrying on every route change
+    sessionsLoadedFromDisk = true;
   }
 }
 

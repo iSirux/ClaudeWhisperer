@@ -316,7 +316,7 @@
           : "latest-cpu";
       parts.push(`fedirz/faster-whisper-server:${imageTag}`);
 
-      return parts.join(" \\\n  ");
+      return parts.join(" ");
     })()}
     <div class="border-t border-border pt-4 mt-4">
       <label class="block text-sm font-medium text-text-secondary mb-3"

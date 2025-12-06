@@ -21,7 +21,7 @@
   interface Props {
     initialTab?: string;
   }
-  let { initialTab = "general" }: Props = $props();
+  let { initialTab = "claude" }: Props = $props();
 
   let activeTab = $state(initialTab);
 
@@ -33,13 +33,34 @@
   let saveStatus: "idle" | "saving" | "error" = $state("idle");
   let saveTimeout: ReturnType<typeof setTimeout> | null = null;
   let statusTimeout: ReturnType<typeof setTimeout> | null = null;
+  let hasPendingChanges = false;
+
+  // Immediately save settings (no debounce)
+  async function saveNow() {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = null;
+    hasPendingChanges = false;
+
+    saveStatus = "saving";
+    try {
+      await invoke("save_config", { newConfig: $settings });
+      saveStatus = "idle";
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+      saveStatus = "error";
+      if (statusTimeout) clearTimeout(statusTimeout);
+      statusTimeout = setTimeout(() => (saveStatus = "idle"), 3000);
+    }
+  }
 
   // Debounced auto-save
   async function autoSave() {
     if (saveTimeout) clearTimeout(saveTimeout);
     if (statusTimeout) clearTimeout(statusTimeout);
+    hasPendingChanges = true;
 
     saveTimeout = setTimeout(async () => {
+      hasPendingChanges = false;
       saveStatus = "saving";
       try {
         await invoke("save_config", { newConfig: $settings });
@@ -64,18 +85,24 @@
 
   onDestroy(() => {
     unsubscribe();
+    // Flush any pending save immediately instead of cancelling it
+    if (hasPendingChanges) {
+      // Use synchronous save to ensure it completes before unmount
+      // Note: We can't await in onDestroy, so we fire-and-forget
+      saveNow();
+    }
     if (saveTimeout) clearTimeout(saveTimeout);
     if (statusTimeout) clearTimeout(statusTimeout);
   });
 
   const tabs = [
-    { id: "general", label: "General" },
     { id: "claude", label: "Claude" },
+    { id: "sessions", label: "Sessions" },
     { id: "themes", label: "Themes" },
     { id: "system", label: "System" },
     { id: "audio", label: "Audio" },
-    { id: "whisper", label: "Whisper" },
-    { id: "vosk", label: "Vosk" },
+    { id: "whisper", label: "Transcription (Whisper)" },
+    { id: "vosk", label: "Real-time Transcription (Vosk)" },
     { id: "llm", label: "LLM" },
     { id: "git", label: "Git" },
     { id: "hotkeys", label: "Hotkeys" },
@@ -131,7 +158,7 @@
     </nav>
 
     <div class="flex-1 p-4 overflow-y-auto">
-      {#if activeTab === "general"}
+      {#if activeTab === "sessions"}
         <GeneralTab />
       {:else if activeTab === "claude"}
         <ClaudeTab />

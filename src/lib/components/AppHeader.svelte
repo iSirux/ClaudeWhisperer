@@ -95,18 +95,18 @@
     <!-- Repo Selector Dropdown -->
     <div class="relative">
       <button
-        class="repo-selector flex items-center gap-2 px-3 py-1.5 bg-surface-elevated hover:bg-border rounded text-sm transition-colors"
+        class="repo-selector flex items-center gap-1.5 px-2 py-1 bg-surface-elevated hover:bg-border rounded text-[10px] font-medium transition-colors"
         onclick={() => showRepoSelector = !showRepoSelector}
         title="Select repository"
       >
         {#if isAutoRepoSelected}
-          <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500 font-medium">Auto</span>
+          <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500">Auto</span>
         {:else if activeRepo}
           <span class="text-text-primary">{activeRepo.name}</span>
         {:else}
           <span class="text-text-muted">No repo selected</span>
         {/if}
-        <svg class="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-3 h-3 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
         </svg>
       </button>

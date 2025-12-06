@@ -104,8 +104,8 @@ pub fn run() {
                 .or_else(|_| Image::from_bytes(include_bytes!("../icons/32x32.png")))
                 .map_err(|e| format!("Failed to load tray icon: {}", e))?;
 
-            // Create tray icon
-            let _tray = TrayIconBuilder::new()
+            // Create tray icon with ID for cleanup
+            let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .menu(&menu)
                 .tooltip("Claude Whisperer")
@@ -121,6 +121,10 @@ pub fn run() {
                             // Properly shutdown before quitting
                             let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
                             sidecar.shutdown();
+                            // Remove tray icon before exit to prevent orphaned icon on Windows
+                            if let Some(tray) = app.tray_by_id("main-tray") {
+                                let _ = tray.set_visible(false);
+                            }
                             app.exit(0);
                         }
                         _ => {}
@@ -166,6 +170,10 @@ pub fn run() {
                         // Actually quit the app when closing and not minimizing to tray
                         let sidecar: tauri::State<Arc<SidecarManager>> = app.state();
                         sidecar.shutdown();
+                        // Remove tray icon before exit to prevent orphaned icon on Windows
+                        if let Some(tray) = app.tray_by_id("main-tray") {
+                            let _ = tray.set_visible(false);
+                        }
                         app.exit(0);
                     }
                 }

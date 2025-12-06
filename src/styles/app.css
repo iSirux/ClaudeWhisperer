@@ -56,116 +56,68 @@
   --color-model-haiku: #6ee7b7;
 }
 
-/* Theme: Snow (clean white light) */
-[data-theme="Snow"] {
-  --color-background: #ffffff;
-  --color-surface: #f8fafc;
-  --color-surface-elevated: #f1f5f9;
-  --color-border: #e2e8f0;
-  --color-text-primary: #0f172a;
+/* Theme: Void (cosmic purple dark) */
+[data-theme="Void"] {
+  --color-background: #0d0a12;
+  --color-surface: #161222;
+  --color-surface-elevated: #1f1a30;
+  --color-border: #2e2648;
+  --color-text-primary: #f0edf7;
+  --color-text-secondary: #a89fc8;
+  --color-text-muted: #6c5d8a;
+  --color-accent: #9d4edd;
+  --color-accent-hover: #c77dff;
+  --color-model-opus: #c77dff;
+  --color-model-sonnet: #fbbf24;
+  --color-model-haiku: #34d399;
+}
+
+/* Theme: Ember (warm fire dark) */
+[data-theme="Ember"] {
+  --color-background: #110a08;
+  --color-surface: #1a1210;
+  --color-surface-elevated: #261c18;
+  --color-border: #3d2c26;
+  --color-text-primary: #fef4ed;
+  --color-text-secondary: #d4a88c;
+  --color-text-muted: #8b6c5a;
+  --color-accent: #e85d04;
+  --color-accent-hover: #f48c06;
+  --color-model-opus: #c084fc;
+  --color-model-sonnet: #f48c06;
+  --color-model-haiku: #34d399;
+}
+
+/* Theme: Pearl (clean silver-white light) */
+[data-theme="Pearl"] {
+  --color-background: #f8f9fc;
+  --color-surface: #eef1f6;
+  --color-surface-elevated: #e2e7ef;
+  --color-border: #c8d0dd;
+  --color-text-primary: #1a1d26;
   --color-text-secondary: #475569;
-  --color-text-muted: #94a3b8;
-  --color-accent: #6366f1;
-  --color-accent-hover: #4f46e5;
-  --color-model-opus: #7c3aed;
-  --color-model-sonnet: #d97706;
-  --color-model-haiku: #059669;
+  --color-text-muted: #8390a3;
+  --color-accent: #3b5fc1;
+  --color-accent-hover: #2d4fa3;
+  --color-model-opus: #6d28d9;
+  --color-model-sonnet: #b45309;
+  --color-model-haiku: #047857;
 }
 
-/* Theme: Sand (warm cream light) */
-[data-theme="Sand"] {
-  --color-background: #fefdfb;
-  --color-surface: #faf8f5;
-  --color-surface-elevated: #f5f0e8;
-  --color-border: #e7e0d5;
-  --color-text-primary: #1c1917;
-  --color-text-secondary: #57534e;
-  --color-text-muted: #a8a29e;
-  --color-accent: #d97706;
-  --color-accent-hover: #b45309;
-  --color-model-opus: #9333ea;
-  --color-model-sonnet: #ca8a04;
-  --color-model-haiku: #16a34a;
-}
-
-/* Theme: Ocean (deep blue dark) */
-[data-theme="Ocean"] {
-  --color-background: #0c1222;
-  --color-surface: #1a2744;
-  --color-surface-elevated: #243556;
-  --color-border: #3d5a80;
-  --color-text-primary: #e0f2fe;
-  --color-text-secondary: #7dd3fc;
-  --color-text-muted: #38bdf8;
-  --color-accent: #0ea5e9;
-  --color-accent-hover: #38bdf8;
-  --color-model-opus: #c4b5fd;
-  --color-model-sonnet: #fde68a;
-  --color-model-haiku: #86efac;
-}
-
-/* Theme: Forest (earthy green dark) */
-[data-theme="Forest"] {
-  --color-background: #0d1512;
-  --color-surface: #1a2820;
-  --color-surface-elevated: #243830;
-  --color-border: #3d5a4a;
-  --color-text-primary: #ecfdf5;
-  --color-text-secondary: #86efac;
-  --color-text-muted: #4ade80;
-  --color-accent: #22c55e;
-  --color-accent-hover: #4ade80;
-  --color-model-opus: #c4b5fd;
-  --color-model-sonnet: #fcd34d;
-  --color-model-haiku: #6ee7b7;
-}
-
-/* Theme: Rose (soft pink light) */
-[data-theme="Rose"] {
-  --color-background: #fffbfc;
-  --color-surface: #fdf2f4;
-  --color-surface-elevated: #fce7eb;
-  --color-border: #f5d0d8;
-  --color-text-primary: #1c1017;
-  --color-text-secondary: #6b4a55;
-  --color-text-muted: #a98a94;
-  --color-accent: #e11d48;
-  --color-accent-hover: #be123c;
-  --color-model-opus: #7c3aed;
-  --color-model-sonnet: #d97706;
-  --color-model-haiku: #059669;
-}
-
-/* Theme: Mocha (warm brown dark) */
-[data-theme="Mocha"] {
-  --color-background: #1a1614;
-  --color-surface: #2a2420;
-  --color-surface-elevated: #3a3230;
-  --color-border: #5a4a44;
-  --color-text-primary: #f5f0eb;
-  --color-text-secondary: #d4c4b8;
-  --color-text-muted: #a89888;
-  --color-accent: #c2956e;
-  --color-accent-hover: #d4aa82;
-  --color-model-opus: #c4b5fd;
-  --color-model-sonnet: #fcd34d;
-  --color-model-haiku: #86efac;
-}
-
-/* Theme: Torch (fiery orange dark) */
-[data-theme="Torch"] {
-  --color-background: #1a1210;
-  --color-surface: #2a1e18;
-  --color-surface-elevated: #3a2a20;
-  --color-border: #5a4030;
-  --color-text-primary: #fff5f0;
-  --color-text-secondary: #ffcbb0;
-  --color-text-muted: #cc8866;
-  --color-accent: #f97316;
-  --color-accent-hover: #fb923c;
-  --color-model-opus: #c4b5fd;
-  --color-model-sonnet: #fcd34d;
-  --color-model-haiku: #86efac;
+/* Theme: Latte (warm cream light) */
+[data-theme="Latte"] {
+  --color-background: #fcf8f4;
+  --color-surface: #f5ede3;
+  --color-surface-elevated: #ebe0d2;
+  --color-border: #d4c4b0;
+  --color-text-primary: #2d251e;
+  --color-text-secondary: #5c4e40;
+  --color-text-muted: #9a8a78;
+  --color-accent: #a0522d;
+  --color-accent-hover: #8b4513;
+  --color-model-opus: #7e22ce;
+  --color-model-sonnet: #a16207;
+  --color-model-haiku: #15803d;
 }
 
 html, body {

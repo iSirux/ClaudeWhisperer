@@ -13,7 +13,7 @@
       Dark Themes
     </h3>
     <div class="grid grid-cols-2 gap-2 mb-6">
-      {#each [{ id: "Midnight" as Theme, label: "Midnight", desc: "Deep dark", colors: ["#0f0f0f", "#1a1a1a", "#6366f1"] }, { id: "Slate" as Theme, label: "Slate", desc: "Blue-gray dark", colors: ["#1e293b", "#334155", "#3b82f6"] }, { id: "Ocean" as Theme, label: "Ocean", desc: "Deep blue", colors: ["#0c1222", "#1a2744", "#0ea5e9"] }, { id: "Forest" as Theme, label: "Forest", desc: "Earthy green", colors: ["#0d1512", "#1a2820", "#22c55e"] }, { id: "Mocha" as Theme, label: "Mocha", desc: "Warm brown", colors: ["#1a1614", "#2a2420", "#c2956e"] }, { id: "Torch" as Theme, label: "Torch", desc: "Fiery orange", colors: ["#1a1210", "#2a1e18", "#f97316"] }] as theme}
+      {#each [{ id: "Midnight" as Theme, label: "Midnight", desc: "Pure black", colors: ["#0f0f0f", "#1a1a1a", "#6366f1"] }, { id: "Slate" as Theme, label: "Slate", desc: "Blue-gray", colors: ["#1e293b", "#334155", "#3b82f6"] }, { id: "Void" as Theme, label: "Void", desc: "Cosmic purple", colors: ["#0d0a12", "#161222", "#9d4edd"] }, { id: "Ember" as Theme, label: "Ember", desc: "Warm fire", colors: ["#110a08", "#1a1210", "#e85d04"] }] as theme}
         <button
           class="flex items-center gap-3 p-3 rounded border-2 transition-all"
           class:border-accent={$settings.theme === theme.id}
@@ -48,7 +48,7 @@
       Light Themes
     </h3>
     <div class="grid grid-cols-2 gap-2">
-      {#each [{ id: "Snow" as Theme, label: "Snow", desc: "Clean white", colors: ["#ffffff", "#f1f5f9", "#6366f1"] }, { id: "Sand" as Theme, label: "Sand", desc: "Warm cream", colors: ["#fefdfb", "#f5f0e8", "#d97706"] }, { id: "Rose" as Theme, label: "Rose", desc: "Soft pink", colors: ["#fffbfc", "#fce7eb", "#e11d48"] }] as theme}
+      {#each [{ id: "Pearl" as Theme, label: "Pearl", desc: "Clean silver", colors: ["#f8f9fc", "#e2e7ef", "#3b5fc1"] }, { id: "Latte" as Theme, label: "Latte", desc: "Warm cream", colors: ["#fcf8f4", "#ebe0d2", "#a0522d"] }] as theme}
         <button
           class="flex items-center gap-3 p-3 rounded border-2 transition-all"
           class:border-accent={$settings.theme === theme.id}

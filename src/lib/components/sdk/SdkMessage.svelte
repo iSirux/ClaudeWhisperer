@@ -1,9 +1,15 @@
 <script lang="ts">
-  import type { SdkMessage, SdkImageContent } from '$lib/stores/sdkSessions';
-  import { renderMarkdown } from '$lib/utils/markdown';
-  import RerunDropdown from './RerunDropdown.svelte';
+  import type { SdkMessage, SdkImageContent } from "$lib/stores/sdkSessions";
+  import { renderMarkdown } from "$lib/utils/markdown";
+  import RerunDropdown from "./RerunDropdown.svelte";
 
-  let { message, copiedMessageId = null, onCopy, sessionCwd = '', sessionModel = '' }: {
+  let {
+    message,
+    copiedMessageId = null,
+    onCopy,
+    sessionCwd = "",
+    sessionModel = "",
+  }: {
     message: SdkMessage;
     copiedMessageId?: number | null;
     onCopy: (msg: SdkMessage) => void;
@@ -16,7 +22,7 @@
   }
 
   function formatInput(input: Record<string, unknown> | undefined): string {
-    if (!input) return '';
+    if (!input) return "";
     try {
       return JSON.stringify(input, null, 2);
     } catch {
@@ -26,28 +32,32 @@
 
   function getToolIcon(tool: string): string {
     const icons: Record<string, string> = {
-      Read: '📖',
-      Write: '✏️',
-      Edit: '🔧',
-      Bash: '💻',
-      Grep: '🔍',
-      Glob: '📁',
-      WebFetch: '🌐',
-      WebSearch: '🔎',
+      Read: "📖",
+      Write: "✏️",
+      Edit: "🔧",
+      Bash: "💻",
+      Grep: "🔍",
+      Glob: "📁",
+      WebFetch: "🌐",
+      WebSearch: "🔎",
     };
-    return icons[tool] || '🔨';
+    return icons[tool] || "🔨";
   }
 
   let isCopied = $derived(copiedMessageId === message.timestamp);
 </script>
 
 <div class="message message-{message.type}">
-  {#if message.type === 'user'}
+  {#if message.type === "user"}
     <div class="user-message">
       {#if message.images && message.images.length > 0}
         <div class="message-images">
           {#each message.images as img}
-            <img src={createImagePreviewUrl(img)} alt="Attached" class="message-image" />
+            <img
+              src={createImagePreviewUrl(img)}
+              alt="Attached"
+              class="message-image"
+            />
           {/each}
         </div>
       {/if}
@@ -71,20 +81,28 @@
         >
           {#if isCopied}
             <svg viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+              <path
+                fill-rule="evenodd"
+                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                clip-rule="evenodd"
+              />
             </svg>
           {:else}
             <svg viewBox="0 0 20 20" fill="currentColor">
               <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-              <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+              <path
+                d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"
+              />
             </svg>
           {/if}
         </button>
       </div>
     </div>
-  {:else if message.type === 'text'}
+  {:else if message.type === "text"}
     <div class="text-message-container">
-      <div class="text-content markdown-body">{@html renderMarkdown(message.content ?? '')}</div>
+      <div class="text-content markdown-body">
+        {@html renderMarkdown(message.content ?? "")}
+      </div>
       <button
         class="copy-message-button"
         class:copied={isCopied}
@@ -93,20 +111,26 @@
       >
         {#if isCopied}
           <svg viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+            <path
+              fill-rule="evenodd"
+              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+              clip-rule="evenodd"
+            />
           </svg>
         {:else}
           <svg viewBox="0 0 20 20" fill="currentColor">
             <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-            <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+            <path
+              d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"
+            />
           </svg>
         {/if}
       </button>
     </div>
-  {:else if message.type === 'tool_start'}
+  {:else if message.type === "tool_start"}
     <div class="tool-call">
       <div class="tool-header">
-        <span class="tool-icon">{getToolIcon(message.tool || '')}</span>
+        <span class="tool-icon">{getToolIcon(message.tool || "")}</span>
         <span class="tool-name">{message.tool}</span>
         <span class="tool-status">running...</span>
       </div>
@@ -117,10 +141,10 @@
         </details>
       {/if}
     </div>
-  {:else if message.type === 'tool_result'}
+  {:else if message.type === "tool_result"}
     <div class="tool-result">
       <div class="tool-header">
-        <span class="tool-icon">{getToolIcon(message.tool || '')}</span>
+        <span class="tool-icon">{getToolIcon(message.tool || "")}</span>
         <span class="tool-name">{message.tool}</span>
         <span class="tool-status completed">completed</span>
       </div>
@@ -131,12 +155,12 @@
         </details>
       {/if}
     </div>
-  {:else if message.type === 'error'}
+  {:else if message.type === "error"}
     <div class="error">
       <span class="error-icon">❌</span>
       <span class="error-text">{message.content}</span>
     </div>
-  {:else if message.type === 'subagent_start'}
+  {:else if message.type === "subagent_start"}
     <div class="subagent-call">
       <div class="subagent-header">
         <span class="subagent-icon">🤖</span>
@@ -168,7 +192,6 @@
     padding: 0.75rem 1rem;
     background: var(--color-surface);
     border-radius: 8px;
-    border-left: 3px solid var(--color-accent);
     position: relative;
   }
 
@@ -280,12 +303,29 @@
     margin-top: 0;
   }
 
-  .markdown-body :global(h1) { font-size: 1.5em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.3em; }
-  .markdown-body :global(h2) { font-size: 1.3em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.3em; }
-  .markdown-body :global(h3) { font-size: 1.15em; }
-  .markdown-body :global(h4) { font-size: 1em; }
-  .markdown-body :global(h5) { font-size: 0.9em; }
-  .markdown-body :global(h6) { font-size: 0.85em; color: var(--color-text-muted); }
+  .markdown-body :global(h1) {
+    font-size: 1.5em;
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: 0.3em;
+  }
+  .markdown-body :global(h2) {
+    font-size: 1.3em;
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: 0.3em;
+  }
+  .markdown-body :global(h3) {
+    font-size: 1.15em;
+  }
+  .markdown-body :global(h4) {
+    font-size: 1em;
+  }
+  .markdown-body :global(h5) {
+    font-size: 0.9em;
+  }
+  .markdown-body :global(h6) {
+    font-size: 0.85em;
+    color: var(--color-text-muted);
+  }
 
   .markdown-body :global(p) {
     margin-top: 0;
@@ -319,7 +359,8 @@
     padding: 0.2em 0.4em;
     border-radius: 4px;
     font-size: 0.9em;
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+      monospace;
   }
 
   .markdown-body :global(pre) {
@@ -519,7 +560,11 @@
 
   /* Subagent styles */
   .subagent-call {
-    background: linear-gradient(135deg, var(--color-surface) 0%, color-mix(in srgb, var(--color-surface) 80%, var(--color-model-opus)) 100%);
+    background: linear-gradient(
+      135deg,
+      var(--color-surface) 0%,
+      color-mix(in srgb, var(--color-surface) 80%, var(--color-model-opus)) 100%
+    );
     padding: 0.75rem;
     border-radius: 6px;
     border-left: 3px solid var(--color-model-opus);
@@ -555,7 +600,8 @@
   .subagent-id {
     font-size: 0.75rem;
     color: var(--color-text-muted);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+      monospace;
   }
 
   /* Message images */

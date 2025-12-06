@@ -37,6 +37,9 @@ function createOpenMicStore() {
   // Accumulated final text from Vosk (when accumulate_transcript is enabled)
   let voskAccumulatedText: string = "";
 
+  // Guard against concurrent start() calls - tracks the current initialization promise
+  let startPromise: Promise<void> | null = null;
+
   // Visualization context (to match recording store's audio pipeline)
   let vizAudioContext: AudioContext | null = null;
   let vizAnalyser: AnalyserNode | null = null;
@@ -94,10 +97,17 @@ function createOpenMicStore() {
   }
 
   async function start() {
-    // Prevent double-starting
+    // Prevent double-starting - check both state AND if there's an ongoing start
     const currentState = get({ subscribe });
     if (currentState.state === "listening" || currentState.state === "initializing") {
       console.log("[open-mic] Already running, skipping start");
+      return;
+    }
+
+    // If there's already a start in progress, wait for it instead of starting again
+    if (startPromise) {
+      console.log("[open-mic] Start already in progress, waiting for it");
+      await startPromise;
       return;
     }
 
@@ -156,6 +166,8 @@ function createOpenMicStore() {
       lastTranscript: "",
     }));
 
+    // Wrap the async initialization in a tracked promise
+    startPromise = (async () => {
     try {
       // Request microphone access (use same constraints as recording store)
       const deviceId = currentSettings.audio.device_id;
@@ -291,7 +303,12 @@ function createOpenMicStore() {
         error: error instanceof Error ? error.message : "Failed to start",
       }));
       await cleanup();
+    } finally {
+      startPromise = null;
     }
+    })();
+
+    await startPromise;
   }
 
   function handleWakeCommandDetected(command: string) {

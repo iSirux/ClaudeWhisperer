@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { usageStats, formatTokens, formatCost } from '$lib/stores/usageStats';
+  import { usageStats, formatTokens } from '$lib/stores/usageStats';
   import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { goto } from '$app/navigation';
 
@@ -18,8 +18,7 @@
     appUsage.totalInputTokens + appUsage.totalOutputTokens +
     appUsage.progressiveInputTokens + appUsage.progressiveOutputTokens
   );
-  let appCost = $derived(appUsage.totalCostUsd);
-  let hasAppUsage = $derived(appTokens > 0 || appCost > 0);
+  let hasAppUsage = $derived(appTokens > 0);
 </script>
 
 <button
@@ -29,7 +28,6 @@
 >
   {#if hasAppUsage}
     <div class="preview-content">
-      <span class="app-cost">{formatCost(appCost)}</span>
       <span class="app-tokens">{formatTokens(appTokens)}</span>
     </div>
   {:else}
@@ -77,12 +75,6 @@
     width: 14px;
     height: 14px;
     opacity: 0.7;
-  }
-
-  .app-cost {
-    color: var(--color-accent);
-    font-weight: 600;
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 
   .app-tokens {

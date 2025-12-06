@@ -4,6 +4,7 @@
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, type SessionAiMetadata } from '$lib/stores/sdkSessions';
   import { settings, type SessionsViewLayout, type SessionsGridSize } from '$lib/stores/settings';
+  import { navigation } from '$lib/stores/navigation';
   import { invoke } from '@tauri-apps/api/core';
   import SessionCard from '$lib/components/SessionCard.svelte';
 
@@ -222,6 +223,8 @@
 
   // Navigation and selection
   function goBack() {
+    // Ensure we go back to sessions view, not start
+    navigation.setView('sessions');
     goto('/');
   }
 
@@ -234,6 +237,8 @@
       activeSessionId.set(null);
       sdkSessions.markAsRead(session.id);
     }
+    // Ensure we go to sessions view when selecting a session
+    navigation.setView('sessions');
     goto('/');
   }
 

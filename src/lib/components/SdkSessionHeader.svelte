@@ -1,8 +1,4 @@
 <script lang="ts">
-  import ModelSelector from './ModelSelector.svelte';
-  import ThinkingSelector from './ThinkingSelector.svelte';
-  import type { ThinkingLevel } from '$lib/stores/sdkSessions';
-
   interface Message {
     type: string;
     content?: string;
@@ -13,24 +9,22 @@
 
   interface Props {
     createdAt?: number;
-    model: string;
-    thinkingLevel: ThinkingLevel;
     messages?: Message[];
     isPending?: boolean;
-    onModelChange: (model: string) => void;
-    onThinkingChange: (level: ThinkingLevel) => void;
+    repoName?: string;
+    branch?: string | null;
+    firstPrompt?: string | null;
     onClose: () => void;
     onCancel?: () => void;
   }
 
   let {
     createdAt,
-    model,
-    thinkingLevel,
     messages = [],
     isPending = false,
-    onModelChange,
-    onThinkingChange,
+    repoName = '',
+    branch = null,
+    firstPrompt = null,
     onClose,
     onCancel,
   }: Props = $props();
@@ -64,20 +58,28 @@
 </script>
 
 <div class="session-header flex items-center justify-between px-4 py-2 border-b border-border bg-surface-elevated">
-  <div class="flex items-center gap-3">
+  <div class="header-left">
     {#if sessionTime}
-      <span class="text-sm text-text-muted">{sessionTime}</span>
+      <span class="session-time">{sessionTime}</span>
     {/if}
-    <ModelSelector
-      {model}
-      onchange={onModelChange}
-      size="sm"
-    />
-    <ThinkingSelector
-      {thinkingLevel}
-      onchange={onThinkingChange}
-      size="sm"
-    />
+    {#if repoName}
+      {#if sessionTime}<span class="separator">·</span>{/if}
+      <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+      </svg>
+      <span class="repo-name">{repoName}</span>
+      {#if branch}
+        <span class="separator">·</span>
+        <svg class="branch-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        <span class="branch-name">{branch}</span>
+      {/if}
+    {/if}
+    {#if firstPrompt}
+      {#if sessionTime || repoName}<span class="separator">·</span>{/if}
+      <span class="prompt-preview">{firstPrompt}</span>
+    {/if}
   </div>
   <div class="flex items-center gap-2">
     {#if !isPending}
@@ -115,6 +117,65 @@
 </div>
 
 <style>
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .session-time {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .separator {
+    color: var(--color-text-muted);
+    font-size: 0.8rem;
+    flex-shrink: 0;
+  }
+
+  .repo-icon {
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .repo-name {
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .branch-icon {
+    width: 0.75rem;
+    height: 0.75rem;
+    color: rgb(96, 165, 250);
+    flex-shrink: 0;
+  }
+
+  .branch-name {
+    font-size: 0.8rem;
+    color: rgb(96, 165, 250);
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    flex-shrink: 0;
+  }
+
+  .prompt-preview {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
   .copy-all-btn {
     color: var(--color-text-muted);
   }

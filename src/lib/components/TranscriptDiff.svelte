@@ -5,6 +5,8 @@
    * When dual-source is used, shows two diffs side-by-side (Whisper→Cleaned and Vosk→Cleaned)
    */
 
+  const STORAGE_KEY = 'transcript-diff-expanded';
+
   interface Props {
     /** Original transcript text (Whisper - before cleanup) */
     original: string;
@@ -16,13 +18,30 @@
     usedDualSource?: boolean;
     /** List of corrections made (optional, for tooltip) */
     corrections?: string[];
-    /** Whether to show collapsed by default */
+    /** Whether to show collapsed by default (only used if no saved preference) */
     collapsed?: boolean;
   }
 
   let { original, cleaned, voskTranscript, usedDualSource = false, corrections = [], collapsed = false }: Props = $props();
 
-  let isExpanded = $state(!collapsed);
+  // Load saved preference from localStorage, fallback to collapsed prop
+  function loadExpandedState(): boolean {
+    if (typeof localStorage === 'undefined') return !collapsed;
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved !== null) {
+      return saved === 'true';
+    }
+    return !collapsed;
+  }
+
+  let isExpanded = $state(loadExpandedState());
+
+  // Persist expanded state to localStorage when it changes
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, String(isExpanded));
+    }
+  });
 
   // Compute word-level diff between original and cleaned text
   type DiffSegment = {
@@ -31,8 +50,11 @@
   };
 
   function computeWordDiff(orig: string, clean: string): DiffSegment[] {
-    const origWords = orig.split(/(\s+)/);
-    const cleanWords = clean.split(/(\s+)/);
+    // Split on whitespace AND punctuation, keeping delimiters as separate tokens
+    // This ensures punctuation-only changes don't highlight the whole word
+    const tokenize = (text: string) => text.split(/(\s+|[.,!?;:'"()\[\]{}])/).filter(t => t !== '');
+    const origWords = tokenize(orig);
+    const cleanWords = tokenize(clean);
 
     // Simple LCS-based diff for words
     const segments: DiffSegment[] = [];

@@ -166,13 +166,10 @@ export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
 export type Theme =
   | "Midnight"
   | "Slate"
-  | "Snow"
-  | "Sand"
-  | "Ocean"
-  | "Forest"
-  | "Rose"
-  | "Mocha"
-  | "Torch";
+  | "Void"
+  | "Ember"
+  | "Pearl"
+  | "Latte";
 
 export type SessionSortOrder = "Chronological" | "StatusThenChronological";
 

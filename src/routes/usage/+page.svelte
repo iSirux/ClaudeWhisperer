@@ -3,6 +3,7 @@
   import { usageStats, formatDuration, formatDate, formatRelativeTime, getWeeklyStats, getTotalForPeriod, formatTokens, formatCost } from '$lib/stores/usageStats';
   import { appSessionUsage } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
+  import { navigation } from '$lib/stores/navigation';
   import { goto } from '$app/navigation';
 
   // App session usage - cumulative across all SDK sessions since app launch
@@ -51,6 +52,8 @@
   }
 
   function goBack() {
+    // Ensure we go back to sessions view, not start
+    navigation.setView('sessions');
     goto('/');
   }
 </script>

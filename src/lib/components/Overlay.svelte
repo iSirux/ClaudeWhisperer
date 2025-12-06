@@ -1,21 +1,34 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { recording, isRecording, isProcessing, type RecordingState } from '$lib/stores/recording';
-  import { settings, activeRepo, isAutoRepoSelected } from '$lib/stores/settings';
-  import { isRepoAutoSelectEnabled } from '$lib/utils/llm';
-  import { overlay } from '$lib/stores/overlay';
-  import StatusBadge from './StatusBadge.svelte';
-  import Waveform from './Waveform.svelte';
-  import TranscriptMarquee from './TranscriptMarquee.svelte';
-  import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
-  import { getShortModelName, getModelBadgeBgColor, getModelTextColor } from '$lib/utils/modelColors';
-  import type { OverlayMode } from '$lib/stores/overlay';
+  import { onMount, onDestroy } from "svelte";
+  import {
+    recording,
+    isRecording,
+    isProcessing,
+    type RecordingState,
+  } from "$lib/stores/recording";
+  import {
+    settings,
+    activeRepo,
+    isAutoRepoSelected,
+  } from "$lib/stores/settings";
+  import { isRepoAutoSelectEnabled } from "$lib/utils/llm";
+  import { overlay } from "$lib/stores/overlay";
+  import StatusBadge from "./StatusBadge.svelte";
+  import Waveform from "./Waveform.svelte";
+  import TranscriptMarquee from "./TranscriptMarquee.svelte";
+  import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
+  import {
+    getShortModelName,
+    getModelBadgeBgColor,
+    getModelTextColor,
+  } from "$lib/utils/modelColors";
+  import type { OverlayMode } from "$lib/stores/overlay";
 
   // Check if Vosk real-time transcription should be shown
   $: showRealtimeTranscript = $settings.vosk?.enabled ?? false;
 
   // Track remote recording state (from main window events)
-  let remoteRecordingState: RecordingState = 'idle';
+  let remoteRecordingState: RecordingState = "idle";
   let unlistenRecordingState: UnlistenFn | null = null;
   let unlistenSessionInfo: UnlistenFn | null = null;
   let unlistenMode: UnlistenFn | null = null;
@@ -25,16 +38,23 @@
 
   // Parse hotkey string into display-friendly key labels
   function parseHotkey(hotkey: string): string[] {
-    return hotkey.split('+').map(key => {
+    return hotkey.split("+").map((key) => {
       const k = key.trim();
       switch (k) {
-        case 'CommandOrControl': return navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
-        case 'Control': return 'Ctrl';
-        case 'Command': return '⌘';
-        case 'Shift': return 'Shift';
-        case 'Alt': return navigator.platform.includes('Mac') ? '⌥' : 'Alt';
-        case 'Space': return 'Space';
-        default: return k;
+        case "CommandOrControl":
+          return navigator.platform.includes("Mac") ? "⌘" : "Ctrl";
+        case "Control":
+          return "Ctrl";
+        case "Command":
+          return "⌘";
+        case "Shift":
+          return "Shift";
+        case "Alt":
+          return navigator.platform.includes("Mac") ? "⌥" : "Alt";
+        case "Space":
+          return "Space";
+        default:
+          return k;
       }
     });
   }
@@ -43,44 +63,62 @@
   $: transcribeHotkeyKeys = parseHotkey($settings.hotkeys.transcribe_to_input);
 
   // Use remote state if available, otherwise local state
-  $: isRecordingActive = remoteRecordingState === 'recording' || $isRecording;
-  $: isProcessingActive = remoteRecordingState === 'processing' || $isProcessing;
+  $: isRecordingActive = remoteRecordingState === "recording" || $isRecording;
+  $: isProcessingActive =
+    remoteRecordingState === "processing" || $isProcessing;
 
   function getModelLabel(model: string | null): string {
-    if (!model) return '';
+    if (!model) return "";
     return getShortModelName(model);
   }
 
   // Dispatch resize event to notify parent page
   function notifyResize() {
-    console.log('[Overlay] notifyResize dispatching event');
-    window.dispatchEvent(new CustomEvent('overlay-content-changed'));
+    console.log("[Overlay] notifyResize dispatching event");
+    window.dispatchEvent(new CustomEvent("overlay-content-changed"));
   }
 
   onMount(async () => {
-    console.log('[Overlay] onMount - setting up listeners');
+    console.log("[Overlay] onMount - setting up listeners");
 
     // Listen for recording state changes from main window
-    unlistenRecordingState = await listen<{ state: RecordingState }>('recording-state', (event) => {
-      console.log('[Overlay] recording-state event received:', event.payload.state);
-      remoteRecordingState = event.payload.state;
-      // Notify parent to resize after state change renders
-      setTimeout(notifyResize, 10);
-      setTimeout(notifyResize, 50);
-      setTimeout(notifyResize, 150);
-    });
+    unlistenRecordingState = await listen<{ state: RecordingState }>(
+      "recording-state",
+      (event) => {
+        console.log(
+          "[Overlay] recording-state event received:",
+          event.payload.state
+        );
+        remoteRecordingState = event.payload.state;
+        // Notify parent to resize after state change renders
+        setTimeout(notifyResize, 10);
+        setTimeout(notifyResize, 50);
+        setTimeout(notifyResize, 150);
+      }
+    );
 
     // Listen for session info changes from main window (for model display)
-    unlistenSessionInfo = await listen<{ branch: string | null; model: string | null; creatingSession: boolean }>('overlay-session-info', (event) => {
-      overlay.updateSessionInfoLocal(event.payload.branch, event.payload.model, event.payload.creatingSession);
+    unlistenSessionInfo = await listen<{
+      branch: string | null;
+      model: string | null;
+      creatingSession: boolean;
+    }>("overlay-session-info", (event) => {
+      overlay.updateSessionInfoLocal(
+        event.payload.branch,
+        event.payload.model,
+        event.payload.creatingSession
+      );
       setTimeout(notifyResize, 10);
     });
 
     // Listen for mode changes from main window
-    unlistenMode = await listen<{ mode: OverlayMode }>('overlay-mode', (event) => {
-      overlay.updateModeLocal(event.payload.mode);
-      setTimeout(notifyResize, 10);
-    });
+    unlistenMode = await listen<{ mode: OverlayMode }>(
+      "overlay-mode",
+      (event) => {
+        overlay.updateModeLocal(event.payload.mode);
+        setTimeout(notifyResize, 10);
+      }
+    );
 
     // Listen for inline session info changes from main window
     unlistenInlineSessionInfo = await listen<{
@@ -88,7 +126,7 @@
       branch: string | null;
       model: string | null;
       promptPreview: string | null;
-    } | null>('overlay-inline-session-info', (event) => {
+    } | null>("overlay-inline-session-info", (event) => {
       overlay.updateInlineSessionInfoLocal(event.payload);
       setTimeout(notifyResize, 10);
     });
@@ -112,7 +150,7 @@
   function handleDiscard(event: MouseEvent) {
     event.stopPropagation();
     // Emit event to cancel recording in main window
-    emit('discard-recording');
+    emit("discard-recording");
     // Also cancel locally in case this is the main window
     recording.cancelRecording();
     overlay.hide();
@@ -120,13 +158,17 @@
   }
 </script>
 
-<div
-  class="overlay-window px-3 pt-3 pb-2"
->
+<div class="overlay-window px-3 pt-3 pb-2">
   <!-- Waveform visualization when recording -->
   {#if isRecordingActive}
     <div class="mb-2">
-      <Waveform height={40} barWidth={2} barGap={1} color="#ef4444" useEvents={true} />
+      <Waveform
+        height={40}
+        barWidth={2}
+        barGap={1}
+        color="#ef4444"
+        useEvents={true}
+      />
     </div>
 
     <!-- Real-time transcript from Vosk -->
@@ -140,40 +182,45 @@
   <div class="flex items-center justify-between gap-4">
     <div class="flex items-center gap-2">
       {#if isRecordingActive}
-        <div class="w-3 h-3 bg-recording rounded-full animate-pulse-recording"></div>
-        {#if $overlay.mode === 'paste'}
-          <span class="text-sm font-medium text-recording">Recording to Paste</span>
-          <span class="text-xs text-text-muted px-1.5 py-0.5 bg-surface rounded">
+        {#if $overlay.mode === "paste"}
+          <span
+            class="text-xs text-text-muted px-1.5 py-0.5 bg-surface rounded"
+          >
             Transcription
           </span>
-        {:else if $overlay.mode === 'inline'}
-          <span class="text-sm font-medium text-recording">Recording</span>
-          <span class="text-xs text-text-muted px-1.5 py-0.5 bg-surface-elevated rounded border border-border/50">
-            → Session
-          </span>
+        {:else if $overlay.mode === "inline"}
           {#if $overlay.inlineSessionInfo?.model}
-            <span class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor($overlay.inlineSessionInfo.model)} {getModelTextColor($overlay.inlineSessionInfo.model)}">
+            <span
+              class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor(
+                $overlay.inlineSessionInfo.model
+              )} {getModelTextColor($overlay.inlineSessionInfo.model)}"
+            >
               {getModelLabel($overlay.inlineSessionInfo.model)}
             </span>
           {/if}
         {:else}
-          <span class="text-sm font-medium text-recording">Recording</span>
           {#if $overlay.sessionInfo.model}
-            <span class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor($overlay.sessionInfo.model)} {getModelTextColor($overlay.sessionInfo.model)}">
+            <span
+              class="text-xs px-1.5 py-0.5 rounded {getModelBadgeBgColor(
+                $overlay.sessionInfo.model
+              )} {getModelTextColor($overlay.sessionInfo.model)}"
+            >
               {getModelLabel($overlay.sessionInfo.model)}
             </span>
           {/if}
         {/if}
       {:else if isProcessingActive}
         <div class="w-3 h-3 bg-warning rounded-full animate-pulse"></div>
-        {#if $overlay.mode === 'paste'}
+        {#if $overlay.mode === "paste"}
           <span class="text-sm font-medium text-warning">Transcribing...</span>
         {:else}
           <span class="text-sm font-medium text-warning">Processing</span>
         {/if}
       {:else if $overlay.sessionInfo.creatingSession}
         <div class="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
-        <span class="text-sm font-medium text-primary">Opening SDK session...</span>
+        <span class="text-sm font-medium text-primary"
+          >Opening SDK session...</span
+        >
       {:else}
         <div class="w-3 h-3 bg-text-muted rounded-full"></div>
         <span class="text-sm text-text-secondary">Ready</span>
@@ -181,24 +228,33 @@
     </div>
 
     <div class="flex items-center gap-3">
-      {#if $overlay.mode === 'inline' && $overlay.inlineSessionInfo}
+      {#if $overlay.mode === "inline" && $overlay.inlineSessionInfo}
         <div class="flex items-center gap-2 text-xs">
           {#if $overlay.inlineSessionInfo.repoName}
-            <span class="text-text-secondary truncate max-w-32">{$overlay.inlineSessionInfo.repoName}</span>
+            <span class="text-text-secondary truncate max-w-32"
+              >{$overlay.inlineSessionInfo.repoName}</span
+            >
           {/if}
           {#if $overlay.inlineSessionInfo.branch}
             <span class="text-text-muted">·</span>
-            <span class="font-mono text-primary truncate max-w-24">{$overlay.inlineSessionInfo.branch}</span>
+            <span class="font-mono text-primary truncate max-w-24"
+              >{$overlay.inlineSessionInfo.branch}</span
+            >
           {/if}
         </div>
-      {:else if $overlay.mode !== 'paste'}
+      {:else if $overlay.mode !== "paste"}
         <div class="flex items-center gap-2 text-xs">
           {#if $isAutoRepoSelected && isRepoAutoSelectEnabled()}
-            <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 to-amber-500 font-medium">Auto</span>
+            <span
+              class="px-2 py-0.5 rounded bg-gradient-to-r from-purple-500 to-amber-500 text-white font-medium shadow-sm"
+              >Auto</span
+            >
           {:else if $activeRepo}
-            <span class="text-text-secondary truncate max-w-32">{$activeRepo.name}</span>
+            <span class="text-text-secondary truncate max-w-32"
+              >{$activeRepo.name}</span
+            >
           {/if}
-          {#if $activeRepo || $isAutoRepoSelected}
+          {#if $activeRepo && !($isAutoRepoSelected && isRepoAutoSelectEnabled())}
             <StatusBadge
               createBranch={$settings.git.create_branch}
               autoMerge={$settings.git.auto_merge}
@@ -219,27 +275,25 @@
     </div>
   </div>
 
-  <!-- Show inline session prompt preview when in inline mode -->
-  {#if $overlay.mode === 'inline' && $overlay.inlineSessionInfo?.promptPreview && isRecordingActive}
-    <div class="mt-2 p-2 bg-surface-elevated rounded text-xs text-text-muted border border-border/30 overflow-hidden">
-      <div class="truncate">
-        {$overlay.inlineSessionInfo.promptPreview}
-      </div>
-    </div>
-  {/if}
-
   <!-- Show SDK session info when available (only show branch here, model is shown inline when recording) -->
-  {#if $overlay.sessionInfo.branch && !isRecordingActive && $overlay.mode !== 'paste' && $overlay.mode !== 'inline'}
+  {#if $overlay.sessionInfo.branch && !isRecordingActive && $overlay.mode !== "paste" && $overlay.mode !== "inline"}
     <div class="mt-2 p-2 bg-surface rounded text-xs text-text-secondary">
       <div class="flex items-center gap-3">
         <div class="flex items-center gap-1">
           <span class="text-text-muted">Branch:</span>
-          <span class="font-mono text-primary">{$overlay.sessionInfo.branch}</span>
+          <span class="font-mono text-primary"
+            >{$overlay.sessionInfo.branch}</span
+          >
         </div>
         {#if $overlay.sessionInfo.model}
           <div class="flex items-center gap-1">
             <span class="text-text-muted">Model:</span>
-            <span class="font-medium px-1.5 py-0.5 rounded {getModelBadgeBgColor($overlay.sessionInfo.model)} {getModelTextColor($overlay.sessionInfo.model)}">{getModelLabel($overlay.sessionInfo.model)}</span>
+            <span
+              class="font-medium px-1.5 py-0.5 rounded {getModelBadgeBgColor(
+                $overlay.sessionInfo.model
+              )} {getModelTextColor($overlay.sessionInfo.model)}"
+              >{getModelLabel($overlay.sessionInfo.model)}</span
+            >
           </div>
         {/if}
       </div>
@@ -247,14 +301,18 @@
   {/if}
 
   {#if $recording.error}
-    <div class="mt-2 p-2 bg-error/20 border border-error/50 rounded text-sm text-error">
+    <div
+      class="mt-2 p-2 bg-error/20 border border-error/50 rounded text-sm text-error"
+    >
       {$recording.error}
     </div>
   {/if}
 
   <!-- Hotkey hints at bottom (not shown for inline mode since user clicked the mic button) -->
-  {#if isRecordingActive && showHotkeyHints && $overlay.mode !== 'inline'}
-    <div class="hotkey-hints mt-3 pt-2 border-t border-border/50 flex gap-4 justify-center">
+  {#if isRecordingActive && showHotkeyHints && $overlay.mode !== "inline"}
+    <div
+      class="hotkey-hints mt-3 pt-2 border-t border-border/50 flex gap-4 justify-center"
+    >
       <div class="hotkey-hint flex items-center gap-2">
         <div class="keys flex items-center gap-0.5">
           {#each sendHotkeyKeys as key}
@@ -271,13 +329,6 @@
         </div>
         <span class="action text-xs text-text-secondary">Transcribe</span>
       </div>
-    </div>
-  {/if}
-
-  <!-- Simple hint for inline mode -->
-  {#if isRecordingActive && $overlay.mode === 'inline'}
-    <div class="mt-2 pt-2 border-t border-border/50 text-center">
-      <span class="text-xs text-text-muted">Click mic button again to stop and send</span>
     </div>
   {/if}
 </div>
@@ -307,12 +358,21 @@
     padding: 0.125rem 0.375rem;
     font-size: 0.65rem;
     font-weight: 500;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
     color: var(--color-text-primary);
-    background: linear-gradient(180deg, var(--color-surface-elevated) 0%, var(--color-surface) 100%);
+    background: linear-gradient(
+      180deg,
+      var(--color-surface-elevated) 0%,
+      var(--color-surface) 100%
+    );
     border: 1px solid var(--color-border);
     border-radius: 4px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
   .hotkey-hint {

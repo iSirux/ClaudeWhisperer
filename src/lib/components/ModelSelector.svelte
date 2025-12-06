@@ -24,8 +24,8 @@
   const models = $derived(getEnabledModelsWithAuto($settings.enabled_models));
 
   const sizeClasses = {
-    sm: "px-3 py-1 text-xs",
-    md: "px-4 py-2 text-sm",
+    sm: "px-2 py-0.5 text-[10px]",
+    md: "px-3 py-1 text-xs",
   };
 
   function handleModelClick(id: string) {
@@ -69,7 +69,7 @@
   }
 </script>
 
-<div class="flex items-center gap-1 px-2 py-1 bg-surface-elevated rounded">
+<div class="flex items-center gap-0.5 px-1.5 py-0.5 bg-surface-elevated rounded">
   {#each models as { id, label, title }}
     <button
       class={getButtonClasses(id, model === id)}

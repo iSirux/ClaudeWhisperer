@@ -164,7 +164,7 @@
       // Image (Vosk uses alphacep images, CPU only)
       parts.push("alphacep/kaldi-en:latest");
 
-      return parts.join(" \\\n  ");
+      return parts.join(" ");
     })()}
     <div class="border-t border-border pt-4 mt-4">
       <label class="block text-sm font-medium text-text-secondary mb-3"

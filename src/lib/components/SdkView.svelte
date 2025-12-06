@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { sdkSessions, type SdkMessage, type SdkSession, type SdkImageContent } from '$lib/stores/sdkSessions';
+  import { sdkSessions, type SdkMessage, type SdkSession, type SdkImageContent, type ThinkingLevel } from '$lib/stores/sdkSessions';
   import { recording, isRecording, isProcessing } from '$lib/stores/recording';
-  import { settings } from '$lib/stores/settings';
+  import { settings, isAutoRepoSelected } from '$lib/stores/settings';
   import { overlay } from '$lib/stores/overlay';
   import { invoke } from '@tauri-apps/api/core';
   import SdkUsageBar from './sdk/SdkUsageBar.svelte';
@@ -10,6 +10,11 @@
   import SdkLoadingIndicator from './sdk/SdkLoadingIndicator.svelte';
   import SdkPromptInput from './sdk/SdkPromptInput.svelte';
   import SessionRecordingHeader from './sdk/SessionRecordingHeader.svelte';
+  import SdkQuickActions from './sdk/SdkQuickActions.svelte';
+  import ModelSelector from './ModelSelector.svelte';
+  import ThinkingSelector from './ThinkingSelector.svelte';
+  import RepoSelector from './RepoSelector.svelte';
+  import { recommendModel, recommendRepo, isModelRecommendationEnabled, isRepoAutoSelectEnabled, needsUserConfirmation } from '$lib/utils/llm';
 
   let { sessionId }: { sessionId: string } = $props();
 
@@ -26,6 +31,16 @@
   let isPendingTranscription = $derived(status === 'pending_transcription');
   let isPendingApproval = $derived(status === 'pending_approval');
   let isLoading = $derived(isQuerying || isInitializing);
+  let showQuickActions = $derived(
+    status === 'idle' &&
+    messages.length > 0 &&
+    !isPendingRepo &&
+    !isPendingTranscription &&
+    !isPendingApproval
+  );
+  let isNewChat = $derived(messages.length === 0 && status === 'idle');
+  let autoModelRequested = $derived(session?.autoModelRequested ?? false);
+  let sessionThinkingLevel = $derived(session?.thinkingLevel ?? null);
   let pendingApprovalPrompt = $derived(session?.pendingApprovalPrompt);
   let usage = $derived(session?.usage);
   let hasUsageData = $derived(!!usage && (
@@ -57,13 +72,14 @@
 
   // Repo and branch info
   let cwd = $derived(session?.cwd ?? '');
-  let repoName = $derived(cwd.split(/[/\\]/).pop() || cwd);
+  // Return empty for auto mode (no cwd or cwd is '.')
+  let repoName = $derived(!cwd || cwd === '.' ? '' : cwd.split(/[/\\]/).pop() || cwd);
   let sessionModel = $derived(session?.model ?? '');
   let branch = $state<string | null>(null);
 
-  // Fetch git branch when session changes
+  // Fetch git branch when session changes (skip for auto mode)
   $effect(() => {
-    if (cwd) {
+    if (cwd && cwd !== '.') {
       invoke<string>('get_git_branch', { repoPath: cwd })
         .then(b => { branch = b; })
         .catch(() => { branch = null; });
@@ -255,6 +271,114 @@
 
   // Prompt handling
   async function handleSendPrompt(prompt: string, images?: SdkImageContent[]) {
+    const isFirstPrompt = messages.filter(m => m.type === 'user').length === 0;
+
+    if (isFirstPrompt) {
+      // Track recommendations to store for display
+      let storedRepoRecommendation: {
+        repoIndex: number;
+        repoName: string;
+        reasoning: string;
+        confidence: string;
+      } | undefined;
+      let storedModelRecommendation: {
+        modelId: string;
+        reasoning: string;
+        thinkingLevel?: string;
+      } | undefined;
+
+      // Handle auto repo selection for sessions with no cwd
+      if ($isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1 && (!cwd || cwd === '' || cwd === '.')) {
+        try {
+          // Call LLM to recommend a repo based on the prompt
+          const repoRecommendation = await recommendRepo(prompt, false); // false = not transcribed
+
+          if (!repoRecommendation || needsUserConfirmation(repoRecommendation.confidence)) {
+            // Need user to select - transition to pending_repo state
+            // This will show the repo selection UI
+            sdkSessions.createPendingRepoFromExisting(
+              sessionId,
+              prompt,
+              {
+                transcript: prompt,
+                recommendedIndex: repoRecommendation?.repoIndex ?? null,
+                reasoning: repoRecommendation?.reasoning ?? 'Please select a repository for this task',
+                confidence: repoRecommendation?.confidence ?? 'low',
+              }
+            );
+            return; // Don't send yet - wait for repo selection
+          }
+
+          // High confidence - update cwd and continue
+          const selectedRepo = $settings.repos[repoRecommendation.repoIndex];
+          if (selectedRepo) {
+            console.log('[SdkView] Auto selected repo:', selectedRepo.name, '-', repoRecommendation.reasoning);
+            // Update session cwd and reinitialize backend with new cwd
+            await sdkSessions.updateSessionCwd(sessionId, selectedRepo.path);
+            // Store for display
+            storedRepoRecommendation = {
+              repoIndex: repoRecommendation.repoIndex,
+              repoName: selectedRepo.name,
+              reasoning: repoRecommendation.reasoning,
+              confidence: repoRecommendation.confidence,
+            };
+          }
+        } catch (error) {
+          console.error('[SdkView] Repo recommendation failed:', error);
+          // On error, transition to pending_repo for manual selection
+          sdkSessions.createPendingRepoFromExisting(
+            sessionId,
+            prompt,
+            {
+              transcript: prompt,
+              recommendedIndex: null,
+              reasoning: 'Failed to get recommendation - please select manually',
+              confidence: 'low',
+            }
+          );
+          return;
+        }
+      }
+
+      // Handle auto model selection (check session's autoModelRequested flag, not current settings)
+      if (autoModelRequested && isModelRecommendationEnabled()) {
+        try {
+          const recommendation = await recommendModel(prompt);
+          if (recommendation) {
+            // Only use recommendation if the model is enabled
+            if ($settings.enabled_models.includes(recommendation.modelId)) {
+              await sdkSessions.updateSessionModel(sessionId, recommendation.modelId);
+              console.log('[SdkView] Auto selected model:', recommendation.modelId, '-', recommendation.reasoning);
+              // Store for display
+              storedModelRecommendation = {
+                modelId: recommendation.modelId,
+                reasoning: recommendation.reasoning,
+                thinkingLevel: recommendation.thinkingLevel ?? undefined,
+              };
+            } else {
+              console.log('[SdkView] Recommended model not enabled, keeping current');
+            }
+            // Apply thinking level recommendation if provided
+            if (recommendation.thinkingLevel) {
+              await sdkSessions.updateSessionThinking(sessionId, recommendation.thinkingLevel as ThinkingLevel);
+              console.log('[SdkView] Using recommended thinking level:', recommendation.thinkingLevel);
+            }
+          }
+        } catch (error) {
+          console.error('[SdkView] Model recommendation failed, using current model:', error);
+        }
+      }
+
+      // Store recommendations for display in SessionRecordingHeader
+      if (storedModelRecommendation || storedRepoRecommendation) {
+        sdkSessions.setRecommendations(sessionId, {
+          transcript: prompt,
+          modelRecommendation: storedModelRecommendation,
+          repoRecommendation: storedRepoRecommendation,
+        });
+      }
+    }
+
     await sdkSessions.sendPrompt(sessionId, prompt, images);
   }
 
@@ -324,6 +448,19 @@
   function handleCancelApproval() {
     sdkSessions.cancelApproval(sessionId);
   }
+
+  // Model and thinking change handlers
+  function handleModelChange(newModel: string) {
+    sdkSessions.updateSessionModel(sessionId, newModel);
+  }
+
+  function handleThinkingChange(newLevel: ThinkingLevel) {
+    sdkSessions.updateSessionThinking(sessionId, newLevel);
+  }
+
+  function handleCwdChange(newCwd: string) {
+    sdkSessions.updateSessionCwd(sessionId, newCwd);
+  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -331,29 +468,6 @@
 <div class="sdk-view" onclick={markAsReadOnInteraction}>
   {#if hasUsageData && usage}
     <SdkUsageBar {usage} {isQuerying} />
-  {/if}
-
-  <!-- Repo and branch info bar (hide when pending repo selection) -->
-  {#if !isPendingRepo}
-    <div class="repo-info">
-      <div class="repo-info-content">
-        <svg class="repo-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-        </svg>
-        <span class="repo-name">{repoName}</span>
-        {#if branch}
-          <span class="separator">·</span>
-          <svg class="branch-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-          <span class="branch-name">{branch}</span>
-        {/if}
-      </div>
-    </div>
-  {/if}
-
-  {#if firstPrompt()}
-    <div class="prompt-preview">{firstPrompt()}</div>
   {/if}
 
   <div class="messages" bind:this={messagesEl} onscroll={() => { checkIfNearBottom(); markAsReadOnInteraction(); }}>
@@ -396,7 +510,31 @@
     {#if isLoading}
       <SdkLoadingIndicator {statusMessage} />
     {/if}
+
+    {#if showQuickActions}
+      <SdkQuickActions onSendPrompt={(prompt) => handleSendPrompt(prompt)} />
+    {/if}
   </div>
+
+  {#if isNewChat}
+    <div class="new-chat-selectors">
+      <RepoSelector
+        cwd={cwd}
+        onchange={handleCwdChange}
+        size="sm"
+      />
+      <ModelSelector
+        model={sessionModel}
+        onchange={handleModelChange}
+        size="sm"
+      />
+      <ThinkingSelector
+        thinkingLevel={sessionThinkingLevel}
+        onchange={handleThinkingChange}
+        size="sm"
+      />
+    </div>
+  {/if}
 
   <SdkPromptInput
     bind:this={promptInputRef}
@@ -421,60 +559,6 @@
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   }
 
-  .repo-info {
-    padding: 0.5rem 1rem;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .repo-info-content {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-  }
-
-  .repo-icon {
-    width: 0.875rem;
-    height: 0.875rem;
-    color: var(--color-text-muted);
-    flex-shrink: 0;
-  }
-
-  .repo-name {
-    font-size: 0.8rem;
-    color: var(--color-text-secondary);
-    font-weight: 500;
-  }
-
-  .separator {
-    color: var(--color-text-muted);
-    font-size: 0.8rem;
-  }
-
-  .branch-icon {
-    width: 0.75rem;
-    height: 0.75rem;
-    color: rgb(96, 165, 250);
-    flex-shrink: 0;
-  }
-
-  .branch-name {
-    font-size: 0.8rem;
-    color: rgb(96, 165, 250);
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  }
-
-  .prompt-preview {
-    padding: 0.5rem 1rem;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    font-size: 0.8rem;
-    color: var(--color-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .messages {
     flex: 1;
     overflow-y: auto;
@@ -483,5 +567,15 @@
     flex-direction: column;
     gap: 0.75rem;
     user-select: text;
+  }
+
+  .new-chat-selectors {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 </style>

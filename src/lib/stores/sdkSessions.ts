@@ -8,6 +8,21 @@ import { saveSessionsToDisk } from './sessionPersistence';
 import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled } from '$lib/utils/llm';
 import { isAutoModel, resolveModelForApi } from '$lib/utils/models';
 
+// Debounced save to persist sessions after message updates
+// This prevents data loss if the app is closed during an active query
+let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_DEBOUNCE_MS = 2000; // Save 2 seconds after last message update
+
+function debouncedSave(): void {
+  if (saveDebounceTimer) {
+    clearTimeout(saveDebounceTimer);
+  }
+  saveDebounceTimer = setTimeout(() => {
+    saveDebounceTimer = null;
+    saveSessionsToDisk();
+  }, SAVE_DEBOUNCE_MS);
+}
+
 export interface SdkImageContent {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
   base64Data: string;
@@ -158,6 +173,7 @@ export interface SdkSession {
   id: string;
   cwd: string;
   model: string; // Per-session model (can differ from global default_model)
+  autoModelRequested?: boolean; // Whether this session was created with 'auto' model selection
   thinkingLevel: ThinkingLevel; // Per-session thinking mode (null = off)
   messages: SdkMessage[];
   // Session status:
@@ -259,10 +275,14 @@ function createSdkSessionsStore() {
 
       const id = crypto.randomUUID();
 
+      // Track if user requested 'auto' model selection (before we resolve it)
+      const autoModelRequested = isAutoModel(model);
+
       const session: SdkSession = {
         id,
         cwd,
         model,
+        autoModelRequested,
         thinkingLevel,
         messages: [],
         status: 'idle',
@@ -300,6 +320,7 @@ function createSdkSessionsStore() {
                   : s
               );
             });
+            debouncedSave();
             console.log('[sdkSessions] Update completed');
           } catch (err) {
             console.error('[sdkSessions] Error in update:', err);
@@ -336,6 +357,7 @@ function createSdkSessionsStore() {
                   : s
               )
             );
+            debouncedSave();
           }
         )
       );
@@ -360,6 +382,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -398,6 +421,7 @@ function createSdkSessionsStore() {
               };
             })
           );
+          debouncedSave();
 
           // Play completion sound if enabled
           if (currentSettings.audio.play_sound_on_completion) {
@@ -450,6 +474,7 @@ function createSdkSessionsStore() {
               };
             })
           );
+          debouncedSave();
         })
       );
 
@@ -603,6 +628,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -628,28 +654,22 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
       listeners.set(id, unlisteners);
 
-      // Resolve "auto" model to a valid model before sending to backend
+      // Resolve "auto" model to a valid model for the backend only
+      // Keep session.model as 'auto' for UI display - it will be updated when LLM recommends on first prompt
       const currentSettings = get(settings);
       const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
       if (resolvedModel !== model) {
-        console.log('[sdkSessions] Resolved auto model to:', resolvedModel);
-        // Update the session's model to the resolved value
-        update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? { ...s, model: resolvedModel }
-              : s
-          )
-        );
+        console.log('[sdkSessions] Using fallback model for backend:', resolvedModel, '(session displays:', model, ')');
       }
 
-      // Create the session on the backend
-      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'model:', resolvedModel, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
+      // Create the session on the backend with resolved model
+      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'backendModel:', resolvedModel, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
       await invoke('create_sdk_session', { id, cwd, model: resolvedModel, systemPrompt: systemPrompt ?? null });
       console.log('[sdkSessions] Session created');
 
@@ -720,6 +740,7 @@ function createSdkSessionsStore() {
                   : s
               );
             });
+            debouncedSave();
             console.log('[sdkSessions] Update completed');
           } catch (err) {
             console.error('[sdkSessions] Error in update:', err);
@@ -753,6 +774,7 @@ function createSdkSessionsStore() {
                   : s
               )
             );
+            debouncedSave();
           }
         )
       );
@@ -777,6 +799,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -815,6 +838,7 @@ function createSdkSessionsStore() {
               };
             })
           );
+          debouncedSave();
 
           if (currentSettings.audio.play_sound_on_completion) {
             playCompletionSound();
@@ -831,6 +855,7 @@ function createSdkSessionsStore() {
                       : s
                   )
                 );
+                debouncedSave();
                 console.log('[sdkSessions] AI completion metadata updated:', aiMetadata);
               }
             }).catch(err => {
@@ -866,6 +891,7 @@ function createSdkSessionsStore() {
               };
             })
           );
+          debouncedSave();
         })
       );
 
@@ -1008,6 +1034,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -1032,6 +1059,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -1041,19 +1069,12 @@ function createSdkSessionsStore() {
       const historyMessages = convertToHistoryMessages(session.messages);
       console.log('[sdkSessions] Converted', session.messages.length, 'messages to', historyMessages.length, 'history messages');
 
-      // Resolve "auto" model to a valid model before sending to backend
+      // Resolve "auto" model to a valid model for the backend only
+      // Keep session.model as is for UI display - it will be updated when LLM recommends on first prompt
       const currentSettings = get(settings);
       const resolvedModel = resolveModelForApi(session.model, currentSettings.enabled_models);
       if (resolvedModel !== session.model) {
-        console.log('[sdkSessions] Resolved auto model to:', resolvedModel);
-        // Update the session's model to the resolved value
-        update(sessions =>
-          sessions.map(s =>
-            s.id === id
-              ? { ...s, model: resolvedModel }
-              : s
-          )
-        );
+        console.log('[sdkSessions] Using fallback model for backend:', resolvedModel, '(session displays:', session.model, ')');
       }
 
       // Register session with backend, passing conversation history for restored sessions
@@ -1304,6 +1325,65 @@ function createSdkSessionsStore() {
       }
     },
 
+    /**
+     * Update the working directory (repository) of an existing session.
+     * Only works for sessions that haven't started querying yet.
+     * This also reinitializes the backend session with the new cwd.
+     */
+    async updateSessionCwd(id: string, cwd: string): Promise<void> {
+      // Get current session state
+      let session: SdkSession | undefined;
+      subscribe(sessions => {
+        session = sessions.find(s => s.id === id);
+      })();
+
+      if (!session || session.status !== 'idle' || session.messages.length > 0) {
+        console.warn('[sdkSessions] Cannot update cwd: session not found or has messages');
+        return;
+      }
+
+      // Update frontend state
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, cwd }
+            : s
+        )
+      );
+
+      // If session is live (backend exists), we need to close and recreate with new cwd
+      if (liveSessions.has(id)) {
+        console.log('[sdkSessions] Reinitializing backend session with new cwd:', cwd);
+
+        try {
+          // Close the old backend session
+          await invoke('close_sdk_session', { id });
+
+          // Resolve model for backend (in case it's 'auto')
+          const currentSettings = get(settings);
+          const resolvedModel = resolveModelForApi(session.model, currentSettings.enabled_models);
+
+          // Recreate with new cwd
+          await invoke('create_sdk_session', {
+            id,
+            cwd,
+            model: resolvedModel,
+            systemPrompt: null,
+          });
+
+          // Reapply thinking level if set
+          if (session.thinkingLevel) {
+            const maxThinkingTokens = THINKING_BUDGETS[session.thinkingLevel];
+            await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+          }
+
+          console.log('[sdkSessions] Backend session reinitialized with cwd:', cwd);
+        } catch (error) {
+          console.error('[sdkSessions] Failed to reinitialize backend session:', error);
+        }
+      }
+    },
+
     markAsRead(id: string): void {
       update(sessions =>
         sessions.map(s =>
@@ -1373,6 +1453,47 @@ function createSdkSessionsStore() {
             pendingTranscription: {
               ...s.pendingTranscription,
               ...finalUpdates,
+            },
+          };
+        })
+      );
+    },
+
+    /**
+     * Set model/repo recommendations on a session.
+     * Creates pendingTranscription if it doesn't exist (for typed prompts).
+     */
+    setRecommendations(
+      id: string,
+      options: {
+        modelRecommendation?: {
+          modelId: string;
+          reasoning: string;
+          thinkingLevel?: string;
+        };
+        repoRecommendation?: {
+          repoIndex: number;
+          repoName: string;
+          reasoning: string;
+          confidence: string;
+        };
+        transcript?: string;
+      }
+    ): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id) return s;
+
+          // Create or update pendingTranscription
+          const existingPending = s.pendingTranscription;
+          return {
+            ...s,
+            pendingTranscription: {
+              status: existingPending?.status ?? 'processing' as PendingTranscriptionStatus,
+              ...existingPending,
+              ...(options.transcript && { transcript: options.transcript }),
+              ...(options.modelRecommendation && { modelRecommendation: options.modelRecommendation }),
+              ...(options.repoRecommendation && { repoRecommendation: options.repoRecommendation }),
             },
           };
         })
@@ -1591,6 +1712,29 @@ function createSdkSessionsStore() {
     },
 
     /**
+     * Transition an existing session to pending_repo state.
+     * Used when a manual session needs repo selection before sending first prompt.
+     */
+    createPendingRepoFromExisting(
+      id: string,
+      prompt: string,
+      pendingRepoSelection: PendingRepoSelection
+    ): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                status: 'pending_repo' as const,
+                pendingRepoSelection,
+                pendingPrompt: prompt,
+              }
+            : s
+        )
+      );
+    },
+
+    /**
      * Create an initializing session (repo already selected, SDK being set up).
      * Used when we know the repo but SDK session creation is in progress.
      */
@@ -1707,6 +1851,7 @@ function createSdkSessionsStore() {
                   : s
               );
             });
+            debouncedSave();
             console.log('[sdkSessions] Update completed');
           } catch (err) {
             console.error('[sdkSessions] Error in update:', err);
@@ -1763,6 +1908,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -1797,6 +1943,7 @@ function createSdkSessionsStore() {
               };
             })
           );
+          debouncedSave();
 
           if (currentSettings.audio.play_sound_on_completion) {
             playCompletionSound();
@@ -1813,6 +1960,7 @@ function createSdkSessionsStore() {
                       : s
                   )
                 );
+                debouncedSave();
                 console.log('[sdkSessions] AI completion metadata updated:', aiMetadata);
               }
             }).catch(err => {
@@ -1986,6 +2134,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 
@@ -2010,6 +2159,7 @@ function createSdkSessionsStore() {
                 : s
             )
           );
+          debouncedSave();
         })
       );
 

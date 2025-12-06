@@ -25,6 +25,7 @@
   import { overlay } from '$lib/stores/overlay';
   import { openMic, isOpenMicListening } from '$lib/stores/openMic';
   import { loadSessionsFromDisk, saveSessionsToDisk, setupAutoSave, setupPeriodicAutoSave } from '$lib/stores/sessionPersistence';
+  import { navigation } from '$lib/stores/navigation';
 
   // Tauri APIs
   import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
@@ -52,7 +53,9 @@
   // Flag to track if we're recording for a new session (header button)
   let isRecordingForNewSession = $state(false);
 
-  let currentView = $state<'sessions' | 'settings' | 'start'>('start');
+  // Current view from navigation store (persists across route changes)
+  let currentView = $derived($navigation.mainView);
+  let settingsTabFromNav = $derived($navigation.settingsTab);
   let isTogglingRecording = false;
   let wasAppFocusedOnRecordStart = true;
   let transcribeHotkeyRegistered = false;
@@ -61,7 +64,6 @@
   // Store the hotkey strings we registered with, so we can unregister them properly
   let registeredCycleRepoHotkey: string | null = null;
   let registeredCycleModelHotkey: string | null = null;
-  let settingsInitialTab = $state('general');
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
 
@@ -78,9 +80,40 @@
   // Model cycling uses enabled models from settings
   // Note: Sonnet 1M is excluded from cycling as it's a variant
 
+  // Active SDK session header info
+  let activeSdkSessionBranch = $state<string | null>(null);
+  const PROMPT_PREVIEW_LENGTH = 80;
+
+  // Computed values for the active SDK session header
+  // Return empty string for auto mode (no cwd or cwd is '.')
+  let activeSdkRepoName = $derived(
+    !$activeSdkSession?.cwd || $activeSdkSession?.cwd === '.'
+      ? ''
+      : $activeSdkSession?.cwd?.split(/[/\\]/).pop() || $activeSdkSession?.cwd || ''
+  );
+  let activeSdkFirstPrompt = $derived(() => {
+    const firstUserMessage = $activeSdkSession?.messages.find(m => m.type === 'user');
+    if (!firstUserMessage?.content) return null;
+    const content = firstUserMessage.content.trim();
+    if (content.length <= PROMPT_PREVIEW_LENGTH) return content;
+    return content.slice(0, PROMPT_PREVIEW_LENGTH) + '…';
+  });
+
+  // Effect to fetch branch when active SDK session changes
+  $effect(() => {
+    const cwd = $activeSdkSession?.cwd;
+    // Skip fetching branch for auto mode (empty or '.')
+    if (cwd && cwd !== '.') {
+      invoke<string>('get_git_branch', { repoPath: cwd })
+        .then(b => { activeSdkSessionBranch = b; })
+        .catch(() => { activeSdkSessionBranch = null; });
+    } else {
+      activeSdkSessionBranch = null;
+    }
+  });
+
   function handleOpenSettings(event: CustomEvent<{ tab: string }>) {
-    settingsInitialTab = event.detail.tab;
-    showSettingsView();
+    navigation.showSettings(event.detail.tab);
   }
 
   function handleCloseSettings() {
@@ -118,6 +151,12 @@
     // Load persisted sessions if enabled
     if ($settings.session_persistence.enabled) {
       await loadSessionsFromDisk();
+    }
+
+    // If there are sessions and we're still on the start view, switch to sessions view
+    // This ensures users see their sessions when returning to the app
+    if (($sessions.length > 0 || $sdkSessions.length > 0) && $navigation.mainView === 'start') {
+      navigation.setView('sessions');
     }
 
     // Setup auto-save for session persistence
@@ -328,11 +367,8 @@
       }
     );
 
-    // Start open mic listening if enabled
-    if ($settings.audio.open_mic.enabled && $settings.vosk?.enabled) {
-      console.log('[open-mic] Starting passive listening on app load');
-      await openMic.start();
-    }
+    // NOTE: Open mic is started by the $effect below, not here in onMount.
+    // This avoids race conditions between onMount and the effect both calling start().
   });
 
   // Re-register hotkeys when the toggle_recording hotkey changes in settings
@@ -384,7 +420,11 @@
       unlistenVoiceCommandTriggered = null;
     }
 
-    // Stop open mic listening
+    // Stop open mic listening and clear any pending restart
+    if (openMicRestartTimeout) {
+      clearTimeout(openMicRestartTimeout);
+      openMicRestartTimeout = null;
+    }
     openMic.stop();
 
     // Cleanup auto-save handlers
@@ -398,44 +438,50 @@
     saveSessionsToDisk();
   });
 
-  // Manage open mic lifecycle based on settings changes
+  // Manage open mic lifecycle based on settings changes and recording state.
+  // This is the SINGLE place that controls open mic start/stop to avoid race conditions.
+  // When recording stops, this effect will automatically restart open mic after a short delay.
+  let openMicRestartTimeout: ReturnType<typeof setTimeout> | null = null;
+  let prevRecording = false;
+
   $effect(() => {
     const openMicEnabled = $settings.audio.open_mic.enabled;
     const voskEnabled = $settings.vosk?.enabled ?? false;
+    const currentlyRecording = $isRecording;
+    const currentlyListening = $isOpenMicListening;
+
+    // Detect recording state transition
+    const recordingJustStopped = prevRecording && !currentlyRecording;
+    prevRecording = currentlyRecording;
+
+    // Clear any pending restart timeout if conditions change
+    if (openMicRestartTimeout && (currentlyRecording || !openMicEnabled || !voskEnabled)) {
+      clearTimeout(openMicRestartTimeout);
+      openMicRestartTimeout = null;
+    }
 
     if (openMicEnabled && voskEnabled) {
-      // Start if not already listening and not currently recording
-      if (!$isOpenMicListening && !$isRecording) {
+      if (currentlyRecording) {
+        // Don't start while recording - open mic is stopped before recording starts
+      } else if (recordingJustStopped) {
+        // Recording just stopped - delay restart to ensure audio resources are released
+        if (!currentlyListening && !openMicRestartTimeout) {
+          console.log('[open-mic] Recording stopped, scheduling restart');
+          openMicRestartTimeout = setTimeout(() => {
+            openMicRestartTimeout = null;
+            openMic.start();
+          }, 500);
+        }
+      } else if (!currentlyListening) {
+        // Not recording, not listening - start immediately (e.g., on app load or settings change)
         openMic.start();
       }
     } else {
       // Stop if currently listening
-      if ($isOpenMicListening) {
+      if (currentlyListening) {
         openMic.stop();
       }
     }
-  });
-
-  // Restart open mic when recording stops (if enabled)
-  let wasRecording = false;
-  $effect(() => {
-    const currentlyRecording = $isRecording;
-    const openMicEnabled = $settings.audio.open_mic.enabled;
-    const voskEnabled = $settings.vosk?.enabled ?? false;
-
-    // Detect transition from recording to not recording
-    if (wasRecording && !currentlyRecording) {
-      // Recording just stopped - restart open mic if enabled
-      if (openMicEnabled && voskEnabled && !$isOpenMicListening) {
-        console.log('[open-mic] Recording stopped, restarting passive listening');
-        // Small delay to ensure recording resources are released
-        setTimeout(() => {
-          openMic.start();
-        }, 500);
-      }
-    }
-
-    wasRecording = currentlyRecording;
   });
 
   async function sendTranscript() {
@@ -622,7 +668,7 @@
                   confidence: 'low',
                 }
               );
-              currentView = 'sessions';
+              navigation.setView('sessions');
               return; // Exit here - continuation happens via SessionPendingView
             } else {
               // Create a pending session that shows repo selection in the main view
@@ -670,7 +716,7 @@
                   confidence: repoRecommendation.confidence,
                 }
               );
-              currentView = 'sessions';
+              navigation.setView('sessions');
               return; // Exit here - continuation happens via SessionPendingView
             } else {
               // Create a pending session that shows repo selection in the main view
@@ -712,7 +758,7 @@
                 confidence: 'low',
               }
             );
-            currentView = 'sessions';
+            navigation.setView('sessions');
             return;
           } else {
             sdkSessions.createPendingRepoSession(
@@ -754,7 +800,7 @@
           activeSdkSessionId.set(newSessionId);
           activeSessionId.set(null);
         }
-        currentView = 'sessions';
+        navigation.setView('sessions');
         return; // Wait for user approval
       }
 
@@ -1504,15 +1550,15 @@
   }
 
   function showSettingsView() {
-    currentView = 'settings';
+    navigation.showSettings();
   }
 
   function showSessionsView() {
-    currentView = 'sessions';
+    navigation.setView('sessions');
   }
 
   function showStartView() {
-    currentView = 'start';
+    navigation.setView('start');
   }
 
   async function selectRepo(index: number) {
@@ -1535,8 +1581,7 @@
   }
 
   function openSettingsTab(tab: string) {
-    settingsInitialTab = tab;
-    showSettingsView();
+    navigation.showSettings(tab);
   }
 
   // Start recording for a NEW session (header button)
@@ -1568,7 +1613,7 @@
       pendingTranscriptionSessionId = sdkSessions.createPendingTranscriptionSession(model, thinkingLevel);
       activeSdkSessionId.set(pendingTranscriptionSessionId);
       activeSessionId.set(null);
-      currentView = 'sessions';
+      navigation.setView('sessions');
 
       // Set up audio visualization listener to capture waveform data
       unlistenAudioVisualization = await listen<{ data: number[] | null }>('audio-visualization', (event) => {
@@ -1710,19 +1755,18 @@
       {#if currentView === 'start'}
         <Start />
       {:else if currentView === 'settings'}
-        <Settings initialTab={settingsInitialTab} />
+        <Settings initialTab={settingsTabFromNav} />
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
         {@const isPendingState = $activeSdkSession.status === 'pending_repo' || $activeSdkSession.status === 'initializing'}
 
         <SdkSessionHeader
           createdAt={$activeSdkSession.createdAt}
-          model={$activeSdkSession.model}
-          thinkingLevel={$activeSdkSession.thinkingLevel ?? null}
           messages={$activeSdkSession.messages}
           isPending={isPendingState}
-          onModelChange={handleSessionModelChange}
-          onThinkingChange={handleSessionThinkingChange}
+          repoName={activeSdkRepoName}
+          branch={activeSdkSessionBranch}
+          firstPrompt={activeSdkFirstPrompt()}
           onClose={handleSessionClose}
           onCancel={handlePendingSessionCancel}
         />
