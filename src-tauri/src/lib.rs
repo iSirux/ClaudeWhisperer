@@ -79,6 +79,11 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_keyring::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_denylist(&["overlay"])
+                .build(),
+        )
         .manage(Mutex::new(config))
         .manage(Mutex::new(usage_stats))
         .manage(terminal_manager)
@@ -215,6 +220,7 @@ pub fn run() {
             usage_cmds::track_recording,
             usage_cmds::track_transcription,
             usage_cmds::track_token_usage,
+            usage_cmds::track_llm_token_usage,
             usage_cmds::reset_usage_stats,
             get_autostart_enabled,
             toggle_autostart,
@@ -230,6 +236,7 @@ pub fn run() {
             llm_cmds::delete_gemini_api_key,
             llm_cmds::generate_repo_description,
             llm_cmds::recommend_repo,
+            llm_cmds::generate_quick_actions,
             vosk_cmds::test_vosk_connection,
             vosk_cmds::start_vosk_session,
             vosk_cmds::send_vosk_audio,

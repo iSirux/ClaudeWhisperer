@@ -44,6 +44,8 @@ pub enum OutboundMessage {
         system_prompt: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         messages: Option<Vec<HistoryMessage>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plan_mode: Option<bool>,
     },
     Query {
         id: String,
@@ -83,11 +85,26 @@ pub enum InboundMessage {
         id: String,
         tool: String,
         input: serde_json::Value,
+        #[serde(rename = "toolUseId")]
+        tool_use_id: String,
     },
     ToolResult {
         id: String,
         tool: String,
         output: String,
+        #[serde(rename = "toolUseId")]
+        tool_use_id: String,
+    },
+    ThinkingStart {
+        id: String,
+        content: String,
+        timestamp: u64,
+    },
+    ThinkingEnd {
+        id: String,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+        content: String,
     },
     Done {
         id: String,
@@ -158,6 +175,35 @@ pub enum InboundMessage {
         #[serde(rename = "transcriptPath")]
         transcript_path: String,
     },
+    PlanningQuestions {
+        id: String,
+        questions: Vec<PlanningQuestion>,
+    },
+    PlanningComplete {
+        id: String,
+        #[serde(rename = "planPath")]
+        plan_path: String,
+        #[serde(rename = "featureName")]
+        feature_name: String,
+        summary: String,
+    },
+}
+
+/// Planning question option
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningQuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// Planning question from Claude
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningQuestion {
+    pub question: String,
+    pub header: String,
+    pub options: Vec<PlanningQuestionOption>,
+    #[serde(rename = "multiSelect")]
+    pub multi_select: bool,
 }
 
 pub struct SidecarManager {
@@ -333,16 +379,28 @@ impl SidecarManager {
                     eprintln!("[sidecar] Failed to emit text event: {}", e);
                 }
             }
-            InboundMessage::ToolStart { id, tool, input } => {
+            InboundMessage::ToolStart { id, tool, input, tool_use_id } => {
                 let _ = app.emit(
                     &format!("sdk-tool-start-{}", id),
-                    serde_json::json!({ "tool": tool, "input": input }),
+                    serde_json::json!({ "tool": tool, "input": input, "toolUseId": tool_use_id }),
                 );
             }
-            InboundMessage::ToolResult { id, tool, output } => {
+            InboundMessage::ToolResult { id, tool, output, tool_use_id } => {
                 let _ = app.emit(
                     &format!("sdk-tool-result-{}", id),
-                    serde_json::json!({ "tool": tool, "output": output }),
+                    serde_json::json!({ "tool": tool, "output": output, "toolUseId": tool_use_id }),
+                );
+            }
+            InboundMessage::ThinkingStart { id, content, timestamp } => {
+                let _ = app.emit(
+                    &format!("sdk-thinking-start-{}", id),
+                    serde_json::json!({ "content": content, "timestamp": timestamp }),
+                );
+            }
+            InboundMessage::ThinkingEnd { id, duration_ms, content } => {
+                let _ = app.emit(
+                    &format!("sdk-thinking-end-{}", id),
+                    serde_json::json!({ "durationMs": duration_ms, "content": content }),
                 );
             }
             InboundMessage::Done { id } => {
@@ -458,6 +516,36 @@ impl SidecarManager {
                 let _ = app.emit(
                     &format!("sdk-thinking-updated-{}", id),
                     max_thinking_tokens,
+                );
+            }
+            InboundMessage::PlanningQuestions { id, questions } => {
+                println!(
+                    "[sidecar] Planning questions for session {}: {} questions",
+                    id,
+                    questions.len()
+                );
+                let _ = app.emit(
+                    &format!("sdk-planning-questions-{}", id),
+                    serde_json::to_value(&questions).unwrap_or_default(),
+                );
+            }
+            InboundMessage::PlanningComplete {
+                id,
+                plan_path,
+                feature_name,
+                summary,
+            } => {
+                println!(
+                    "[sidecar] Planning complete for session {}: {}",
+                    id, feature_name
+                );
+                let _ = app.emit(
+                    &format!("sdk-planning-complete-{}", id),
+                    serde_json::json!({
+                        "planPath": plan_path,
+                        "featureName": feature_name,
+                        "summary": summary,
+                    }),
                 );
             }
         }

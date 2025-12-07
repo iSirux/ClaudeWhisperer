@@ -2,30 +2,16 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { sessions, activeSessionId } from '$lib/stores/sessions';
-  import { sdkSessions, activeSdkSessionId, type SessionAiMetadata } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
   import { settings, type SessionsViewLayout, type SessionsGridSize } from '$lib/stores/settings';
   import { navigation } from '$lib/stores/navigation';
-  import { invoke } from '@tauri-apps/api/core';
+  import type { DisplaySession } from '$lib/types/session';
+  import { getStatusCategory } from '$lib/utils/sessionStatus';
+  import {
+    transformToDisplaySessions,
+    fetchBranchesForSessions
+  } from '$lib/composables/useDisplaySessions.svelte';
   import SessionCard from '$lib/components/SessionCard.svelte';
-
-  // Unified session type for display
-  interface DisplaySession {
-    id: string;
-    type: 'pty' | 'sdk';
-    status: string;
-    statusDetail?: string;
-    prompt: string;
-    repoPath: string;
-    model?: string;
-    createdAt: number;
-    accumulatedDurationMs: number;
-    currentWorkStartedAt?: number;
-    isFinished: boolean;
-    unread?: boolean;
-    latestMessage?: string;
-    aiMetadata?: SessionAiMetadata;
-    branch?: string;
-  }
 
   let now = $state(Math.floor(Date.now() / 1000));
   let interval: ReturnType<typeof setInterval> | null = null;
@@ -45,110 +31,7 @@
   let gridColumns = $derived($settings.sessions_view?.grid_columns || 3);
   let cardSize = $derived($settings.sessions_view?.card_size || 'medium');
 
-  // Branch cache
-  let branchCache = new Map<string, string>();
-
-  async function getGitBranch(repoPath: string): Promise<string | undefined> {
-    if (branchCache.has(repoPath)) return branchCache.get(repoPath);
-
-    try {
-      const branch = await invoke<string>('get_git_branch', { repoPath });
-      if (branch) {
-        branchCache.set(repoPath, branch);
-        return branch;
-      }
-    } catch (error) {
-      // Not a git repo or error
-    }
-    return undefined;
-  }
-
-  // Get smart status for SDK sessions
-  function getSdkSmartStatus(session: typeof $sdkSessions[0]): { status: string; detail?: string } {
-    const messages = session.messages;
-    const lastMsg = messages.at(-1);
-
-    if (session.status === 'pending_transcription') {
-      const subStatus = session.pendingTranscription?.status || 'recording';
-      if (session.pendingTranscription?.transcriptionError) {
-        return { status: 'transcription_error', detail: session.pendingTranscription.transcriptionError };
-      }
-      return { status: 'pending_transcription', detail: subStatus };
-    }
-
-    if (session.status === 'pending_repo') return { status: 'pending_repo' };
-    if (session.status === 'initializing') return { status: 'initializing' };
-    if (session.status === 'error') return { status: 'error' };
-
-    if (session.status === 'querying') {
-      let inSubagent = false;
-      let subagentType: string | undefined;
-
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-
-        if (msg.type === 'subagent_stop') continue;
-        if (msg.type === 'subagent_start') {
-          inSubagent = true;
-          subagentType = msg.agentType;
-          continue;
-        }
-
-        if (msg.type === 'tool_start') {
-          if (inSubagent) return { status: 'subagent', detail: subagentType || 'Agent' };
-
-          let count = 1;
-          const currentTool = msg.tool;
-
-          for (let j = i - 1; j >= 0; j--) {
-            const prevMsg = messages[j];
-            if (prevMsg.type === 'tool_start') {
-              if (prevMsg.tool === currentTool) count++;
-              else break;
-            }
-          }
-
-          const detail = count > 1 ? `${msg.tool} x${count}` : msg.tool;
-          return { status: 'tool', detail };
-        }
-        if (msg.type === 'tool_result') {
-          if (inSubagent) return { status: 'subagent', detail: subagentType || 'Agent' };
-          return { status: 'thinking' };
-        }
-        if (msg.type === 'text') {
-          if (inSubagent) return { status: 'subagent', detail: subagentType || 'Agent' };
-          return { status: 'responding' };
-        }
-      }
-
-      if (inSubagent) return { status: 'subagent', detail: subagentType || 'Agent' };
-      return { status: 'thinking' };
-    }
-
-    if (messages.length === 0) return { status: 'new' };
-    if (lastMsg?.type === 'done') return { status: 'done' };
-
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.type === 'subagent_stop' || msg.type === 'done') break;
-      if (msg.type === 'subagent_start') {
-        return { status: 'subagent', detail: msg.agentType || 'Agent' };
-      }
-    }
-
-    return { status: 'idle' };
-  }
-
-  // Get latest text message
-  function getLatestTextMessage(messages: typeof $sdkSessions[0]['messages']): string | undefined {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.type === 'text' && msg.content) return msg.content;
-    }
-    return undefined;
-  }
-
-  // Combine sessions
+  // Combine sessions using shared utility
   let allSessions = $state<DisplaySession[]>([]);
 
   $effect(() => {
@@ -156,74 +39,17 @@
     const sdkSessionsList = $sdkSessions;
     const sortOrder = $settings.session_sort_order;
 
-    const baseSessions: DisplaySession[] = [
-      ...ptySessions.map(s => ({
-        id: s.id,
-        type: 'pty' as const,
-        status: s.status,
-        statusDetail: undefined as string | undefined,
-        prompt: s.prompt,
-        repoPath: s.repo_path,
-        createdAt: s.created_at,
-        accumulatedDurationMs: 0,
-        currentWorkStartedAt: undefined,
-        isFinished: s.status === 'Completed' || s.status === 'Failed',
-      })),
-      ...sdkSessionsList.map(s => {
-        const smartStatus = getSdkSmartStatus(s);
-        const isFinished = smartStatus.status === 'done' || smartStatus.status === 'idle' || smartStatus.status === 'error' || smartStatus.status === 'new';
-
-        return {
-          id: s.id,
-          type: 'sdk' as const,
-          status: smartStatus.status,
-          statusDetail: smartStatus.detail,
-          prompt: s.messages.find(m => m.type === 'user')?.content || s.pendingPrompt || s.pendingRepoSelection?.transcript || '',
-          repoPath: s.cwd,
-          model: s.model,
-          createdAt: Math.floor(s.createdAt / 1000),
-          accumulatedDurationMs: s.accumulatedDurationMs || 0,
-          currentWorkStartedAt: s.currentWorkStartedAt,
-          isFinished,
-          unread: s.unread,
-          latestMessage: getLatestTextMessage(s.messages),
-          aiMetadata: s.aiMetadata,
-        };
-      })
-    ];
-
-    // Sort
-    const sorted = baseSessions.sort((a, b) => {
-      if (sortOrder === 'StatusThenChronological') {
-        const statusOrder: Record<string, number> = {
-          pending_transcription: -1, transcription_error: -1,
-          pending_repo: 0, initializing: 0,
-          Starting: 0, Running: 0, querying: 0, tool: 0, thinking: 0, responding: 0, subagent: 0,
-          idle: 1, new: 1, Completed: 2, done: 2,
-          Failed: 3, error: 3
-        };
-        const statusDiff = (statusOrder[a.status] ?? 4) - (statusOrder[b.status] ?? 4);
-        if (statusDiff !== 0) return statusDiff;
-      }
-      return b.createdAt - a.createdAt;
-    });
-
+    const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder);
     allSessions = sorted;
 
     // Fetch branches
-    sorted.forEach(async (session) => {
-      const branch = await getGitBranch(session.repoPath);
-      if (branch) {
-        allSessions = allSessions.map(s =>
-          s.id === session.id ? { ...s, branch } : s
-        );
-      }
+    fetchBranchesForSessions(sorted, (updated) => {
+      allSessions = updated;
     });
   });
 
   // Navigation and selection
   function goBack() {
-    // Ensure we go back to sessions view, not start
     navigation.setView('sessions');
     goto('/');
   }
@@ -237,7 +63,6 @@
       activeSessionId.set(null);
       sdkSessions.markAsRead(session.id);
     }
-    // Ensure we go to sessions view when selecting a session
     navigation.setView('sessions');
     goto('/');
   }
@@ -292,20 +117,20 @@
     await settings.save(newSettings);
   }
 
-  // Statistics
-  let activeCount = $derived(allSessions.filter(s =>
-    ['Starting', 'Running', 'querying', 'tool', 'thinking', 'responding', 'subagent', 'initializing'].includes(s.status)
-  ).length);
-  let pendingCount = $derived(allSessions.filter(s =>
-    ['pending_repo', 'pending_transcription'].includes(s.status)
-  ).length);
-  let doneCount = $derived(allSessions.filter(s =>
-    ['Completed', 'idle', 'done', 'new'].includes(s.status)
-  ).length);
-  let errorCount = $derived(allSessions.filter(s =>
-    ['Failed', 'error', 'transcription_error'].includes(s.status)
-  ).length);
-  let unreadCount = $derived(allSessions.filter(s => s.unread).length);
+  // Statistics using shared status categories
+  let activeCount = $derived(
+    allSessions.filter((s) => getStatusCategory(s.status) === 'active').length
+  );
+  let pendingCount = $derived(
+    allSessions.filter((s) => getStatusCategory(s.status) === 'pending').length
+  );
+  let doneCount = $derived(
+    allSessions.filter((s) => getStatusCategory(s.status) === 'ready').length
+  );
+  let errorCount = $derived(
+    allSessions.filter((s) => getStatusCategory(s.status) === 'error').length
+  );
+  let unreadCount = $derived(allSessions.filter((s) => s.unread).length);
 
   // Grid style
   let gridStyle = $derived.by(() => {
@@ -324,8 +149,18 @@
         onclick={goBack}
         title="Back to main view"
       >
-        <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        <svg
+          class="w-5 h-5 text-text-secondary"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M15 19l-7-7 7-7"
+          />
         </svg>
       </button>
       <h2 class="text-lg font-semibold text-text-primary">Sessions Command Center</h2>
@@ -336,13 +171,17 @@
           {allSessions.length} total
         </span>
         {#if pendingCount > 0}
-          <span class="px-2 py-1 text-xs font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1">
+          <span
+            class="px-2 py-1 text-xs font-medium bg-amber-500/20 text-amber-400 rounded flex items-center gap-1"
+          >
             <div class="w-1.5 h-1.5 bg-amber-400 rounded-full"></div>
             {pendingCount} pending
           </span>
         {/if}
         {#if activeCount > 0}
-          <span class="px-2 py-1 text-xs font-medium bg-emerald-500/20 text-emerald-400 rounded flex items-center gap-1">
+          <span
+            class="px-2 py-1 text-xs font-medium bg-emerald-500/20 text-emerald-400 rounded flex items-center gap-1"
+          >
             <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
             {activeCount} active
           </span>
@@ -425,7 +264,12 @@
           title="List view"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 6h16M4 10h16M4 14h16M4 18h16"
+            />
           </svg>
         </button>
         <button
@@ -437,7 +281,12 @@
           title="Grid view"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"
+            />
           </svg>
         </button>
       </div>
@@ -447,8 +296,18 @@
   <div class="flex-1 overflow-y-auto p-4">
     {#if allSessions.length === 0}
       <div class="flex flex-col items-center justify-center h-full text-text-muted">
-        <svg class="w-16 h-16 mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        <svg
+          class="w-16 h-16 mb-4 opacity-50"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1"
+            d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+          />
         </svg>
         <p class="text-lg mb-2">No sessions yet</p>
         <p class="text-sm">Record a voice prompt to start a new Claude session</p>
@@ -472,10 +331,7 @@
       </div>
     {:else}
       <!-- Grid layout -->
-      <div
-        class="grid gap-3"
-        style={gridStyle}
-      >
+      <div class="grid gap-3" style={gridStyle}>
         {#each allSessions as session (session.id)}
           <SessionCard
             {session}

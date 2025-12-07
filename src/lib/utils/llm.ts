@@ -40,6 +40,15 @@ export interface RepoRecommendation {
   reasoning: string;
 }
 
+export interface QuickAction {
+  label: string;
+  prompt: string;
+}
+
+export interface QuickActionsResult {
+  actions: QuickAction[];
+}
+
 /**
  * Check if LLM features are enabled
  */
@@ -111,6 +120,14 @@ export function isRepoConfirmationEnabled(): boolean {
   return (
     isRepoAutoSelectEnabled() && currentSettings.llm?.confirm_repo_selection
   ) ?? false;
+}
+
+/**
+ * Check if quick actions generation is enabled
+ */
+export function isQuickActionsEnabled(): boolean {
+  const currentSettings = get(settings);
+  return (currentSettings.llm?.enabled && currentSettings.llm?.features?.generate_quick_actions) ?? false;
 }
 
 /**
@@ -426,6 +443,31 @@ export async function recommendRepo(
 }
 
 /**
+ * Generate contextual quick actions based on the session's final message
+ * Returns null if the feature is disabled or fails
+ */
+export async function generateQuickActions(
+  userPrompt: string,
+  lastMessage: string
+): Promise<QuickAction[] | null> {
+  if (!isQuickActionsEnabled()) {
+    return null;
+  }
+
+  try {
+    const result = await invoke<QuickActionsResult>('generate_quick_actions', {
+      userPrompt,
+      lastMessage,
+    });
+    console.log('[llm] Quick actions generated:', result.actions);
+    return result.actions;
+  } catch (error) {
+    console.error('[llm] Failed to generate quick actions:', error);
+    return null;
+  }
+}
+
+/**
  * Generate a system prompt that instructs Claude to question the repo selection if it seems wrong
  * @param repoName The name of the selected repository
  * @param otherRepos List of other available repositories
@@ -499,7 +541,7 @@ export function extractLastAssistantMessage(messages: SdkMessage[]): string | nu
 }
 
 /**
- * Analyze a completed session and generate outcome + interaction analysis
+ * Analyze a completed session and generate outcome + interaction analysis + quick actions
  * This should be called after a session completes (sdk-done event)
  * Note: Session name is generated separately when the prompt is sent
  */
@@ -531,6 +573,14 @@ export async function analyzeSessionCompletion(messages: SdkMessage[]): Promise<
       metadata.interactionReason = interactionResult.reason ?? undefined;
       metadata.interactionUrgency = interactionResult.urgency;
       metadata.waitingFor = interactionResult.waiting_for ?? undefined;
+    }
+  }
+
+  // Generate contextual quick actions
+  if (isQuickActionsEnabled() && userPrompt && lastMessage) {
+    const quickActions = await generateQuickActions(userPrompt, lastMessage);
+    if (quickActions && quickActions.length > 0) {
+      metadata.quickActions = quickActions;
     }
   }
 

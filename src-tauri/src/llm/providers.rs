@@ -9,6 +9,12 @@ use super::types::ConnectionTestResult;
 use super::utils::extract_json;
 use super::LlmClient;
 
+/// Result of a generation that includes usage data
+pub struct GenerationResult<T> {
+    pub data: T,
+    pub usage: LlmUsage,
+}
+
 impl LlmClient {
     /// Test connection to the LLM API
     pub async fn test_connection(&self) -> Result<ConnectionTestResult, String> {
@@ -133,32 +139,44 @@ impl LlmClient {
         }
     }
 
-    /// Internal method for structured generation
+    /// Internal method for structured generation (returns data only, for backwards compatibility)
     pub(super) async fn generate_structured<T: DeserializeOwned>(
         &self,
         prompt: &str,
         schema: Option<serde_json::Value>,
     ) -> Result<T, String> {
-        let text = if self.is_openai_compatible() {
-            self.generate_openai(prompt).await?
+        let result = self.generate_structured_with_usage(prompt, schema).await?;
+        Ok(result.data)
+    }
+
+    /// Internal method for structured generation with usage tracking
+    pub(super) async fn generate_structured_with_usage<T: DeserializeOwned>(
+        &self,
+        prompt: &str,
+        schema: Option<serde_json::Value>,
+    ) -> Result<GenerationResult<T>, String> {
+        let (text, usage) = if self.is_openai_compatible() {
+            self.generate_openai_with_usage(prompt).await?
         } else {
-            self.generate_gemini(prompt, schema).await?
+            self.generate_gemini_with_usage(prompt, schema).await?
         };
 
         // Try to extract JSON from the response (handle markdown code blocks)
         let json_text = extract_json(&text);
 
-        serde_json::from_str(&json_text)
-            .map_err(|e| format!("Failed to parse JSON response: {}. Raw text: {}", e, text))
+        let data: T = serde_json::from_str(&json_text)
+            .map_err(|e| format!("Failed to parse JSON response: {}. Raw text: {}", e, text))?;
+
+        Ok(GenerationResult { data, usage })
     }
 
-    /// Try a single Gemini model request
+    /// Try a single Gemini model request, returns (text, usage)
     async fn try_gemini_model(
         &self,
         model: &str,
         prompt: &str,
         schema: &Option<serde_json::Value>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, LlmUsage), String> {
         let request = GeminiRequest {
             contents: vec![GeminiContent {
                 parts: vec![GeminiPart {
@@ -193,12 +211,21 @@ impl LlmClient {
             return Err(format!("Gemini error ({}): {}", model, error.message));
         }
 
-        gemini_response
+        // Extract usage data
+        let usage = gemini_response.usage_metadata.map(|u| LlmUsage {
+            input_tokens: u.prompt_token_count.unwrap_or(0),
+            output_tokens: u.candidates_token_count.unwrap_or(0),
+            total_tokens: u.total_token_count.unwrap_or(0),
+        }).unwrap_or_default();
+
+        let text = gemini_response
             .candidates
             .and_then(|c| c.into_iter().next())
             .and_then(|c| c.content.parts.into_iter().next())
             .map(|p| p.text)
-            .ok_or_else(|| format!("No response from Gemini ({})", model))
+            .ok_or_else(|| format!("No response from Gemini ({})", model))?;
+
+        Ok((text, usage))
     }
 
     pub(super) async fn generate_gemini(
@@ -206,6 +233,15 @@ impl LlmClient {
         prompt: &str,
         schema: Option<serde_json::Value>,
     ) -> Result<String, String> {
+        let (text, _usage) = self.generate_gemini_with_usage(prompt, schema).await?;
+        Ok(text)
+    }
+
+    pub(super) async fn generate_gemini_with_usage(
+        &self,
+        prompt: &str,
+        schema: Option<serde_json::Value>,
+    ) -> Result<(String, LlmUsage), String> {
         let fallback_chain = self.get_model_fallback_chain();
 
         // If auto_model is enabled and we have a fallback chain, try each model
@@ -214,10 +250,10 @@ impl LlmClient {
 
             for model in fallback_chain {
                 match self.try_gemini_model(model, prompt, &schema).await {
-                    Ok(result) => {
+                    Ok((text, usage)) => {
                         // Log which model succeeded (helpful for debugging)
                         eprintln!("[gemini] Request succeeded with model: {}", model);
-                        return Ok(result);
+                        return Ok((text, usage));
                     }
                     Err(e) => {
                         eprintln!("[gemini] Model {} failed, trying next: {}", model, e);
@@ -235,6 +271,11 @@ impl LlmClient {
     }
 
     pub(super) async fn generate_openai(&self, prompt: &str) -> Result<String, String> {
+        let (text, _usage) = self.generate_openai_with_usage(prompt).await?;
+        Ok(text)
+    }
+
+    pub(super) async fn generate_openai_with_usage(&self, prompt: &str) -> Result<(String, LlmUsage), String> {
         let request = OpenAIRequest {
             model: self.model.clone(),
             messages: vec![
@@ -280,10 +321,19 @@ impl LlmClient {
             return Err(format!("API error: {}", error.message));
         }
 
-        openai_response
+        // Extract usage data
+        let usage = openai_response.usage.map(|u| LlmUsage {
+            input_tokens: u.prompt_tokens.unwrap_or(0),
+            output_tokens: u.completion_tokens.unwrap_or(0),
+            total_tokens: u.total_tokens.unwrap_or(0),
+        }).unwrap_or_default();
+
+        let text = openai_response
             .choices
             .and_then(|c| c.into_iter().next())
             .map(|c| c.message.content)
-            .ok_or_else(|| "No response from API".to_string())
+            .ok_or_else(|| "No response from API".to_string())?;
+
+        Ok((text, usage))
     }
 }

@@ -4,6 +4,7 @@
   import { sessions, activeSessionId } from '$lib/stores/sessions';
   import { sdkSessions, activeSdkSessionId, settingsToStoreThinking } from '$lib/stores/sdkSessions';
   import { settings, activeRepo } from '$lib/stores/settings';
+  import { overlay } from '$lib/stores/overlay';
   import { resolveModelForApi } from '$lib/utils/models';
   import Waveform from './Waveform.svelte';
   import { isDualTranscriptionEnabled } from '$lib/utils/llm';
@@ -142,6 +143,9 @@
       audioUrl = null;
     }
     recording.cancelRecording();
+    // Hide overlay since recording is canceled
+    overlay.hide();
+    overlay.clearSessionInfo();
   }
 
   async function sendPrompt() {

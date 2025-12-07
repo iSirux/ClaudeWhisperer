@@ -5,7 +5,7 @@ import { settings } from './settings';
 import { playCompletionSound } from '$lib/utils/sound';
 import { usageStats } from './usageStats';
 import { saveSessionsToDisk } from './sessionPersistence';
-import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled } from '$lib/utils/llm';
+import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, type QuickAction } from '$lib/utils/llm';
 import { isAutoModel, resolveModelForApi } from '$lib/utils/models';
 
 // Debounced save to persist sessions after message updates
@@ -31,16 +31,19 @@ export interface SdkImageContent {
 }
 
 export interface SdkMessage {
-  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop';
+  type: 'user' | 'text' | 'tool_start' | 'tool_result' | 'done' | 'error' | 'subagent_start' | 'subagent_stop' | 'thinking';
   content?: string;
   images?: SdkImageContent[]; // For user messages with images
   tool?: string;
+  toolUseId?: string; // Unique ID for matching tool_start with tool_result
   input?: Record<string, unknown>;
   output?: string;
   // Subagent fields
   agentId?: string;
   agentType?: string;
   transcriptPath?: string;
+  // Thinking fields
+  thinkingDurationMs?: number; // Duration of thinking in milliseconds (set when thinking ends)
   timestamp: number;
 }
 
@@ -94,6 +97,40 @@ export interface SessionAiMetadata {
   interactionReason?: string;
   interactionUrgency?: string; // low, medium, high
   waitingFor?: string; // approval, clarification, input, review, decision
+  quickActions?: QuickAction[]; // Contextual quick action suggestions
+}
+
+// Planning question option
+export interface PlanningQuestionOption {
+  label: string;
+  description: string;
+}
+
+// Planning question from Claude
+export interface PlanningQuestion {
+  question: string;
+  header: string; // Max 12 chars, one-word title for navigation chip
+  options: PlanningQuestionOption[];
+  multiSelect: boolean;
+}
+
+// User's answer to a planning question
+export interface PlanningAnswer {
+  questionIndex: number;
+  selectedOptions: number[]; // Indices of selected options
+  textInput?: string; // Optional custom text input
+}
+
+// Plan mode state for a session
+export interface PlanModeState {
+  isActive: boolean;
+  questions: PlanningQuestion[];
+  answers: PlanningAnswer[];
+  currentQuestionIndex: number;
+  planFilePath?: string;
+  featureName?: string;
+  planSummary?: string;
+  isComplete: boolean;
 }
 
 // Thinking mode: off (null) or on (31999 token budget)
@@ -177,6 +214,7 @@ export interface SdkSession {
   thinkingLevel: ThinkingLevel; // Per-session thinking mode (null = off)
   messages: SdkMessage[];
   // Session status:
+  // - 'setup': user is configuring session options before starting
   // - 'pending_transcription': recording/transcribing voice input
   // - 'pending_repo': waiting for user to select repository
   // - 'pending_approval': waiting for user to approve the transcribed prompt before sending
@@ -185,7 +223,7 @@ export interface SdkSession {
   // - 'querying': LLM query in progress
   // - 'done': query completed (transitions to idle)
   // - 'error': an error occurred
-  status: 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
+  status: 'setup' | 'pending_transcription' | 'pending_repo' | 'pending_approval' | 'initializing' | 'idle' | 'querying' | 'done' | 'error';
   createdAt: number;
   startedAt?: number; // Timestamp when first prompt was sent (deprecated, kept for compatibility)
   // Timer-based duration tracking (survives session restore)
@@ -201,6 +239,11 @@ export interface SdkSession {
   pendingApprovalPrompt?: string; // The prompt waiting for user approval (when status='pending_approval')
   // Pending transcription info (when status='pending_transcription')
   pendingTranscription?: PendingTranscriptionInfo;
+  // Plan mode state
+  planMode?: PlanModeState;
+  // Draft input (text/images user is typing but hasn't sent yet)
+  draftPrompt?: string;
+  draftImages?: SdkImageContent[];
 }
 
 // Message types for conversation history (sent to sidecar for restored sessions)
@@ -270,7 +313,7 @@ function createSdkSessionsStore() {
       }
     },
 
-    async createSession(cwd: string, model: string, thinkingLevel: ThinkingLevel = null, systemPrompt?: string): Promise<string> {
+    async createSession(cwd: string, model: string, thinkingLevel: ThinkingLevel = null, systemPrompt?: string, planMode?: boolean): Promise<string> {
       await this.ensureSidecarStarted();
 
       const id = crypto.randomUUID();
@@ -329,7 +372,7 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen<{ tool: string; input: Record<string, unknown> }>(
+        await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string }>(
           `sdk-tool-start-${id}`,
           (e) => {
             // Track tool usage for stats
@@ -349,6 +392,7 @@ function createSdkSessionsStore() {
                         {
                           type: 'tool_start' as const,
                           tool: e.payload.tool,
+                          toolUseId: e.payload.toolUseId,
                           input: e.payload.input,
                           timestamp: Date.now(),
                         },
@@ -363,7 +407,7 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen<{ tool: string; output: string }>(`sdk-tool-result-${id}`, (e) => {
+        await listen<{ tool: string; output: string; toolUseId: string }>(`sdk-tool-result-${id}`, (e) => {
           update(sessions =>
             sessions.map(s =>
               s.id === id
@@ -374,6 +418,7 @@ function createSdkSessionsStore() {
                       {
                         type: 'tool_result' as const,
                         tool: e.payload.tool,
+                        toolUseId: e.payload.toolUseId,
                         output: e.payload.output,
                         timestamp: Date.now(),
                       },
@@ -383,6 +428,52 @@ function createSdkSessionsStore() {
             )
           );
           debouncedSave();
+        })
+      );
+
+      // Thinking events for extended thinking feature
+      unlisteners.push(
+        await listen<{ content: string; timestamp: number }>(`sdk-thinking-start-${id}`, (e) => {
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'thinking' as const,
+                        content: e.payload.content,
+                        timestamp: e.payload.timestamp,
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ durationMs: number; content: string }>(`sdk-thinking-end-${id}`, (e) => {
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id) return s;
+              // Find the most recent thinking message and update its duration and content
+              const messages = [...s.messages];
+              for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i].type === 'thinking' && !messages[i].thinkingDurationMs) {
+                  messages[i] = {
+                    ...messages[i],
+                    thinkingDurationMs: e.payload.durationMs,
+                    content: e.payload.content, // Use final accumulated content
+                  };
+                  break;
+                }
+              }
+              return { ...s, messages };
+            })
+          );
         })
       );
 
@@ -407,7 +498,8 @@ function createSdkSessionsStore() {
               sessionMessages = updatedMessages;
 
               // Analyze completion if no outcome yet or if interaction detection is needed
-              needsAiAnalysis = isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+              // Skip LLM analysis in plan mode (no quick actions during planning)
+              needsAiAnalysis = isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
               return {
                 ...s,
@@ -658,6 +750,55 @@ function createSdkSessionsStore() {
         })
       );
 
+      // Planning mode listeners
+      unlisteners.push(
+        await listen<PlanningQuestion[]>(`sdk-planning-questions-${id}`, (e) => {
+          console.log('[sdkSessions] Planning questions received:', e.payload.length);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id || !s.planMode) return s;
+              return {
+                ...s,
+                planMode: {
+                  ...s.planMode,
+                  questions: [...s.planMode.questions, ...e.payload],
+                  currentQuestionIndex: s.planMode.currentQuestionIndex >= s.planMode.questions.length
+                    ? s.planMode.questions.length
+                    : s.planMode.currentQuestionIndex,
+                },
+              };
+            })
+          );
+          debouncedSave();
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ planPath: string; featureName: string; summary: string }>(`sdk-planning-complete-${id}`, (e) => {
+          console.log('[sdkSessions] Planning complete:', e.payload.featureName);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id || !s.planMode) return s;
+              return {
+                ...s,
+                planMode: {
+                  ...s.planMode,
+                  isComplete: true,
+                  planFilePath: e.payload.planPath,
+                  featureName: e.payload.featureName,
+                  planSummary: e.payload.summary,
+                },
+                aiMetadata: {
+                  ...s.aiMetadata,
+                  name: `Plan: ${e.payload.featureName}`,
+                },
+              };
+            })
+          );
+          debouncedSave();
+        })
+      );
+
       listeners.set(id, unlisteners);
 
       // Resolve "auto" model to a valid model for the backend only
@@ -669,8 +810,8 @@ function createSdkSessionsStore() {
       }
 
       // Create the session on the backend with resolved model
-      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'backendModel:', resolvedModel, 'systemPrompt:', systemPrompt ? 'yes' : 'no');
-      await invoke('create_sdk_session', { id, cwd, model: resolvedModel, systemPrompt: systemPrompt ?? null });
+      console.log('[sdkSessions] Creating session with id:', id, 'cwd:', cwd, 'backendModel:', resolvedModel, 'systemPrompt:', systemPrompt ? 'yes' : 'no', 'planMode:', planMode ?? false);
+      await invoke('create_sdk_session', { id, cwd, model: resolvedModel, systemPrompt: systemPrompt ?? null, planMode: planMode ?? null });
       console.log('[sdkSessions] Session created');
 
       // Mark session as live (registered with backend and has listeners)
@@ -749,7 +890,7 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen<{ tool: string; input: Record<string, unknown> }>(
+        await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string }>(
           `sdk-tool-start-${id}`,
           (e) => {
             usageStats.trackToolCall(e.payload.tool);
@@ -766,6 +907,7 @@ function createSdkSessionsStore() {
                         {
                           type: 'tool_start' as const,
                           tool: e.payload.tool,
+                          toolUseId: e.payload.toolUseId,
                           input: e.payload.input,
                           timestamp: Date.now(),
                         },
@@ -780,7 +922,7 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen<{ tool: string; output: string }>(`sdk-tool-result-${id}`, (e) => {
+        await listen<{ tool: string; output: string; toolUseId: string }>(`sdk-tool-result-${id}`, (e) => {
           update(sessions =>
             sessions.map(s =>
               s.id === id
@@ -791,6 +933,7 @@ function createSdkSessionsStore() {
                       {
                         type: 'tool_result' as const,
                         tool: e.payload.tool,
+                        toolUseId: e.payload.toolUseId,
                         output: e.payload.output,
                         timestamp: Date.now(),
                       },
@@ -824,7 +967,8 @@ function createSdkSessionsStore() {
               sessionMessages = updatedMessages;
 
               // Analyze completion if no outcome yet or if interaction detection is needed
-              needsAiAnalysis = isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+              // Skip LLM analysis in plan mode (no quick actions during planning)
+              needsAiAnalysis = isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
               return {
                 ...s,
@@ -1058,6 +1202,55 @@ function createSdkSessionsStore() {
                   }
                 : s
             )
+          );
+          debouncedSave();
+        })
+      );
+
+      // Planning mode listeners (for restored plan mode sessions)
+      unlisteners.push(
+        await listen<PlanningQuestion[]>(`sdk-planning-questions-${id}`, (e) => {
+          console.log('[sdkSessions] Planning questions received:', e.payload.length);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id || !s.planMode) return s;
+              return {
+                ...s,
+                planMode: {
+                  ...s.planMode,
+                  questions: [...s.planMode.questions, ...e.payload],
+                  currentQuestionIndex: s.planMode.currentQuestionIndex >= s.planMode.questions.length
+                    ? s.planMode.questions.length
+                    : s.planMode.currentQuestionIndex,
+                },
+              };
+            })
+          );
+          debouncedSave();
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ planPath: string; featureName: string; summary: string }>(`sdk-planning-complete-${id}`, (e) => {
+          console.log('[sdkSessions] Planning complete:', e.payload.featureName);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id || !s.planMode) return s;
+              return {
+                ...s,
+                planMode: {
+                  ...s.planMode,
+                  isComplete: true,
+                  planFilePath: e.payload.planPath,
+                  featureName: e.payload.featureName,
+                  planSummary: e.payload.summary,
+                },
+                aiMetadata: {
+                  ...s.aiMetadata,
+                  name: `Plan: ${e.payload.featureName}`,
+                },
+              };
+            })
           );
           debouncedSave();
         })
@@ -1395,6 +1588,184 @@ function createSdkSessionsStore() {
     },
 
     /**
+     * Update the draft prompt/images for a session.
+     * This stores unsent input so it persists when switching sessions.
+     */
+    updateDraft(id: string, draftPrompt?: string, draftImages?: SdkImageContent[]): void {
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? { ...s, draftPrompt, draftImages }
+            : s
+        )
+      );
+    },
+
+    /**
+     * Create a setup session.
+     * This session is created when user clicks "New Session" button, before they configure and start.
+     * The session appears in the session list immediately in 'setup' status.
+     */
+    createSetupSession(
+      model: string,
+      thinkingLevel: ThinkingLevel,
+      planMode: boolean = false
+    ): string {
+      const id = crypto.randomUUID();
+
+      const session: SdkSession = {
+        id,
+        cwd: '', // Will be set when user starts the session
+        model,
+        thinkingLevel,
+        messages: [],
+        status: 'setup',
+        createdAt: Date.now(),
+        accumulatedDurationMs: 0,
+        planMode: planMode ? {
+          isActive: true,
+          questions: [],
+          answers: [],
+          currentQuestionIndex: 0,
+          isComplete: false,
+        } : undefined,
+      };
+
+      console.log('[DEBUG] createSetupSession - creating session with status:', session.status);
+      update(sessions => [...sessions, session]);
+      console.log('[DEBUG] createSetupSession - session added to store');
+
+      return id;
+    },
+
+    /**
+     * Start a setup session - transitions from 'setup' to active.
+     * Called when user clicks "Start Session" or "Start Planning" in SessionSetupView.
+     */
+    async startSetupSession(
+      id: string,
+      config: {
+        prompt: string;
+        images?: SdkImageContent[];
+        cwd: string;
+        model: string;
+        thinkingLevel: ThinkingLevel;
+        planMode: boolean;
+        systemPrompt?: string;
+      }
+    ): Promise<void> {
+      const session = get({ subscribe }).find(s => s.id === id);
+      if (!session || session.status !== 'setup') {
+        console.warn('[sdkSessions] Cannot start session - not in setup status:', id, session?.status);
+        return;
+      }
+
+      // Update session with config
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                cwd: config.cwd,
+                model: config.model,
+                thinkingLevel: config.thinkingLevel,
+                status: 'initializing' as const,
+                planMode: config.planMode ? {
+                  isActive: true,
+                  questions: [],
+                  answers: [],
+                  currentQuestionIndex: 0,
+                  isComplete: false,
+                } : undefined,
+              }
+            : s
+        )
+      );
+
+      // Now initialize the actual SDK session using createSession logic
+      try {
+        // Get the plan mode system prompt if needed
+        let finalSystemPrompt = config.systemPrompt;
+        if (config.planMode) {
+          const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
+          finalSystemPrompt = getPlanModeSystemPrompt();
+        }
+
+        // Ensure sidecar is running
+        await this.ensureSidecarStarted();
+
+        // Resolve "auto" model to a valid model for the backend
+        const currentSettings = get(settings);
+        const resolvedModel = resolveModelForApi(config.model, currentSettings.enabled_models);
+        if (resolvedModel !== config.model) {
+          console.log('[sdkSessions] Using fallback model for backend:', resolvedModel, '(session displays:', config.model, ')');
+        }
+
+        // Create the session on the backend
+        console.log('[sdkSessions] Starting setup session:', id, 'cwd:', config.cwd, 'model:', resolvedModel);
+        await invoke('create_sdk_session', {
+          id,
+          cwd: config.cwd,
+          model: resolvedModel,
+          systemPrompt: finalSystemPrompt ?? null,
+          planMode: config.planMode ?? null,
+        });
+        console.log('[sdkSessions] Session created');
+
+        // Note: Don't add to liveSessions here - let ensureSessionLive (called by sendPrompt) do it
+        // so that it also sets up the event listeners
+
+        // Apply thinking level if set
+        if (config.thinkingLevel) {
+          const maxThinkingTokens = THINKING_BUDGETS[config.thinkingLevel];
+          console.log('[sdkSessions] Applying thinking level:', config.thinkingLevel, '(', maxThinkingTokens, 'tokens)');
+          await invoke('update_sdk_thinking', { id, maxThinkingTokens });
+        }
+
+        // Track session creation for usage stats
+        usageStats.trackSession('sdk', resolvedModel, config.cwd);
+
+        // Transition to idle
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? { ...s, status: 'idle' as const }
+              : s
+          )
+        );
+
+        // Send the prompt if provided - sendPrompt will call ensureSessionLive
+        // which sets up the event listeners
+        if (config.prompt.trim() || (config.images && config.images.length > 0)) {
+          await this.sendPrompt(id, config.prompt, config.images);
+        }
+      } catch (error) {
+        console.error('[sdkSessions] Failed to start setup session:', error);
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  status: 'error' as const,
+                  messages: [
+                    ...s.messages,
+                    { type: 'error' as const, content: String(error), timestamp: Date.now() },
+                  ],
+                }
+              : s
+          )
+        );
+      }
+    },
+
+    /**
+     * Cancel/remove a setup session (user clicked cancel or navigated away).
+     */
+    cancelSetupSession(id: string): void {
+      update(sessions => sessions.filter(s => s.id !== id || s.status !== 'setup'));
+    },
+
+    /**
      * Create a pending transcription session.
      * This session is created immediately when recording starts, before transcription.
      */
@@ -1598,8 +1969,34 @@ function createSdkSessionsStore() {
           )
         );
 
-        // Initialize the SDK session
-        await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, transcript);
+        // Initialize the SDK session - wrap in try-catch to handle failures gracefully
+        try {
+          await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, transcript);
+        } catch (error) {
+          console.error('[sdkSessions] Failed to initialize session:', error);
+          // Set session to error state with the error message
+          // The pendingTranscription is preserved so user can retry
+          update(sessions =>
+            sessions.map(s =>
+              s.id === id
+                ? {
+                    ...s,
+                    status: 'error' as const,
+                    messages: [
+                      ...s.messages,
+                      {
+                        type: 'error' as const,
+                        content: error instanceof Error ? error.message : 'Failed to initialize session',
+                        timestamp: Date.now(),
+                      },
+                    ],
+                  }
+                : s
+            )
+          );
+          // Re-throw to let caller know initialization failed
+          throw error;
+        }
       }
     },
 
@@ -1678,8 +2075,32 @@ function createSdkSessionsStore() {
         )
       );
 
-      // Initialize the SDK session and send the prompt
-      await this.initializeSession(id, session.cwd, session.model, session.thinkingLevel, systemPrompt, prompt);
+      // Initialize the SDK session and send the prompt - wrap in try-catch
+      try {
+        await this.initializeSession(id, session.cwd, session.model, session.thinkingLevel, systemPrompt, prompt);
+      } catch (error) {
+        console.error('[sdkSessions] Failed to initialize approved session:', error);
+        // Set session to error state
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  status: 'error' as const,
+                  messages: [
+                    ...s.messages,
+                    {
+                      type: 'error' as const,
+                      content: error instanceof Error ? error.message : 'Failed to initialize session',
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }
+              : s
+          )
+        );
+        throw error;
+      }
     },
 
     /**
@@ -1807,8 +2228,32 @@ function createSdkSessionsStore() {
         )
       );
 
-      // Now initialize the SDK session
-      await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, pendingPrompt);
+      // Now initialize the SDK session - wrap in try-catch
+      try {
+        await this.initializeSession(id, cwd, session.model, session.thinkingLevel, systemPrompt, pendingPrompt);
+      } catch (error) {
+        console.error('[sdkSessions] Failed to initialize session after repo selection:', error);
+        // Set session to error state
+        update(sessions =>
+          sessions.map(s =>
+            s.id === id
+              ? {
+                  ...s,
+                  status: 'error' as const,
+                  messages: [
+                    ...s.messages,
+                    {
+                      type: 'error' as const,
+                      content: error instanceof Error ? error.message : 'Failed to initialize session',
+                      timestamp: Date.now(),
+                    },
+                  ],
+                }
+              : s
+          )
+        );
+        throw error;
+      }
     },
 
     /**
@@ -1860,7 +2305,7 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen<{ tool: string; input: Record<string, unknown> }>(
+        await listen<{ tool: string; input: Record<string, unknown>; toolUseId: string }>(
           `sdk-tool-start-${id}`,
           (e) => {
             usageStats.trackToolCall(e.payload.tool);
@@ -1876,6 +2321,7 @@ function createSdkSessionsStore() {
                         {
                           type: 'tool_start' as const,
                           tool: e.payload.tool,
+                          toolUseId: e.payload.toolUseId,
                           input: e.payload.input,
                           timestamp: Date.now(),
                         },
@@ -1889,7 +2335,7 @@ function createSdkSessionsStore() {
       );
 
       unlisteners.push(
-        await listen<{ tool: string; output: string }>(`sdk-tool-result-${id}`, (e) => {
+        await listen<{ tool: string; output: string; toolUseId: string }>(`sdk-tool-result-${id}`, (e) => {
           update(sessions =>
             sessions.map(s =>
               s.id === id
@@ -1900,6 +2346,7 @@ function createSdkSessionsStore() {
                       {
                         type: 'tool_result' as const,
                         tool: e.payload.tool,
+                        toolUseId: e.payload.toolUseId,
                         output: e.payload.output,
                         timestamp: Date.now(),
                       },
@@ -1931,7 +2378,8 @@ function createSdkSessionsStore() {
               sessionMessages = updatedMessages;
 
               // Analyze completion if no outcome yet or if interaction detection is needed
-              needsAiAnalysis = isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
+              // Skip LLM analysis in plan mode (no quick actions during planning)
+              needsAiAnalysis = isLlmEnabled() && !s.planMode?.isActive && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
               return {
                 ...s,
@@ -2163,6 +2611,56 @@ function createSdkSessionsStore() {
         })
       );
 
+      // Planning mode listeners
+      unlisteners.push(
+        await listen<PlanningQuestion[]>(`sdk-planning-questions-${id}`, (e) => {
+          console.log('[sdkSessions] Planning questions received:', e.payload.length);
+          // Update plan mode state with new questions
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id || !s.planMode) return s;
+              return {
+                ...s,
+                planMode: {
+                  ...s.planMode,
+                  questions: [...s.planMode.questions, ...e.payload],
+                  currentQuestionIndex: s.planMode.currentQuestionIndex >= s.planMode.questions.length
+                    ? s.planMode.questions.length
+                    : s.planMode.currentQuestionIndex,
+                },
+              };
+            })
+          );
+          debouncedSave();
+        })
+      );
+
+      unlisteners.push(
+        await listen<{ planPath: string; featureName: string; summary: string }>(`sdk-planning-complete-${id}`, (e) => {
+          console.log('[sdkSessions] Planning complete:', e.payload.featureName);
+          update(sessions =>
+            sessions.map(s => {
+              if (s.id !== id || !s.planMode) return s;
+              return {
+                ...s,
+                planMode: {
+                  ...s.planMode,
+                  isComplete: true,
+                  planFilePath: e.payload.planPath,
+                  featureName: e.payload.featureName,
+                  planSummary: e.payload.summary,
+                },
+                aiMetadata: {
+                  ...s.aiMetadata,
+                  name: `Plan: ${e.payload.featureName}`,
+                },
+              };
+            })
+          );
+          debouncedSave();
+        })
+      );
+
       listeners.set(id, unlisteners);
 
       // Resolve "auto" model to a valid model before sending to backend
@@ -2224,6 +2722,256 @@ function createSdkSessionsStore() {
             : s
         )
       );
+    },
+
+    /**
+     * Create a new plan mode session.
+     * This session uses a special system prompt and receives planning questions from Claude.
+     */
+    async createPlanModeSession(cwd: string, model: string, thinkingLevel: ThinkingLevel = null): Promise<string> {
+      // Import the plan mode system prompt dynamically to avoid circular dependencies
+      const { getPlanModeSystemPrompt } = await import('$lib/prompts/planMode');
+      const systemPrompt = getPlanModeSystemPrompt();
+
+      // Create session with plan mode system prompt and planning tools enabled
+      const id = await this.createSession(cwd, model, thinkingLevel, systemPrompt, true);
+
+      // Initialize plan mode state
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                planMode: {
+                  isActive: true,
+                  questions: [],
+                  answers: [],
+                  currentQuestionIndex: 0,
+                  isComplete: false,
+                },
+                aiMetadata: {
+                  ...s.aiMetadata,
+                  name: 'New Plan',
+                  category: 'planning',
+                },
+              }
+            : s
+        )
+      );
+
+      return id;
+    },
+
+    /**
+     * Update planning questions for a session.
+     * Called when Claude sends new questions via the ask_planning_questions tool.
+     */
+    updatePlanModeQuestions(id: string, questions: PlanningQuestion[]): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.planMode) return s;
+          return {
+            ...s,
+            planMode: {
+              ...s.planMode,
+              questions: [...s.planMode.questions, ...questions],
+              // Reset to first new question if we had answered all previous ones
+              currentQuestionIndex: s.planMode.currentQuestionIndex >= s.planMode.questions.length
+                ? s.planMode.questions.length
+                : s.planMode.currentQuestionIndex,
+            },
+          };
+        })
+      );
+      debouncedSave();
+    },
+
+    /**
+     * Update the current question index in plan mode.
+     */
+    setCurrentQuestionIndex(id: string, index: number): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.planMode) return s;
+          return {
+            ...s,
+            planMode: {
+              ...s.planMode,
+              currentQuestionIndex: Math.max(0, Math.min(index, s.planMode.questions.length - 1)),
+            },
+          };
+        })
+      );
+    },
+
+    /**
+     * Update an answer for a specific question.
+     */
+    updatePlanningAnswer(id: string, answer: PlanningAnswer): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.planMode) return s;
+
+          const existingIndex = s.planMode.answers.findIndex(
+            a => a.questionIndex === answer.questionIndex
+          );
+
+          const newAnswers = [...s.planMode.answers];
+          if (existingIndex >= 0) {
+            newAnswers[existingIndex] = answer;
+          } else {
+            newAnswers.push(answer);
+          }
+
+          return {
+            ...s,
+            planMode: {
+              ...s.planMode,
+              answers: newAnswers,
+            },
+          };
+        })
+      );
+    },
+
+    /**
+     * Submit planning answers to Claude.
+     * Formats answers and sends as a tool result.
+     */
+    async submitPlanningAnswers(id: string): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => {
+        session = sessions.find(s => s.id === id);
+      })();
+
+      if (!session?.planMode) {
+        throw new Error('Session not in plan mode');
+      }
+
+      // Format answers for Claude
+      const formattedAnswers = session.planMode.answers.map(answer => {
+        const question = session!.planMode!.questions[answer.questionIndex];
+        const selectedLabels = answer.selectedOptions.map(i => question.options[i]?.label || `Option ${i}`);
+        return {
+          question: question.question,
+          header: question.header,
+          selectedOptions: selectedLabels,
+          customInput: answer.textInput || null,
+        };
+      });
+
+      const answerText = `Here are my answers to the planning questions:\n\n${JSON.stringify(formattedAnswers, null, 2)}`;
+
+      // Clear questions to hide the wizard immediately
+      this.clearPlanningQuestions(id);
+
+      // Send as a regular prompt
+      await this.sendPrompt(id, answerText);
+    },
+
+    /**
+     * Clear planning questions to hide the wizard.
+     * Called after submitting answers.
+     */
+    clearPlanningQuestions(id: string): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.planMode) return s;
+          return {
+            ...s,
+            planMode: {
+              ...s.planMode,
+              questions: [],
+              answers: [],
+              currentQuestionIndex: 0,
+            },
+          };
+        })
+      );
+    },
+
+    /**
+     * Complete plan mode for a session.
+     * Called when Claude calls the complete_planning tool.
+     */
+    completePlanMode(
+      id: string,
+      planFilePath: string,
+      featureName: string,
+      planSummary: string
+    ): void {
+      update(sessions =>
+        sessions.map(s => {
+          if (s.id !== id || !s.planMode) return s;
+          return {
+            ...s,
+            planMode: {
+              ...s.planMode,
+              isComplete: true,
+              planFilePath,
+              featureName,
+              planSummary,
+            },
+            aiMetadata: {
+              ...s.aiMetadata,
+              name: `Plan: ${featureName}`,
+            },
+          };
+        })
+      );
+      debouncedSave();
+    },
+
+    /**
+     * Spawn a new implementation session based on a completed plan.
+     * Creates a new SDK session with a prompt pointing to the plan file.
+     */
+    async spawnImplementationSession(planSessionId: string): Promise<string | null> {
+      let planSession: SdkSession | undefined;
+      subscribe(sessions => {
+        planSession = sessions.find(s => s.id === planSessionId);
+      })();
+
+      if (!planSession?.planMode?.isComplete || !planSession.planMode.planFilePath) {
+        console.error('[sdkSessions] Cannot spawn implementation: plan not complete');
+        return null;
+      }
+
+      const { planFilePath, featureName } = planSession.planMode;
+
+      // Create new session with implementation prompt
+      const implementationId = await this.createSession(
+        planSession.cwd,
+        planSession.model,
+        planSession.thinkingLevel
+      );
+
+      // Update the implementation session with a reference to the plan
+      update(sessions =>
+        sessions.map(s =>
+          s.id === implementationId
+            ? {
+                ...s,
+                aiMetadata: {
+                  ...s.aiMetadata,
+                  name: `Implementing: ${featureName}`,
+                  category: 'implementation',
+                },
+              }
+            : s
+        )
+      );
+
+      // Send the implementation prompt
+      const implementationPrompt = `Please implement the plan defined in \`${planFilePath}\`.
+
+Read the plan file first to understand what needs to be done, then proceed with the implementation step by step. As you complete each task, update the plan file to mark completed items with [x].
+
+Focus on quality and maintainability. Ask questions if any requirements are unclear.`;
+
+      await this.sendPrompt(implementationId, implementationPrompt);
+
+      return implementationId;
     },
   };
 }

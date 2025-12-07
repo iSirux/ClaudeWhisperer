@@ -64,11 +64,15 @@
     geminiStatus = "idle";
     geminiTestResult = null;
     try {
+      // Save current settings first to ensure backend has latest config
+      // This fixes the race condition with the debounced auto-save
+      await invoke("save_config", { newConfig: $settings });
+
       const result = await invoke<LlmTestResult>("test_gemini_connection");
       geminiTestResult = result;
       geminiStatus = result.success ? "success" : "error";
     } catch (error) {
-      console.error("Failed to test Gemini connection:", error);
+      console.error("Failed to test LLM connection:", error);
       geminiStatus = "error";
       geminiTestResult = {
         success: false,
@@ -83,23 +87,15 @@
 <div class="space-y-4">
   <div class="p-3 bg-surface-elevated rounded border border-border">
     <div class="flex items-center gap-2 mb-2">
-      <svg
-        class="w-5 h-5 text-accent"
-        viewBox="0 0 24 24"
-        fill="currentColor"
-      >
-        <path
-          d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
-        />
+      <svg class="w-5 h-5 text-accent" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
       </svg>
-      <span class="text-sm font-medium text-text-primary"
-        >LLM Integration</span
-      >
+      <span class="text-sm font-medium text-text-primary">LLM Integration</span>
     </div>
     <p class="text-xs text-text-muted">
-      Use a lightweight LLM for auxiliary tasks like session naming,
-      interaction detection, and note structuring. Supports Google
-      Gemini, OpenAI, Groq, or local models (LM Studio, Ollama, etc.).
+      Use a lightweight LLM for auxiliary tasks like session naming, interaction
+      detection, and note structuring. Supports Google Gemini, OpenAI, Groq, or
+      local models (LM Studio, Ollama, etc.).
     </p>
   </div>
 
@@ -111,34 +107,35 @@
     <select
       class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
       bind:value={$settings.llm.provider}
-      onchange={(e) => {
+      onchange={async (e) => {
         const provider = (e.target as HTMLSelectElement).value;
         // Apply provider presets
         if (provider === "Gemini") {
-          $settings.llm.model = "gemini-2.0-flash";
+          $settings.llm.model = "gemini-2.5-flash-lite";
           $settings.llm.endpoint = null;
         } else if (provider === "OpenAI") {
           $settings.llm.model = "gpt-4o-mini";
           $settings.llm.endpoint = null;
         } else if (provider === "Groq") {
-          $settings.llm.model = "llama-3.3-70b-versatile";
+          $settings.llm.model = "meta-llama/llama-4-maverick-17b-128e-instruct";
           $settings.llm.endpoint = null;
         } else if (provider === "Local") {
           $settings.llm.model = "local-model";
-          $settings.llm.endpoint =
-            "http://localhost:1234/v1/chat/completions";
+          $settings.llm.endpoint = "http://localhost:1234/v1/chat/completions";
         }
+        // Save immediately so backend has the new provider right away
+        await invoke("save_config", { newConfig: $settings });
       }}
     >
-      <option value="Gemini">Google Gemini (free tier)</option>
+      <option value="Groq">Groq (free tier - recommended)</option>
+      <option value="Gemini">Google Gemini (free tier - limited)</option>
       <option value="OpenAI">OpenAI</option>
-      <option value="Groq">Groq (free tier)</option>
       <option value="Local">Local (LM Studio, Ollama, etc.)</option>
       <option value="Custom">Custom OpenAI-compatible</option>
     </select>
     <p class="text-xs text-text-muted mt-1">
       {#if $settings.llm.provider === "Gemini"}
-        Free tier: 1,500 requests/day - <a
+        Free tier: 20 requests/day (reduced Dec 2025) - <a
           href="https://aistudio.google.com/apikey"
           class="text-accent hover:underline"
           target="_blank"
@@ -177,6 +174,7 @@
         class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
         bind:value={$settings.llm.endpoint}
         placeholder="http://localhost:1234/v1/chat/completions"
+        onblur={() => invoke("save_config", { newConfig: $settings })}
       />
     </div>
   {/if}
@@ -184,9 +182,7 @@
   <!-- API Key (not for Local) -->
   {#if $settings.llm.provider !== "Local"}
     <div class="border-t border-border pt-4">
-      <h3 class="text-sm font-medium text-text-primary mb-3">
-        API Key
-      </h3>
+      <h3 class="text-sm font-medium text-text-primary mb-3">API Key</h3>
       {#if geminiApiKeySet}
         <div
           class="flex items-center justify-between p-3 bg-success/10 border border-success/30 rounded"
@@ -205,9 +201,7 @@
                 d="M5 13l4 4L19 7"
               />
             </svg>
-            <span class="text-sm text-text-primary"
-              >API key configured</span
-            >
+            <span class="text-sm text-text-primary">API key configured</span>
           </div>
           <button
             class="px-3 py-1.5 text-sm text-error border border-error/30 hover:bg-error/10 rounded transition-colors"
@@ -264,8 +258,7 @@
       {#if $settings.llm.enabled}
         <div class="space-y-4">
           <div>
-            <label
-              class="block text-sm font-medium text-text-secondary mb-1"
+            <label class="block text-sm font-medium text-text-secondary mb-1"
               >Model</label
             >
             {#if $settings.llm.provider === "Gemini"}
@@ -312,9 +305,7 @@
                           llm: { ...s.llm, model_priority: "speed" },
                         }))}
                     >
-                      <div
-                        class="flex items-center justify-center gap-2"
-                      >
+                      <div class="flex items-center justify-center gap-2">
                         <svg
                           class="w-4 h-4"
                           fill="none"
@@ -342,9 +333,7 @@
                           llm: { ...s.llm, model_priority: "accuracy" },
                         }))}
                     >
-                      <div
-                        class="flex items-center justify-center gap-2"
-                      >
+                      <div class="flex items-center justify-center gap-2">
                         <svg
                           class="w-4 h-4"
                           fill="none"
@@ -364,11 +353,11 @@
                   </div>
                   <p class="text-xs text-text-muted mt-2">
                     {#if $settings.llm.model_priority === "speed"}
-                      Prioritizes 2.5 Flash-Lite for faster responses,
-                      falls back to 2.5 Flash then 2.0 Flash
+                      Prioritizes 2.5 Flash-Lite for faster responses, falls
+                      back to 2.5 Flash
                     {:else}
-                      Prioritizes 2.5 Flash for better quality, falls
-                      back to 2.5 Flash-Lite then 2.0 Flash
+                      Prioritizes 2.5 Flash for better quality, falls back to
+                      2.5 Flash-Lite
                     {/if}
                   </p>
                 </div>
@@ -377,30 +366,24 @@
                 <select
                   class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
                   bind:value={$settings.llm.model}
+                  onchange={() => invoke("save_config", { newConfig: $settings })}
                 >
-                  <option value="gemini-2.5-flash"
-                    >Gemini 2.5 Flash (Recommended)</option
-                  >
                   <option value="gemini-2.5-flash-lite"
-                    >Gemini 2.5 Flash-Lite</option
+                    >Gemini 2.5 Flash-Lite (Recommended)</option
                   >
-                  <option value="gemini-2.0-flash"
-                    >Gemini 2.0 Flash</option
-                  >
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                 </select>
                 <p class="text-xs text-text-muted mt-1">
-                  Gemini 2.5 Flash offers the best balance of speed and
-                  quality
+                  Both models limited to 20 requests/day on free tier
                 </p>
               {/if}
             {:else if $settings.llm.provider === "OpenAI"}
               <select
                 class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
                 bind:value={$settings.llm.model}
+                onchange={() => invoke("save_config", { newConfig: $settings })}
               >
-                <option value="gpt-4o-mini"
-                  >GPT-4o Mini (Recommended)</option
-                >
+                <option value="gpt-4o-mini">GPT-4o Mini (Recommended)</option>
                 <option value="gpt-4o">GPT-4o</option>
                 <option value="gpt-4-turbo">GPT-4 Turbo</option>
                 <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
@@ -409,15 +392,24 @@
               <select
                 class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
                 bind:value={$settings.llm.model}
+                onchange={() => invoke("save_config", { newConfig: $settings })}
               >
-                <option value="llama-3.3-70b-versatile"
-                  >Llama 3.3 70B (Recommended)</option
+                <option value="meta-llama/llama-4-maverick-17b-128e-instruct"
+                  >Llama 4 Maverick 17B (Recommended)</option
                 >
+                <option value="moonshotai/kimi-k2-instruct-0905"
+                  >Kimi K2 (262K context, agentic)</option
+                >
+                <option value="openai/gpt-oss-120b">GPT-OSS 120B</option>
+                <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
+                <option value="qwen/qwen3-32b">Qwen3 32B</option>
+                <option value="meta-llama/llama-4-scout-17b-16e-instruct"
+                  >Llama 4 Scout 17B</option
+                >
+                <option value="openai/gpt-oss-20b">GPT-OSS 20B</option>
                 <option value="llama-3.1-8b-instant"
-                  >Llama 3.1 8B Instant</option
+                  >Llama 3.1 8B Instant (fast)</option
                 >
-                <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
-                <option value="gemma2-9b-it">Gemma 2 9B</option>
               </select>
             {:else}
               <input
@@ -425,6 +417,7 @@
                 class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
                 bind:value={$settings.llm.model}
                 placeholder="model-name"
+                onblur={() => invoke("save_config", { newConfig: $settings })}
               />
               <p class="text-xs text-text-muted mt-1">
                 Enter the model name as expected by your endpoint
@@ -451,18 +444,15 @@
             <p class="text-sm text-success">Connection successful!</p>
           {:else if geminiStatus === "error"}
             <p class="text-sm text-error">
-              Connection failed: {geminiTestResult?.error ||
-                "Unknown error"}
+              Connection failed: {geminiTestResult?.error || "Unknown error"}
             </p>
           {/if}
 
           <div class="border-t border-border pt-4">
-            <h3 class="text-sm font-medium text-text-primary mb-2">
-              Features
-            </h3>
+            <h3 class="text-sm font-medium text-text-primary mb-2">Features</h3>
             <p class="text-xs text-text-muted mb-3">
-              Choose which LLM-powered features to enable. Each feature
-              uses API calls against your provider quota.
+              Choose which LLM-powered features to enable. Each feature uses API
+              calls against your provider quota.
             </p>
             <div class="space-y-2">
               <!-- Auto-name Sessions -->
@@ -478,8 +468,7 @@
                       ...s.llm,
                       features: {
                         ...s.llm.features,
-                        auto_name_sessions:
-                          !s.llm.features.auto_name_sessions,
+                        auto_name_sessions: !s.llm.features.auto_name_sessions,
                       },
                     },
                   }))}
@@ -489,8 +478,7 @@
                     class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0"
                     class:border-accent={$settings.llm.features
                       .auto_name_sessions}
-                    class:bg-accent={$settings.llm.features
-                      .auto_name_sessions}
+                    class:bg-accent={$settings.llm.features.auto_name_sessions}
                     class:border-border={!$settings.llm.features
                       .auto_name_sessions}
                   >
@@ -525,14 +513,13 @@
                           d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
                         />
                       </svg>
-                      <span
-                        class="text-sm font-medium text-text-primary"
+                      <span class="text-sm font-medium text-text-primary"
                         >Auto-name Sessions</span
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Generate descriptive names and categories for
-                      sessions based on the conversation content
+                      Generate descriptive names and categories for sessions
+                      based on the conversation content
                     </p>
                   </div>
                 </div>
@@ -598,15 +585,83 @@
                           d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
                         />
                       </svg>
-                      <span
-                        class="text-sm font-medium text-text-primary"
+                      <span class="text-sm font-medium text-text-primary"
                         >Detect Interaction Needed</span
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Analyze Claude's responses to detect when your
-                      input is required (questions, approvals,
-                      decisions)
+                      Analyze Claude's responses to detect when your input is
+                      required (questions, approvals, decisions)
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              <!-- Generate Quick Actions -->
+              <button
+                class="w-full flex items-center justify-between p-3 rounded border-2 transition-all text-left {$settings
+                  .llm.features.generate_quick_actions
+                  ? 'border-accent bg-accent/10'
+                  : 'border-border hover:border-border/80'}"
+                onclick={() =>
+                  settings.update((s) => ({
+                    ...s,
+                    llm: {
+                      ...s.llm,
+                      features: {
+                        ...s.llm.features,
+                        generate_quick_actions: !s.llm.features.generate_quick_actions,
+                      },
+                    },
+                  }))}
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0"
+                    class:border-accent={$settings.llm.features
+                      .generate_quick_actions}
+                    class:bg-accent={$settings.llm.features.generate_quick_actions}
+                    class:border-border={!$settings.llm.features
+                      .generate_quick_actions}
+                  >
+                    {#if $settings.llm.features.generate_quick_actions}
+                      <svg
+                        class="w-3 h-3 text-white"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="3"
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    {/if}
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <svg
+                        class="w-4 h-4 text-text-secondary"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M13 10V3L4 14h7v7l9-11h-7z"
+                        />
+                      </svg>
+                      <span class="text-sm font-medium text-text-primary"
+                        >Generate Quick Actions</span
+                      >
+                    </div>
+                    <p class="text-xs text-text-muted mt-0.5">
+                      Generate contextual quick action buttons based on Claude's
+                      response to suggest helpful next steps
                     </p>
                   </div>
                 </div>
@@ -636,8 +691,7 @@
                     class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0"
                     class:border-accent={$settings.llm.features
                       .clean_transcription}
-                    class:bg-accent={$settings.llm.features
-                      .clean_transcription}
+                    class:bg-accent={$settings.llm.features.clean_transcription}
                     class:border-border={!$settings.llm.features
                       .clean_transcription}
                   >
@@ -672,14 +726,13 @@
                           d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
                         />
                       </svg>
-                      <span
-                        class="text-sm font-medium text-text-primary"
+                      <span class="text-sm font-medium text-text-primary"
                         >Clean Transcription</span
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Fix homophones, technical terms, and punctuation
-                      in voice transcriptions before sending to Claude
+                      Fix homophones, technical terms, and punctuation in voice
+                      transcriptions before sending to Claude
                     </p>
                   </div>
                 </div>
@@ -746,14 +799,13 @@
                             d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
                           />
                         </svg>
-                        <span
-                          class="text-sm font-medium text-text-primary"
+                        <span class="text-sm font-medium text-text-primary"
                           >Use Dual-Source Cleanup</span
                         >
                       </div>
                       <p class="text-xs text-text-muted mt-0.5">
-                        Compare both Vosk (real-time) and Whisper
-                        (accurate) transcriptions for maximum accuracy
+                        Compare both Vosk (real-time) and Whisper (accurate)
+                        transcriptions for maximum accuracy
                       </p>
                     </div>
                   </div>
@@ -773,8 +825,7 @@
                       ...s.llm,
                       features: {
                         ...s.llm.features,
-                        recommend_model:
-                          !s.llm.features.recommend_model,
+                        recommend_model: !s.llm.features.recommend_model,
                       },
                     },
                   }))}
@@ -782,10 +833,8 @@
                 <div class="flex items-center gap-3">
                   <div
                     class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0"
-                    class:border-accent={$settings.llm.features
-                      .recommend_model}
-                    class:bg-accent={$settings.llm.features
-                      .recommend_model}
+                    class:border-accent={$settings.llm.features.recommend_model}
+                    class:bg-accent={$settings.llm.features.recommend_model}
                     class:border-border={!$settings.llm.features
                       .recommend_model}
                   >
@@ -820,15 +869,14 @@
                           d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
                         />
                       </svg>
-                      <span
-                        class="text-sm font-medium text-text-primary"
+                      <span class="text-sm font-medium text-text-primary"
                         >Smart Model Selection</span
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
                       Automatically choose the best Claude model
-                      (Haiku/Sonnet/Opus) based on prompt complexity to
-                      optimize cost
+                      (Haiku/Sonnet/Opus) based on prompt complexity to optimize
+                      cost
                     </p>
                   </div>
                 </div>
@@ -847,8 +895,7 @@
                       ...s.llm,
                       features: {
                         ...s.llm.features,
-                        auto_select_repo:
-                          !s.llm.features.auto_select_repo,
+                        auto_select_repo: !s.llm.features.auto_select_repo,
                       },
                     },
                   }))}
@@ -858,8 +905,7 @@
                     class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0"
                     class:border-accent={$settings.llm.features
                       .auto_select_repo}
-                    class:bg-accent={$settings.llm.features
-                      .auto_select_repo}
+                    class:bg-accent={$settings.llm.features.auto_select_repo}
                     class:border-border={!$settings.llm.features
                       .auto_select_repo}
                   >
@@ -894,15 +940,13 @@
                           d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
                         />
                       </svg>
-                      <span
-                        class="text-sm font-medium text-text-primary"
+                      <span class="text-sm font-medium text-text-primary"
                         >Auto-select Repository</span
                       >
                     </div>
                     <p class="text-xs text-text-muted mt-0.5">
-                      Automatically select the best repository based on
-                      prompt content. Requires repo descriptions to be
-                      generated.
+                      Automatically select the best repository based on prompt
+                      content. Requires repo descriptions to be generated.
                     </p>
                   </div>
                 </div>
@@ -911,42 +955,32 @@
 
             <!-- Sub-options for auto-select repo -->
             {#if $settings.llm.features.auto_select_repo}
-              <div
-                class="mt-3 ml-8 pl-3 border-l-2 border-border space-y-3"
-              >
+              <div class="mt-3 ml-8 pl-3 border-l-2 border-border space-y-3">
                 <div>
                   <label
                     class="block text-sm font-medium text-text-secondary mb-1"
                     >Minimum Confidence for Auto-Select</label
                   >
                   <p class="text-xs text-text-muted mb-2">
-                    Only auto-select repos when LLM confidence meets
-                    this threshold
+                    Only auto-select repos when LLM confidence meets this
+                    threshold
                   </p>
                   <select
                     class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
-                    bind:value={
-                      $settings.llm.min_auto_select_confidence
-                    }
+                    bind:value={$settings.llm.min_auto_select_confidence}
                   >
-                    <option value="high"
-                      >High only (most prompts)</option
-                    >
+                    <option value="high">High only (most prompts)</option>
                     <option value="medium">Medium or higher</option>
-                    <option value="low"
-                      >Any confidence (fewest prompts)</option
-                    >
+                    <option value="low">Any confidence (fewest prompts)</option>
                   </select>
                 </div>
                 <div class="flex items-center justify-between">
                   <div>
-                    <label
-                      class="text-sm font-medium text-text-secondary"
+                    <label class="text-sm font-medium text-text-secondary"
                       >Confirm Repo Selection</label
                     >
                     <p class="text-xs text-text-muted">
-                      Claude will question the repo selection if it
-                      seems wrong
+                      Claude will question the repo selection if it seems wrong
                     </p>
                   </div>
                   <input
@@ -970,18 +1004,17 @@
       </h3>
       <div class="text-xs text-text-muted space-y-1">
         <p>
-          <strong>Gemini 2.0 Flash:</strong> 15 RPM, 1M TPM, 1,500 requests/day
+          <strong>Gemini 2.5 Flash:</strong> 20 requests/day
         </p>
         <p>
-          <strong>Gemini 2.5 Flash:</strong> 10 RPM, 250K TPM, 250 requests/day
+          <strong>Gemini 2.5 Flash-Lite:</strong> 20 requests/day
         </p>
-        <p>
-          <strong>Gemini 2.5 Flash-Lite:</strong> 15 RPM, 250K TPM, 1,000
-          requests/day
+        <p class="mt-2 text-warning">
+          ⚠️ Free tier was severely reduced in Dec 2025(previously 250-1,500
+          RPD). Consider using Groq for higher limits.
         </p>
         <p class="mt-2 text-text-muted">
-          Limits reset at midnight Pacific Time. No credit card
-          required.
+          Limits reset at midnight Pacific Time. No credit card required.
         </p>
       </div>
     </div>
@@ -991,19 +1024,22 @@
         Free Tier Limits
       </h3>
       <div class="text-xs text-text-muted space-y-1">
-        <p><strong>Llama 3.3 70B:</strong> 30 RPM, 6,000 RPD</p>
-        <p><strong>Llama 3.1 8B:</strong> 30 RPM, 14,400 RPD</p>
-        <p><strong>Mixtral 8x7B:</strong> 30 RPM, 14,400 RPD</p>
+        <p>
+          <strong>Llama 4 Maverick 17B:</strong> 1K RPD - Best quality, multimodal
+        </p>
+        <p><strong>Kimi K2:</strong> 1K RPD - 262K context, agentic/tool use</p>
+        <p><strong>GPT-OSS 120B:</strong> 1K RPD - Solid tool calling</p>
+        <p><strong>Llama 3.3 70B:</strong> 1K RPD - Proven reliable</p>
+        <p><strong>Qwen3 32B:</strong> 1K RPD - Strong reasoning</p>
+        <p><strong>Llama 3.1 8B:</strong> 14.4K RPD - Fast, simple tasks</p>
         <p class="mt-2 text-text-muted">
-          Generous free tier with no credit card required.
+          Free tier with no credit card required.
         </p>
       </div>
     </div>
   {:else if $settings.llm.provider === "Local"}
     <div class="border-t border-border pt-4 mt-4">
-      <h3 class="text-sm font-medium text-text-secondary mb-2">
-        Local Setup
-      </h3>
+      <h3 class="text-sm font-medium text-text-secondary mb-2">Local Setup</h3>
       <div class="text-xs text-text-muted space-y-1">
         <p>
           <strong>LM Studio:</strong> Download from

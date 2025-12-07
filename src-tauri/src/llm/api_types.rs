@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
+// Common Usage Types
+// ============================================================================
+
+/// Token usage data extracted from LLM API responses
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+// ============================================================================
 // Gemini API Types
 // ============================================================================
 
@@ -31,6 +43,16 @@ pub struct GeminiGenerationConfig {
 pub struct GeminiResponse {
     pub candidates: Option<Vec<GeminiCandidate>>,
     pub error: Option<GeminiError>,
+    #[serde(rename = "usageMetadata")]
+    pub usage_metadata: Option<GeminiUsageMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiUsageMetadata {
+    pub prompt_token_count: Option<u64>,
+    pub candidates_token_count: Option<u64>,
+    pub total_token_count: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +105,14 @@ pub struct OpenAIResponseFormat {
 pub struct OpenAIResponse {
     pub choices: Option<Vec<OpenAIChoice>>,
     pub error: Option<OpenAIError>,
+    pub usage: Option<OpenAIUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIUsage {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

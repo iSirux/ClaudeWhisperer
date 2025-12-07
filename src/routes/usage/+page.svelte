@@ -229,6 +229,129 @@
         </div>
       {/if}
 
+      <!-- LLM Integration Layer Token Usage -->
+      {#if $usageStats.llm_token_stats && $usageStats.llm_token_stats.total_requests > 0}
+        <div>
+          <h3 class="text-sm font-medium text-text-primary mb-3">LLM Integration Layer</h3>
+          <div class="p-4 bg-surface-elevated rounded-lg">
+            <!-- Total LLM Stats -->
+            <div class="flex items-center justify-between mb-4 pb-4 border-b border-border">
+              <div>
+                <div class="text-2xl font-bold text-cyan-400">{$usageStats.llm_token_stats.total_requests}</div>
+                <div class="text-xs text-text-muted">Total LLM Requests</div>
+              </div>
+              <div class="text-right">
+                <div class="text-xl font-bold text-text-primary">{formatTokens($usageStats.llm_token_stats.total_input_tokens + $usageStats.llm_token_stats.total_output_tokens)}</div>
+                <div class="text-xs text-text-muted">Total LLM Tokens</div>
+              </div>
+            </div>
+
+            <!-- Token Breakdown -->
+            <div class="grid grid-cols-2 gap-4 mb-4">
+              <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-full bg-cyan-500/20 flex items-center justify-center">
+                  <svg class="w-4 h-4 text-cyan-400" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M4 8a.5.5 0 0 1 .5-.5h5.793L8.146 5.354a.5.5 0 1 1 .708-.708l3 3a.5.5 0 0 1 0 .708l-3 3a.5.5 0 0 1-.708-.708L10.293 8.5H4.5A.5.5 0 0 1 4 8z"/>
+                  </svg>
+                </div>
+                <div>
+                  <div class="text-sm font-medium text-text-primary">{formatTokens($usageStats.llm_token_stats.total_input_tokens)}</div>
+                  <div class="text-xs text-text-muted">Input Tokens</div>
+                </div>
+              </div>
+              <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-full bg-teal-500/20 flex items-center justify-center">
+                  <svg class="w-4 h-4 text-teal-400" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M12 8a.5.5 0 0 1-.5.5H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5a.5.5 0 0 1 .5.5z"/>
+                  </svg>
+                </div>
+                <div>
+                  <div class="text-sm font-medium text-text-primary">{formatTokens($usageStats.llm_token_stats.total_output_tokens)}</div>
+                  <div class="text-xs text-text-muted">Output Tokens</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Per-Feature Breakdown -->
+            <div class="pt-4 border-t border-border">
+              <div class="text-xs text-text-muted mb-3">Feature Breakdown</div>
+              <div class="space-y-2">
+                {#if $usageStats.llm_token_stats.session_naming_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Session Naming</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.session_naming_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.session_naming_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.session_naming_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+                {#if $usageStats.llm_token_stats.session_outcome_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Session Outcome</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.session_outcome_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.session_outcome_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.session_outcome_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+                {#if $usageStats.llm_token_stats.interaction_analysis_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Interaction Analysis</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.interaction_analysis_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.interaction_analysis_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.interaction_analysis_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+                {#if $usageStats.llm_token_stats.transcription_cleanup_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Transcription Cleanup</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.transcription_cleanup_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.transcription_cleanup_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.transcription_cleanup_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+                {#if $usageStats.llm_token_stats.model_recommendation_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Model Recommendation</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.model_recommendation_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.model_recommendation_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.model_recommendation_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+                {#if $usageStats.llm_token_stats.repo_description_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Repo Description</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.repo_description_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.repo_description_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.repo_description_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+                {#if $usageStats.llm_token_stats.repo_recommendation_requests > 0}
+                  <div class="flex justify-between items-center text-sm">
+                    <span class="text-text-secondary">Repo Recommendation</span>
+                    <div class="flex gap-3 text-xs">
+                      <span class="text-text-muted">{$usageStats.llm_token_stats.repo_recommendation_requests} req</span>
+                      <span class="text-cyan-400">{formatTokens($usageStats.llm_token_stats.repo_recommendation_input_tokens)} in</span>
+                      <span class="text-teal-400">{formatTokens($usageStats.llm_token_stats.repo_recommendation_output_tokens)} out</span>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
+
       <!-- Overview Stats -->
       <div>
         <h3 class="text-sm font-medium text-text-primary mb-3">Overview</h3>

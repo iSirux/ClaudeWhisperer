@@ -7,20 +7,21 @@ mod types;
 mod utils;
 
 pub use types::*;
+pub use api_types::LlmUsage;
+pub use providers::GenerationResult;
 
 use crate::config::{LlmModelPriority, LlmProvider};
 
 /// Model fallback chains for Gemini provider
+/// Note: As of Dec 2025, free tier is severely limited to 20 RPD for both 2.5 Flash and 2.5 Flash-Lite
 const GEMINI_MODELS_SPEED: &[&str] = &[
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
 ];
 
 const GEMINI_MODELS_ACCURACY: &[&str] = &[
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
 ];
 
 /// Unified LLM client that supports multiple providers (Gemini, OpenAI, Groq, Local)
@@ -100,5 +101,14 @@ impl LlmClient {
 
     fn is_openai_compatible(&self) -> bool {
         !matches!(self.provider, LlmProvider::Gemini)
+    }
+
+    /// Generate structured JSON response with usage tracking
+    pub async fn generate_with_usage<T: serde::de::DeserializeOwned>(
+        &self,
+        prompt: &str,
+        schema: Option<serde_json::Value>,
+    ) -> Result<GenerationResult<T>, String> {
+        self.generate_structured_with_usage(prompt, schema).await
     }
 }

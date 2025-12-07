@@ -79,3 +79,16 @@ impl RepoRecommendation {
         }
     }
 }
+
+/// A single quick action suggestion
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickAction {
+    pub label: String,  // Short button label (2-4 words)
+    pub prompt: String, // The actual prompt to send
+}
+
+/// Result for generating contextual quick actions based on session state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickActionsResult {
+    pub actions: Vec<QuickAction>,
+}

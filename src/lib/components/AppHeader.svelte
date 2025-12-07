@@ -1,6 +1,6 @@
 <script lang="ts">
   import ModelSelector from './ModelSelector.svelte';
-  import ThinkingSelector from './ThinkingSelector.svelte';
+  import ThinkingToggle from './ThinkingToggle.svelte';
   import UsagePreview from './UsagePreview.svelte';
   import OpenMicMarquee from './OpenMicMarquee.svelte';
   import type { ThinkingLevel } from '$lib/stores/sdkSessions';
@@ -215,8 +215,8 @@
       size="sm"
     />
 
-    <!-- Global Thinking Selector -->
-    <ThinkingSelector
+    <!-- Global Thinking Toggle -->
+    <ThinkingToggle
       thinkingLevel={defaultThinkingLevel}
       onchange={onChangeThinking}
       size="sm"

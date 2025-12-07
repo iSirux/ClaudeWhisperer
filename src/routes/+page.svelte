@@ -12,7 +12,7 @@
   import AppHeader from '$lib/components/AppHeader.svelte';
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
   import SessionSidebarHeader from '$lib/components/SessionSidebarHeader.svelte';
-  import EmptySessionPlaceholder from '$lib/components/EmptySessionPlaceholder.svelte';
+  import SessionSetupView from '$lib/components/SessionSetupView.svelte';
 
   // Composables
   import { useSidebarResize } from '$lib/composables/useSidebarResize.svelte';
@@ -52,6 +52,9 @@
 
   // Flag to track if we're recording for a new session (header button)
   let isRecordingForNewSession = $state(false);
+
+  // Session setup recording state
+  let isRecordingForSetup = $state(false);
 
   // Current view from navigation store (persists across route changes)
   let currentView = $derived($navigation.mainView);
@@ -133,6 +136,14 @@
     sdkViewRef?.focusPromptInput();
   }
 
+  // Handle switch-to-session event (e.g., when spawning implementation session from plan mode)
+  async function handleSwitchToSession(event: CustomEvent<{ sessionId: string }>) {
+    const { sessionId } = event.detail;
+    activeSdkSessionId.set(sessionId);
+    activeSessionId.set(null);
+    navigation.setView('sessions');
+  }
+
   // Track the currently registered toggle_recording hotkey so we can detect changes
   let registeredToggleRecordingHotkey: string | null = null;
 
@@ -179,6 +190,8 @@
     window.addEventListener('select-repo-for-session', handleSelectRepoForSessionEvent as unknown as EventListener);
     // Listen for focus-sdk-prompt events from SessionList (new session created)
     window.addEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
+    // Listen for switch-to-session events (e.g., from plan mode implementation spawning)
+    window.addEventListener('switch-to-session', handleSwitchToSession as unknown as EventListener);
 
     // Listen for discard-recording events from overlay
     unlistenDiscardRecording = await listen('discard-recording', async () => {
@@ -186,6 +199,10 @@
 
       // Cancel the recording in main window's store (overlay has its own store instance)
       await recording.cancelRecording();
+
+      // Hide the overlay (in case it was shown and not hidden by the source)
+      await overlay.hide();
+      overlay.clearSessionInfo();
 
       // Unregister hotkeys
       await unregisterTranscribeHotkey();
@@ -310,6 +327,10 @@
 
           // Cancel recording - this discards all audio data
           await recording.cancelRecording();
+
+          // Hide overlay since recording is canceled
+          await overlay.hide();
+          overlay.clearSessionInfo();
           return;
         }
 
@@ -395,6 +416,7 @@
     window.removeEventListener('approve-transcription', handleApproveTranscription as unknown as EventListener);
     window.removeEventListener('select-repo-for-session', handleSelectRepoForSessionEvent as unknown as EventListener);
     window.removeEventListener('focus-sdk-prompt', handleFocusSdkPrompt);
+    window.removeEventListener('switch-to-session', handleSwitchToSession as unknown as EventListener);
 
     // Cleanup audio visualization listener
     if (unlistenAudioVisualization) {
@@ -606,6 +628,16 @@
       });
     }
 
+    // Helper to handle errors during processing - sets session to error state so user can retry
+    const handleProcessingError = (error: unknown, stage: string) => {
+      console.error(`[transcription] Error during ${stage}:`, error);
+      if (pendingSessionId) {
+        sdkSessions.updatePendingTranscription(pendingSessionId, {
+          transcriptionError: error instanceof Error ? error.message : `Processing failed during ${stage}`,
+        });
+      }
+    };
+
     if ($settings.terminal_mode === 'Sdk') {
       // SDK mode: process pending session or create new one
       const model = $settings.default_model;
@@ -745,34 +777,40 @@
         } catch (error) {
           console.error('[llm] Repo recommendation failed, requiring user selection:', error);
           // On error, also require user to select instead of using current repo
-          if (pendingSessionId) {
-            await sdkSessions.completePendingTranscription(
-              pendingSessionId,
-              '', // No cwd yet
-              finalTranscript,
-              undefined,
-              {
-                transcript: finalTranscript,
-                recommendedIndex: null,
-                reasoning: 'Failed to get recommendation',
-                confidence: 'low',
-              }
-            );
-            navigation.setView('sessions');
-            return;
-          } else {
-            sdkSessions.createPendingRepoSession(
-              model,
-              thinkingLevel,
-              {
-                transcript: finalTranscript,
-                recommendedIndex: null,
-                reasoning: 'Failed to get recommendation',
-                confidence: 'low',
-              }
-            );
-            // Don't switch to the session - user can select repo from session list
-            return;
+          try {
+            if (pendingSessionId) {
+              await sdkSessions.completePendingTranscription(
+                pendingSessionId,
+                '', // No cwd yet
+                finalTranscript,
+                undefined,
+                {
+                  transcript: finalTranscript,
+                  recommendedIndex: null,
+                  reasoning: 'Failed to get recommendation',
+                  confidence: 'low',
+                }
+              );
+              navigation.setView('sessions');
+              return;
+            } else {
+              sdkSessions.createPendingRepoSession(
+                model,
+                thinkingLevel,
+                {
+                  transcript: finalTranscript,
+                  recommendedIndex: null,
+                  reasoning: 'Failed to get recommendation',
+                  confidence: 'low',
+                }
+              );
+              // Don't switch to the session - user can select repo from session list
+              return;
+            }
+          } catch (completionError) {
+            // If showing repo selection also fails, fall through to use current repo
+            handleProcessingError(completionError, 'repo selection fallback');
+            // Don't return - continue with current repo instead
           }
         }
       }
@@ -805,10 +843,14 @@
       }
 
       // Continue with session creation/completion
-      if (pendingSessionId) {
-        await completePendingTranscriptionSession(pendingSessionId, finalTranscript, sessionRepo);
-      } else {
-        await createSdkSessionWithPrompt(finalTranscript, sessionRepo);
+      try {
+        if (pendingSessionId) {
+          await completePendingTranscriptionSession(pendingSessionId, finalTranscript, sessionRepo);
+        } else {
+          await createSdkSessionWithPrompt(finalTranscript, sessionRepo);
+        }
+      } catch (error) {
+        handleProcessingError(error, 'session creation');
       }
     } else {
       // PTY mode: create terminal session as before
@@ -1141,7 +1183,12 @@
     const systemPrompt = systemPromptParts.length > 0 ? systemPromptParts.join('\n\n') : undefined;
 
     // Complete the repo selection and initialize the session with the cleaned transcript
-    await sdkSessions.completeRepoSelection(sessionId, repoPath, systemPrompt, finalTranscript);
+    try {
+      await sdkSessions.completeRepoSelection(sessionId, repoPath, systemPrompt, finalTranscript);
+    } catch (error) {
+      // Error already logged and session set to error state in completeRepoSelection
+      console.error('[session] Failed to complete repo selection:', error);
+    }
   }
 
   // Handle repo selection from SessionPendingView (wrapper for active session)
@@ -1256,8 +1303,11 @@
       return;
     }
     const currentSettings = get(settings);
-    if (currentSettings.repos.length <= 1) {
-      console.log('[Hotkey] Only', currentSettings.repos.length, 'repo(s) configured, skipping cycle repo hotkey');
+    const autoRepoEnabled = isRepoAutoSelectEnabled();
+    // Need at least 2 options to cycle: with auto-repo enabled, 1 repo is enough (auto + repo)
+    const minRepos = autoRepoEnabled ? 1 : 2;
+    if (currentSettings.repos.length < minRepos) {
+      console.log('[Hotkey] Only', currentSettings.repos.length, 'repo(s) configured, auto-repo:', autoRepoEnabled, '- skipping cycle repo hotkey');
       return;
     }
 
@@ -1281,22 +1331,50 @@
           }
 
           const s = get(settings);
-          console.log('[Hotkey] Cycling repo from index', s.active_repo_index, 'to', (s.active_repo_index + 1) % s.repos.length);
+          const autoRepoEnabled = isRepoAutoSelectEnabled();
 
-          // Cycle to next repo
-          const nextIndex = (s.active_repo_index + 1) % s.repos.length;
-          await settings.setActiveRepo(nextIndex);
+          // Build list of cyclable options: 'auto' (if enabled) + repo indices
+          const cyclableOptions: ('auto' | number)[] = [];
+          if (autoRepoEnabled) {
+            cyclableOptions.push('auto');
+          }
+          for (let i = 0; i < s.repos.length; i++) {
+            cyclableOptions.push(i);
+          }
 
-          // Update overlay with new repo info
-          const newRepo = s.repos[nextIndex];
-          if (newRepo) {
-            let branch: string | null = null;
-            try {
-              branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
-            } catch (e) {
-              console.error('Failed to get git branch:', e);
+          // Need at least 2 options to cycle
+          if (cyclableOptions.length < 2) return;
+
+          // Determine current position
+          const currentOption: 'auto' | number = s.auto_repo_mode ? 'auto' : s.active_repo_index;
+          const currentIndex = cyclableOptions.indexOf(currentOption);
+          const nextIndex = (currentIndex + 1) % cyclableOptions.length;
+          const nextOption = cyclableOptions[nextIndex];
+
+          console.log('[Hotkey] Cycling repo from', currentOption, 'to', nextOption);
+
+          if (nextOption === 'auto') {
+            // Switch to auto-repo mode
+            await settings.setAutoRepoMode(true);
+            overlay.setSessionInfo(null, get(settings).default_model, false);
+          } else {
+            // Switch to specific repo
+            if (s.auto_repo_mode) {
+              await settings.setAutoRepoMode(false);
             }
-            overlay.setSessionInfo(branch, get(settings).default_model, false);
+            await settings.setActiveRepo(nextOption);
+
+            // Update overlay with new repo info
+            const newRepo = s.repos[nextOption];
+            if (newRepo) {
+              let branch: string | null = null;
+              try {
+                branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
+              } catch (e) {
+                console.error('Failed to get git branch:', e);
+              }
+              overlay.setSessionInfo(branch, get(settings).default_model, false);
+            }
           }
         } finally {
           setTimeout(() => {
@@ -1577,11 +1655,242 @@
 
   async function changeThinking(newLevel: ThinkingLevel) {
     const settingsLevel = newLevel === null ? 'off' : newLevel;
+    settings.update(s => ({ ...s, default_thinking_level: settingsLevel }));
     await settings.save({ ...$settings, default_thinking_level: settingsLevel });
   }
 
   function openSettingsTab(tab: string) {
     navigation.showSettings(tab);
+  }
+
+  // Create a new setup session (called when user clicks "New" button in header)
+  function handleNewSession() {
+    console.log('[DEBUG] handleNewSession called');
+    const model = $settings.default_model;
+    const thinkingLevel = settingsToStoreThinking($settings.default_thinking_level);
+
+    // Create a setup session - this appears in the session list immediately
+    const sessionId = sdkSessions.createSetupSession(model, thinkingLevel, false);
+    console.log('[DEBUG] Created setup session:', sessionId);
+
+    // Select the new session
+    activeSdkSessionId.set(sessionId);
+    activeSessionId.set(null);
+    console.log('[DEBUG] Set activeSdkSessionId:', sessionId);
+
+    // Switch to sessions view if not already there
+    navigation.setView('sessions');
+    console.log('[DEBUG] Set view to sessions');
+  }
+
+  // Start a setup session (called when user clicks Start in SessionSetupView for a setup session)
+  async function handleSetupSessionStart(
+    sessionId: string,
+    config: {
+      prompt: string;
+      images?: import('$lib/stores/sdkSessions').SdkImageContent[];
+      model: string;
+      thinkingLevel: import('$lib/stores/sdkSessions').ThinkingLevel;
+      cwd: string;
+      planMode: boolean;
+    }
+  ) {
+    isRecordingForSetup = false;
+
+    // Determine repo path - empty string or '.' means auto-select
+    let repoPath = config.cwd;
+    let needsAutoRepo = !repoPath || repoPath === '.';
+    let selectedRepo = needsAutoRepo ? null : $settings.repos.find(r => r.path === repoPath);
+
+    // If auto-repo is enabled and needed, run the LLM recommendation
+    if (needsAutoRepo && $isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
+      try {
+        const repoRecommendation = await recommendRepo(config.prompt, false);
+        if (repoRecommendation) {
+          const recommendedRepo = $settings.repos[repoRecommendation.repoIndex];
+
+          // For low confidence, we'd need to show repo selection, but for simplicity, use the recommended repo
+          selectedRepo = recommendedRepo;
+          repoPath = recommendedRepo?.path || '.';
+          console.log('[session-setup] Auto selected repo:', recommendedRepo?.name, '-', repoRecommendation.reasoning);
+        }
+      } catch (error) {
+        console.error('[session-setup] Repo recommendation failed:', error);
+      }
+    }
+
+    // Fall back to active repo if still no repo selected
+    if (!selectedRepo && needsAutoRepo) {
+      selectedRepo = $activeRepo;
+      repoPath = selectedRepo?.path || '.';
+    }
+
+    // Determine final model (handle "auto" model)
+    let finalModel = config.model;
+    let finalThinking = config.thinkingLevel;
+
+    if (isAutoModel(config.model) && isModelRecommendationEnabled()) {
+      try {
+        const recommendation = await recommendModel(config.prompt);
+        if (recommendation && $settings.enabled_models.includes(recommendation.modelId)) {
+          finalModel = recommendation.modelId;
+          if (recommendation.thinkingLevel) {
+            finalThinking = recommendation.thinkingLevel as typeof finalThinking;
+          }
+          console.log('[session-setup] Auto selected model:', finalModel, '-', recommendation.reasoning);
+        } else {
+          finalModel = $settings.enabled_models[0] || 'claude-sonnet-4-20250514';
+        }
+      } catch (error) {
+        console.error('[session-setup] Model recommendation failed:', error);
+        finalModel = $settings.enabled_models[0] || 'claude-sonnet-4-20250514';
+      }
+    }
+
+    // Start the setup session
+    await sdkSessions.startSetupSession(sessionId, {
+      prompt: config.prompt,
+      images: config.images,
+      cwd: repoPath,
+      model: finalModel,
+      thinkingLevel: finalThinking,
+      planMode: config.planMode,
+    });
+  }
+
+  // Cancel a setup session
+  function handleSetupSessionCancel(sessionId: string) {
+    isRecordingForSetup = false;
+    sdkSessions.cancelSetupSession(sessionId);
+    activeSdkSessionId.set(null);
+  }
+
+  // Handle session setup completion (called when user clicks Start in setup view)
+  // The setup view will be replaced by the session view once the session is created
+  // and activeSdkSession becomes set.
+  async function handleSessionSetupStart(config: {
+    prompt: string;
+    images?: import('$lib/stores/sdkSessions').SdkImageContent[];
+    model: string;
+    thinkingLevel: import('$lib/stores/sdkSessions').ThinkingLevel;
+    cwd: string;
+    planMode: boolean;
+  }) {
+    isRecordingForSetup = false;
+
+    // Determine repo path - empty string or '.' means auto-select
+    let repoPath = config.cwd;
+    let needsAutoRepo = !repoPath || repoPath === '.';
+    let selectedRepo = needsAutoRepo ? null : $settings.repos.find(r => r.path === repoPath);
+
+    // If auto-repo is enabled and needed, run the LLM recommendation
+    if (needsAutoRepo && $isAutoRepoSelected && isRepoAutoSelectEnabled() && $settings.repos.length > 1) {
+      try {
+        const repoRecommendation = await recommendRepo(config.prompt, false);
+        if (repoRecommendation) {
+          const recommendedRepo = $settings.repos[repoRecommendation.repoIndex];
+
+          // For plan mode, always use the recommended repo (user can select specific repo in setup view)
+          // For regular sessions with low confidence, show repo selection view
+          if (!config.planMode && needsUserConfirmation(repoRecommendation.confidence)) {
+            // Low confidence - show repo selection view (regular sessions only)
+            const pendingSessionId = sdkSessions.createPendingTranscriptionSession(config.model, config.thinkingLevel);
+
+            await sdkSessions.completePendingTranscription(
+              pendingSessionId,
+              '', // No cwd yet
+              config.prompt,
+              undefined,
+              {
+                transcript: config.prompt,
+                recommendedIndex: repoRecommendation.repoIndex,
+                reasoning: repoRecommendation.reasoning,
+                confidence: repoRecommendation.confidence,
+              }
+            );
+            activeSdkSessionId.set(pendingSessionId);
+            return;
+          }
+
+          // High confidence (or plan mode) - use recommended repo
+          selectedRepo = recommendedRepo;
+          repoPath = recommendedRepo?.path || '.';
+          console.log('[session-setup] Auto selected repo:', recommendedRepo?.name, '-', repoRecommendation.reasoning, config.planMode ? '(plan mode)' : '');
+        }
+      } catch (error) {
+        console.error('[session-setup] Repo recommendation failed:', error);
+      }
+    }
+
+    // Fall back to active repo if still no repo selected
+    if (!selectedRepo && needsAutoRepo) {
+      selectedRepo = $activeRepo;
+      repoPath = selectedRepo?.path || '.';
+    }
+
+    // Determine final model (handle "auto" model)
+    let finalModel = config.model;
+    let finalThinking = config.thinkingLevel;
+
+    if (isAutoModel(config.model) && isModelRecommendationEnabled()) {
+      try {
+        const recommendation = await recommendModel(config.prompt);
+        if (recommendation && $settings.enabled_models.includes(recommendation.modelId)) {
+          finalModel = recommendation.modelId;
+          if (recommendation.thinkingLevel) {
+            finalThinking = recommendation.thinkingLevel as typeof finalThinking;
+          }
+          console.log('[session-setup] Auto selected model:', finalModel, '-', recommendation.reasoning);
+        } else {
+          finalModel = $settings.enabled_models[0] || 'claude-sonnet-4-20250514';
+        }
+      } catch (error) {
+        console.error('[session-setup] Model recommendation failed:', error);
+        finalModel = $settings.enabled_models[0] || 'claude-sonnet-4-20250514';
+      }
+    }
+
+    try {
+      if (config.planMode) {
+        // Create plan mode session
+        const sessionId = await sdkSessions.createPlanModeSession(repoPath, finalModel, finalThinking);
+        activeSdkSessionId.set(sessionId);
+        activeSessionId.set(null);
+
+        // Send the user's prompt to start planning
+        await sdkSessions.sendPrompt(sessionId, config.prompt, config.images);
+      } else {
+        // Create regular SDK session
+        const sessionId = await sdkSessions.createSession(repoPath, finalModel, finalThinking);
+        activeSdkSessionId.set(sessionId);
+        activeSessionId.set(null);
+
+        // Send the prompt
+        await sdkSessions.sendPrompt(sessionId, config.prompt, config.images);
+      }
+    } catch (error) {
+      console.error('[session-setup] Failed to create session:', error);
+    }
+  }
+
+  // Start recording for session setup view
+  async function startRecordingForSetup() {
+    if ($isRecording) return;
+    isRecordingForSetup = true;
+
+    // Stop open mic to avoid two Vosk sessions running simultaneously
+    await openMic.stop();
+
+    // Start recording
+    await recording.startRecording();
+  }
+
+  // Stop recording for session setup view
+  async function stopRecordingForSetup() {
+    // Get the transcript and pass it to the setup view
+    // For now, just stop recording - the transcript will be handled separately
+    isRecordingForSetup = false;
+    await recording.stopRecording();
   }
 
   // Start recording for a NEW session (header button)
@@ -1759,35 +2068,53 @@
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
         {@const isPendingState = $activeSdkSession.status === 'pending_repo' || $activeSdkSession.status === 'initializing'}
+        {@const isSetupState = $activeSdkSession.status === 'setup'}
+        <!-- Debug: check console for session status -->
+        {(() => { console.log('[DEBUG] activeSdkSession status:', $activeSdkSession.status, 'isSetupState:', isSetupState); return ''; })()}
 
-        <SdkSessionHeader
-          createdAt={$activeSdkSession.createdAt}
-          messages={$activeSdkSession.messages}
-          isPending={isPendingState}
-          repoName={activeSdkRepoName}
-          branch={activeSdkSessionBranch}
-          firstPrompt={activeSdkFirstPrompt()}
-          onClose={handleSessionClose}
-          onCancel={handlePendingSessionCancel}
-        />
-
-        {#if isPendingState}
-          <div class="terminal-wrapper flex-1 overflow-hidden">
-            <SessionPendingView
-              status={$activeSdkSession.status as 'pending_repo' | 'initializing'}
-              repos={$settings.repos}
-              pendingSelection={$activeSdkSession.pendingRepoSelection}
-              pendingPrompt={$activeSdkSession.pendingPrompt}
-              onSelectRepo={handlePendingRepoSelection}
-              onCancel={handlePendingSessionCancel}
-            />
-          </div>
+        {#if isSetupState}
+          <!-- Setup session - show SessionSetupView -->
+          <SessionSetupView
+            initialModel={$activeSdkSession.model}
+            initialThinkingLevel={$activeSdkSession.thinkingLevel}
+            initialCwd={$activeRepo?.path || ''}
+            initialPlanMode={$activeSdkSession.planMode?.isActive || false}
+            {isRecordingForSetup}
+            onStart={(config) => handleSetupSessionStart($activeSdkSession.id, config)}
+            onStartRecording={startRecordingForSetup}
+            onStopRecording={stopRecordingForSetup}
+            onCancel={() => handleSetupSessionCancel($activeSdkSession.id)}
+          />
         {:else}
-          <div class="terminal-wrapper flex-1 overflow-hidden">
-            {#key $activeSdkSession.id}
-              <SdkView bind:this={sdkViewRef} sessionId={$activeSdkSession.id} />
-            {/key}
-          </div>
+          <SdkSessionHeader
+            createdAt={$activeSdkSession.createdAt}
+            messages={$activeSdkSession.messages}
+            isPending={isPendingState}
+            repoName={activeSdkRepoName}
+            branch={activeSdkSessionBranch}
+            firstPrompt={activeSdkFirstPrompt()}
+            onClose={handleSessionClose}
+            onCancel={handlePendingSessionCancel}
+          />
+
+          {#if isPendingState}
+            <div class="terminal-wrapper flex-1 overflow-hidden">
+              <SessionPendingView
+                status={$activeSdkSession.status as 'pending_repo' | 'initializing'}
+                repos={$settings.repos}
+                pendingSelection={$activeSdkSession.pendingRepoSelection}
+                pendingPrompt={$activeSdkSession.pendingPrompt}
+                onSelectRepo={handlePendingRepoSelection}
+                onCancel={handlePendingSessionCancel}
+              />
+            </div>
+          {:else}
+            <div class="terminal-wrapper flex-1 overflow-hidden">
+              {#key $activeSdkSession.id}
+                <SdkView bind:this={sdkViewRef} sessionId={$activeSdkSession.id} />
+              {/key}
+            </div>
+          {/if}
         {/if}
       {:else if $activeSession}
         <!-- PTY Mode Session -->
@@ -1797,8 +2124,6 @@
             <Terminal sessionId={$activeSession.id} />
           {/key}
         </div>
-      {:else}
-        <EmptySessionPlaceholder />
       {/if}
     </main>
   </div>

@@ -4,30 +4,128 @@ use std::path::PathBuf;
 
 use crate::config::AppConfig;
 
+/// Represents a persisted image content block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedSdkImageContent {
+    pub media_type: String,
+    pub base64_data: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
 /// Represents a persisted SDK message
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedSdkMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
     pub content: Option<String>,
+    /// Images attached to user prompts
+    pub images: Option<Vec<PersistedSdkImageContent>>,
     pub tool: Option<String>,
     pub input: Option<serde_json::Value>,
     pub output: Option<String>,
+    /// Subagent ID (for subagent-start/subagent-stop messages)
+    pub agent_id: Option<String>,
+    /// Subagent type
+    pub agent_type: Option<String>,
+    /// Subagent transcript path
+    pub transcript_path: Option<String>,
     pub timestamp: u64,
+}
+
+/// Represents persisted usage statistics for an SDK session
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedSdkSessionUsage {
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+    #[serde(default)]
+    pub total_cost: f64,
+}
+
+/// Represents AI-generated metadata for a session
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedSessionAiMetadata {
+    pub name: Option<String>,
+    pub summary: Option<String>,
+    pub category: Option<String>,
+    #[serde(default)]
+    pub needs_interaction: bool,
+}
+
+/// Represents pending transcription info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedPendingTranscriptionInfo {
+    pub status: String,
+    pub transcript: Option<String>,
+    pub vosk_transcript: Option<String>,
+    pub cleaned_transcript: Option<String>,
+    #[serde(default)]
+    pub was_cleaned_up: bool,
+    pub cleanup_corrections: Option<Vec<String>>,
+    #[serde(default)]
+    pub used_dual_source: bool,
+    pub model_recommendation: Option<serde_json::Value>,
+    pub repo_recommendation: Option<serde_json::Value>,
+    pub recording_started_at: Option<u64>,
+    pub recording_duration_ms: Option<u64>,
+    pub audio_visualization_history: Option<Vec<Vec<f64>>>,
+    pub transcription_error: Option<String>,
+}
+
+/// Represents pending repo selection info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedPendingRepoSelection {
+    pub prompt: String,
+    pub recommendations: Option<Vec<serde_json::Value>>,
 }
 
 /// Represents a persisted SDK session
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedSdkSession {
     pub id: String,
     pub cwd: String,
     pub model: String,
+    /// Whether 'auto' model was requested (before resolution)
+    #[serde(default)]
+    pub auto_model_requested: bool,
+    /// Thinking level: null = off, "on" = enabled
+    #[serde(default)]
+    pub thinking_level: Option<String>,
     pub messages: Vec<PersistedSdkMessage>,
     pub status: String,
-    #[serde(rename = "createdAt")]
     pub created_at: u64,
-    #[serde(rename = "startedAt")]
     pub started_at: Option<u64>,
+    /// Accumulated work duration in milliseconds
+    #[serde(default)]
+    pub accumulated_duration_ms: u64,
+    /// Session usage statistics
+    pub usage: Option<PersistedSdkSessionUsage>,
+    /// Whether the session has unread messages
+    #[serde(default)]
+    pub unread: bool,
+    /// AI-generated session metadata
+    pub ai_metadata: Option<PersistedSessionAiMetadata>,
+    /// Pending transcription info (for sessions in pending_transcription state)
+    pub pending_transcription: Option<PersistedPendingTranscriptionInfo>,
+    /// Pending repo selection info (for sessions in pending_repo state)
+    pub pending_repo_selection: Option<PersistedPendingRepoSelection>,
+    /// Pending prompt to send (for sessions in pending_approval state)
+    pub pending_prompt: Option<String>,
+    /// Pending approval prompt text
+    pub pending_approval_prompt: Option<String>,
 }
 
 /// Represents a persisted terminal session (PTY)

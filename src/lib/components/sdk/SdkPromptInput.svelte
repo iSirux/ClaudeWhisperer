@@ -14,29 +14,111 @@
     isRecording = false,
     isTranscribing = false,
     isRecordingForCurrentSession = false,
+    draftPrompt = "",
+    draftImages = [],
     onSendPrompt,
     onStopQuery,
     onStartRecording,
     onStopRecording,
+    onDraftChange,
   }: {
     isQuerying?: boolean;
     isRecording?: boolean;
     isTranscribing?: boolean;
     isRecordingForCurrentSession?: boolean;
+    draftPrompt?: string;
+    draftImages?: SdkImageContent[];
     onSendPrompt: (prompt: string, images?: SdkImageContent[]) => void;
     onStopQuery: () => void;
     onStartRecording: () => void;
     onStopRecording: () => void;
+    onDraftChange?: (prompt: string, images: SdkImageContent[]) => void;
   } = $props();
 
-  let prompt = $state("");
-  let pendingImages = $state<ImageData[]>([]);
+  // Local state for immediate responsiveness, synced from props
+  let prompt = $state(draftPrompt);
+  let pendingImages = $state<ImageData[]>(
+    // Convert SdkImageContent to ImageData format for display
+    draftImages.map((img) => ({
+      mediaType: img.mediaType,
+      base64Data: img.base64Data,
+      width: img.width ?? 0,
+      height: img.height ?? 0,
+      originalSize: 0,
+      compressedSize: 0,
+    }))
+  );
+
+  // Track previous draft values to detect session changes
+  let prevDraftPrompt = $state(draftPrompt);
+  let prevDraftImagesLength = $state(draftImages.length);
+
+  // Notify parent of draft changes (debounced to avoid too many updates)
+  let draftChangeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function notifyDraftChange() {
+    if (!onDraftChange) return;
+    if (draftChangeTimeout) clearTimeout(draftChangeTimeout);
+    draftChangeTimeout = setTimeout(() => {
+      draftChangeTimeout = null;
+      const imageContent: SdkImageContent[] = pendingImages.map((img) => ({
+        mediaType: img.mediaType,
+        base64Data: img.base64Data,
+        width: img.width,
+        height: img.height,
+      }));
+      onDraftChange(prompt, imageContent);
+    }, 300);
+  }
+
+  // Reset local state when session changes (detected via prop changes)
+  $effect(() => {
+    // Check if draftPrompt or draftImages changed from outside (session switch)
+    if (draftPrompt !== prevDraftPrompt || draftImages.length !== prevDraftImagesLength) {
+      // Clear any pending debounced save (the parent handles saving before switch)
+      if (draftChangeTimeout) {
+        clearTimeout(draftChangeTimeout);
+        draftChangeTimeout = null;
+      }
+
+      // Update to the new session's values
+      prompt = draftPrompt;
+      pendingImages = draftImages.map((img) => ({
+        mediaType: img.mediaType,
+        base64Data: img.base64Data,
+        width: img.width ?? 0,
+        height: img.height ?? 0,
+        originalSize: 0,
+        compressedSize: 0,
+      }));
+      prevDraftPrompt = draftPrompt;
+      prevDraftImagesLength = draftImages.length;
+    }
+  });
   let isProcessingImages = $state(false);
   let textareaEl: HTMLTextAreaElement;
 
   // Expose focus function for external use
   export function focus() {
     textareaEl?.focus();
+  }
+
+  // Expose method to get current draft values (for flushing before session switch)
+  export function getCurrentDraft(): { prompt: string; images: SdkImageContent[] } {
+    // Clear any pending debounced save since we're returning the values now
+    if (draftChangeTimeout) {
+      clearTimeout(draftChangeTimeout);
+      draftChangeTimeout = null;
+    }
+    return {
+      prompt,
+      images: pendingImages.map((img) => ({
+        mediaType: img.mediaType,
+        base64Data: img.base64Data,
+        width: img.width,
+        height: img.height,
+      })),
+    };
   }
 
   async function handleSendPrompt() {
@@ -57,6 +139,8 @@
 
     prompt = "";
     pendingImages = [];
+    // Clear draft in parent store
+    onDraftChange?.("", []);
     onSendPrompt(currentPrompt, imageContent);
   }
 
@@ -87,6 +171,7 @@
     try {
       const processed = await processImages(files);
       pendingImages = [...pendingImages, ...processed];
+      notifyDraftChange();
     } catch (err) {
       console.error("[SdkPromptInput] Error processing images:", err);
     } finally {
@@ -96,6 +181,7 @@
 
   function removeImage(index: number) {
     pendingImages = pendingImages.filter((_, i) => i !== index);
+    notifyDraftChange();
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -155,7 +241,7 @@
   <textarea
     bind:this={textareaEl}
     bind:value={prompt}
-    oninput={autoResize}
+    oninput={() => { autoResize(); notifyDraftChange(); }}
     onkeydown={handleKeydown}
     onpaste={handlePaste}
     placeholder={pendingImages.length > 0

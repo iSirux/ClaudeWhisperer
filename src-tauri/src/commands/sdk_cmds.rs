@@ -18,11 +18,12 @@ pub fn create_sdk_session(
     model: String, // Per-session model (required)
     system_prompt: Option<String>, // Optional system prompt (e.g., for voice transcription context)
     messages: Option<Vec<HistoryMessage>>, // Optional conversation history for restored sessions
+    plan_mode: Option<bool>, // Whether this is a plan mode session (enables planning tools)
 ) -> Result<(), String> {
     if !sidecar.is_started() {
         return Err("Sidecar not started. Call start_sidecar first.".to_string());
     }
-    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model), system_prompt, messages })
+    sidecar.send(OutboundMessage::Create { id, cwd, model: Some(model), system_prompt, messages, plan_mode })
 }
 
 #[tauri::command]

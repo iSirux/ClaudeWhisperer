@@ -64,7 +64,7 @@ Core UI:
 - `SessionPendingView.svelte` - View for sessions in pending states (repo selection, transcription)
 - `Terminal.svelte` - xterm.js terminal with WebGL rendering for PTY sessions
 - `ModelSelector.svelte` - Button group for selecting Claude model (Opus/Sonnet/Haiku/Auto)
-- `ThinkingSelector.svelte` - Button group for selecting thinking level (Off/Think/Mega/Ultra)
+- `ThinkingToggle.svelte` - Toggle button for enabling/disabling thinking mode
 - `RepoSelector.svelte` - Repository selection dropdown
 - `RepoSelectionDialog.svelte` - Modal dialog for repository selection with LLM recommendations
 - `Transcript.svelte` - Last recording transcript display
@@ -177,16 +177,14 @@ The app supports three terminal modes (configured in settings):
 2. **Prompt** - Spawns Claude CLI with the transcribed prompt (`claude -p "<prompt>"`)
 3. **SDK** - Uses Claude Agent SDK directly via the sidecar process (no CLI)
 
-## Thinking Levels
+## Thinking Mode
 
-SDK mode supports Claude's extended thinking capability with four levels:
+SDK mode supports Claude's extended thinking capability as a simple on/off toggle:
 
 - **Off** (null) - Standard response without extended thinking
-- **Think** - Basic extended thinking for complex tasks
-- **Megathink** - Extended thinking with higher token budget
-- **Ultrathink** - Maximum thinking depth for the most complex tasks
+- **On** - Extended thinking enabled (31999 token budget)
 
-The thinking level can be set per-session via the ThinkingSelector or automatically recommended by the LLM integration based on prompt complexity.
+Thinking can be toggled per-session via the ThinkingToggle or automatically recommended by the LLM integration based on prompt complexity.
 
 ## Key Data Flow
 

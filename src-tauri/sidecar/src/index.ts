@@ -1,5 +1,57 @@
-import { query, type Query, type Options, type SDKMessage, type SubagentStartHookInput, type SubagentStopHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer, tool, type Query, type Options, type SDKMessage, type SubagentStartHookInput, type SubagentStopHookInput } from '@anthropic-ai/claude-agent-sdk';
 import * as readline from 'readline';
+import { z } from 'zod';
+
+// Planning question option schema
+const PlanningQuestionOptionSchema = z.object({
+  label: z.string().describe('Short label for the option'),
+  description: z.string().describe('Longer description explaining this option'),
+});
+
+// Planning question schema
+const PlanningQuestionSchema = z.object({
+  question: z.string().describe('The full question text to display to the user'),
+  header: z.string().max(12).describe('A short one-word header for the navigation chip (e.g., "Scope", "Auth", "Storage")'),
+  options: z.array(PlanningQuestionOptionSchema).min(2).max(4).describe('Predefined options for the user to choose from (2-4 options)'),
+  multiSelect: z.boolean().describe('Whether the user can select multiple options (true) or just one (false)'),
+});
+
+// Create the in-process planning MCP server
+const planningMcpServer = createSdkMcpServer({
+  name: 'planning-tools',
+  version: '1.0.0',
+  tools: [
+    tool(
+      'ask_planning_questions',
+      'Present a set of planning questions to the user through a wizard-style interface. Use this to gather requirements and preferences for the feature being planned. The user will see these questions in an interactive UI and can select options or provide custom text input.',
+      {
+        questions: z.array(PlanningQuestionSchema).min(1).max(5).describe('Array of questions to present to the user (1-5 questions)'),
+      },
+      async (args) => {
+        // The actual handling happens in handleSdkMessage when it sees this tool_use
+        // We just return a success message here
+        return {
+          content: [{ type: 'text', text: `Presented ${args.questions.length} question(s) to the user. Waiting for their responses...` }],
+        };
+      }
+    ),
+    tool(
+      'complete_planning',
+      'Signal that planning is complete. Call this after you have created the plan file and gathered all necessary information. This will show the user a completion screen with a summary and option to start implementation.',
+      {
+        plan_path: z.string().describe('The relative path to the plan file that was created (e.g., "plans/auth-feature.md")'),
+        feature_name: z.string().describe('Human-readable name of the feature being planned'),
+        summary: z.string().describe('Brief summary of what was planned and key decisions made'),
+      },
+      async (args) => {
+        // The actual handling happens in handleSdkMessage when it sees this tool_use
+        return {
+          content: [{ type: 'text', text: `Planning complete for "${args.feature_name}". Plan saved to ${args.plan_path}.\n\nSummary: ${args.summary}` }],
+        };
+      }
+    ),
+  ],
+});
 
 // Message types for conversation history restoration
 interface HistoryUserMessage {
@@ -35,6 +87,7 @@ interface CreateMessage {
   system_prompt?: string;
   messages?: HistoryMessage[]; // Conversation history for restored sessions
   options?: Partial<Options>;
+  plan_mode?: boolean; // Whether this is a plan mode session (enables planning tools)
 }
 
 interface ImageData {
@@ -84,9 +137,16 @@ interface Session {
   conversationHistory?: HistoryMessage[]; // Conversation history for restored sessions
   maxThinkingTokens?: number; // Extended thinking budget (null/undefined = off)
   currentQueryId?: string; // Unique ID for the current query (to detect stale done events)
+  planMode?: boolean; // Whether this is a plan mode session
 }
 
 const sessions = new Map<string, Session>();
+
+// Track tool_use_id to tool_name mapping for matching tool results
+const toolUseIdToName = new Map<string, string>();
+
+// Track thinking state per session (session_id -> { startTime, content })
+const thinkingState = new Map<string, { startTime: number; content: string }>();
 
 function send(msg: object): void {
   const line = JSON.stringify(msg) + '\n';
@@ -97,12 +157,20 @@ function sendText(id: string, content: string): void {
   send({ type: 'text', id, content });
 }
 
-function sendToolStart(id: string, tool: string, input: unknown): void {
-  send({ type: 'tool_start', id, tool, input });
+function sendToolStart(id: string, tool: string, input: unknown, toolUseId: string): void {
+  send({ type: 'tool_start', id, tool, input, toolUseId });
 }
 
-function sendToolResult(id: string, tool: string, output: string): void {
-  send({ type: 'tool_result', id, tool, output });
+function sendToolResult(id: string, tool: string, output: string, toolUseId: string): void {
+  send({ type: 'tool_result', id, tool, output, toolUseId });
+}
+
+function sendThinkingStart(id: string, content: string): void {
+  send({ type: 'thinking_start', id, content, timestamp: Date.now() });
+}
+
+function sendThinkingEnd(id: string, durationMs: number, content: string): void {
+  send({ type: 'thinking_end', id, durationMs, content });
 }
 
 function sendDone(id: string): void {
@@ -145,6 +213,27 @@ function sendSubagentStop(id: string, agentId: string, transcriptPath: string): 
   send({ type: 'subagent_stop', id, agentId, transcriptPath });
 }
 
+// Planning mode specific events
+interface PlanningQuestionOption {
+  label: string;
+  description: string;
+}
+
+interface PlanningQuestion {
+  question: string;
+  header: string;
+  options: PlanningQuestionOption[];
+  multiSelect: boolean;
+}
+
+function sendPlanningQuestions(id: string, questions: PlanningQuestion[]): void {
+  send({ type: 'planning_questions', id, questions });
+}
+
+function sendPlanningComplete(id: string, planPath: string, featureName: string, summary: string): void {
+  send({ type: 'planning_complete', id, planPath, featureName, summary });
+}
+
 async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
@@ -156,14 +245,36 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     ...msg.options,
   };
 
+  // Add in-process MCP server for plan mode at creation time
+  // Using createSdkMcpServer for reliable in-process tool registration
+  if (msg.plan_mode) {
+    send({ type: 'debug', id: msg.id, message: 'Plan mode: configuring in-process MCP server with planning tools' });
+
+    options.mcpServers = {
+      ...options.mcpServers,
+      'planning-tools': planningMcpServer,
+    };
+
+    options.allowedTools = [
+      ...(options.allowedTools || []),
+      'mcp__planning-tools__ask_planning_questions',
+      'mcp__planning-tools__complete_planning',
+    ];
+  }
+
   sessions.set(msg.id, {
     cwd: msg.cwd,
     options,
     conversationHistory: msg.messages, // Store conversation history for restored sessions
+    planMode: msg.plan_mode,
   });
 
   if (msg.messages && msg.messages.length > 0) {
     send({ type: 'debug', id: msg.id, message: `Session created with ${msg.messages.length} history messages` });
+  }
+
+  if (msg.plan_mode) {
+    send({ type: 'debug', id: msg.id, message: 'Session created in PLAN MODE - planning tools enabled' });
   }
 
   send({ type: 'created', id: msg.id });
@@ -338,7 +449,7 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     }
 
     // Common options for both text and multimodal queries
-    const queryOptions = {
+    const queryOptions: Options & { abortController: AbortController } = {
       ...session.options,
       abortController,
       // Resume from previous session if we have one
@@ -363,6 +474,12 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
         }],
       },
     };
+
+    // Note: MCP servers for plan mode are configured in handleCreate() at session creation time
+    // The session.options already include mcpServers and allowedTools for planning tools
+    if (session.planMode) {
+      send({ type: 'debug', id: msg.id, message: `Plan mode query - MCP servers configured: ${Object.keys(session.options.mcpServers || {}).join(', ')}` });
+    }
 
     // Use the query function from the SDK
     let queryIterator;
@@ -435,11 +552,67 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       send({ type: 'debug', id, message: `Assistant message has ${message.message.content.length} content blocks` });
       for (const block of message.message.content) {
         send({ type: 'debug', id, message: `Content block type: ${block.type}` });
+
+        // Handle thinking blocks (extended thinking feature)
+        if (block.type === 'thinking') {
+          const thinkingBlock = block as { thinking?: string };
+          const thinkingContent = thinkingBlock.thinking || '';
+
+          if (!thinkingState.has(id)) {
+            // First thinking block - start tracking
+            thinkingState.set(id, { startTime: Date.now(), content: thinkingContent });
+            sendThinkingStart(id, thinkingContent);
+            send({ type: 'debug', id, message: `Thinking started: ${thinkingContent.slice(0, 100)}...` });
+          } else {
+            // Additional thinking block - accumulate content
+            const state = thinkingState.get(id)!;
+            state.content += '\n\n' + thinkingContent;
+            send({ type: 'debug', id, message: `Thinking continued: ${thinkingContent.slice(0, 100)}...` });
+          }
+          continue;
+        }
+
+        // If we were thinking and now getting real content, end thinking
+        if (thinkingState.has(id)) {
+          const state = thinkingState.get(id)!;
+          const durationMs = Date.now() - state.startTime;
+          thinkingState.delete(id);
+          sendThinkingEnd(id, durationMs, state.content);
+          send({ type: 'debug', id, message: `Thinking ended after ${durationMs}ms` });
+        }
+
         if (block.type === 'text') {
           send({ type: 'debug', id, message: `Text content: ${block.text.slice(0, 100)}` });
           sendText(id, block.text);
         } else if (block.type === 'tool_use') {
-          sendToolStart(id, block.name, block.input);
+          // Track tool_use_id to name mapping for matching with tool_result
+          const toolUseBlock = block as { id?: string; name: string; input: unknown };
+          const toolUseId = toolUseBlock.id || `unknown-${Date.now()}`;
+          if (toolUseBlock.id) {
+            toolUseIdToName.set(toolUseBlock.id, toolUseBlock.name);
+          }
+          sendToolStart(id, block.name, block.input, toolUseId);
+
+          // Handle planning-specific tools (both direct names and MCP-prefixed names)
+          const toolName = block.name;
+          const isAskPlanningQuestions = toolName === 'ask_planning_questions' ||
+            toolName === 'mcp__planning-tools__ask_planning_questions';
+          const isCompletePlanning = toolName === 'complete_planning' ||
+            toolName === 'mcp__planning-tools__complete_planning';
+
+          if (isAskPlanningQuestions) {
+            const input = block.input as { questions?: PlanningQuestion[] };
+            if (input.questions && Array.isArray(input.questions)) {
+              send({ type: 'debug', id, message: `Planning questions tool called with ${input.questions.length} questions` });
+              sendPlanningQuestions(id, input.questions);
+            }
+          } else if (isCompletePlanning) {
+            const input = block.input as { plan_path?: string; feature_name?: string; summary?: string };
+            if (input.plan_path && input.feature_name && input.summary) {
+              send({ type: 'debug', id, message: `Planning complete: ${input.feature_name}` });
+              sendPlanningComplete(id, input.plan_path, input.feature_name, input.summary);
+            }
+          }
         }
       }
       // Send progressive usage data from assistant message if available
@@ -500,6 +673,43 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
         sendError(id, message.error || 'Unknown error');
       }
       // Don't send result.result as text - it duplicates the assistant message content
+      break;
+
+    case 'user':
+      // User messages contain tool results
+      // The message.message.content array contains tool_result blocks
+      if (message.message?.content && Array.isArray(message.message.content)) {
+        for (const block of message.message.content) {
+          if (block.type === 'tool_result') {
+            // tool_result blocks have tool_use_id and content (string or array)
+            const toolResultBlock = block as { tool_use_id?: string; content?: string | Array<{ type: string; text?: string }> };
+            const toolUseId = toolResultBlock.tool_use_id || `unknown-${Date.now()}`;
+            // Look up tool name from the tool_use_id we tracked earlier
+            const toolName = toolResultBlock.tool_use_id
+              ? toolUseIdToName.get(toolResultBlock.tool_use_id) || 'unknown'
+              : 'unknown';
+
+            let output = '';
+            if (typeof toolResultBlock.content === 'string') {
+              output = toolResultBlock.content;
+            } else if (Array.isArray(toolResultBlock.content)) {
+              // Content can be array of text/image blocks
+              output = toolResultBlock.content
+                .filter((c) => c.type === 'text')
+                .map((c) => c.text || '')
+                .join('\n');
+            }
+
+            send({ type: 'debug', id, message: `Tool result for ${toolName} (${toolUseId}): ${output.slice(0, 100)}...` });
+            sendToolResult(id, toolName, output, toolUseId);
+
+            // Clean up the mapping after use
+            if (toolResultBlock.tool_use_id) {
+              toolUseIdToName.delete(toolResultBlock.tool_use_id);
+            }
+          }
+        }
+      }
       break;
 
     case 'system':

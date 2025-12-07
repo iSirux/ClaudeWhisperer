@@ -281,6 +281,36 @@ pub struct TokenStats {
     pub total_cost_usd: f64,
 }
 
+/// Token usage stats for the LLM integration layer (Gemini/OpenAI/Groq/Local)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmTokenStats {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_requests: u64,
+    /// Breakdown by feature (requests + input/output tokens)
+    pub session_naming_requests: u64,
+    pub session_naming_input_tokens: u64,
+    pub session_naming_output_tokens: u64,
+    pub session_outcome_requests: u64,
+    pub session_outcome_input_tokens: u64,
+    pub session_outcome_output_tokens: u64,
+    pub interaction_analysis_requests: u64,
+    pub interaction_analysis_input_tokens: u64,
+    pub interaction_analysis_output_tokens: u64,
+    pub transcription_cleanup_requests: u64,
+    pub transcription_cleanup_input_tokens: u64,
+    pub transcription_cleanup_output_tokens: u64,
+    pub model_recommendation_requests: u64,
+    pub model_recommendation_input_tokens: u64,
+    pub model_recommendation_output_tokens: u64,
+    pub repo_description_requests: u64,
+    pub repo_description_input_tokens: u64,
+    pub repo_description_output_tokens: u64,
+    pub repo_recommendation_requests: u64,
+    pub repo_recommendation_input_tokens: u64,
+    pub repo_recommendation_output_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelUsageStats {
     pub opus_sessions: u64,
@@ -309,6 +339,9 @@ pub struct UsageStats {
     pub session_stats: SessionStats,
     #[serde(default)]
     pub token_stats: TokenStats,
+    /// Token usage stats for the LLM integration layer (Gemini/OpenAI/etc.)
+    #[serde(default)]
+    pub llm_token_stats: LlmTokenStats,
     pub model_usage: ModelUsageStats,
     pub repo_usage: Vec<RepoUsageStats>,
     pub daily_stats: Vec<DailyStats>,
@@ -324,6 +357,7 @@ impl Default for UsageStats {
         Self {
             session_stats: SessionStats::default(),
             token_stats: TokenStats::default(),
+            llm_token_stats: LlmTokenStats::default(),
             model_usage: ModelUsageStats::default(),
             repo_usage: Vec::new(),
             daily_stats: Vec::new(),
@@ -508,6 +542,59 @@ impl UsageStats {
         self.token_stats.total_cache_read_tokens += cache_read_tokens;
         self.token_stats.total_cache_creation_tokens += cache_creation_tokens;
         self.token_stats.total_cost_usd += cost_usd;
+    }
+
+    /// Track token usage from the LLM integration layer (Gemini/OpenAI/Groq/Local)
+    pub fn track_llm_token_usage(
+        &mut self,
+        feature: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) {
+        // Update totals
+        self.llm_token_stats.total_input_tokens += input_tokens;
+        self.llm_token_stats.total_output_tokens += output_tokens;
+        self.llm_token_stats.total_requests += 1;
+
+        // Update per-feature stats (input/output separately)
+        match feature {
+            "session_naming" => {
+                self.llm_token_stats.session_naming_requests += 1;
+                self.llm_token_stats.session_naming_input_tokens += input_tokens;
+                self.llm_token_stats.session_naming_output_tokens += output_tokens;
+            }
+            "session_outcome" => {
+                self.llm_token_stats.session_outcome_requests += 1;
+                self.llm_token_stats.session_outcome_input_tokens += input_tokens;
+                self.llm_token_stats.session_outcome_output_tokens += output_tokens;
+            }
+            "interaction_analysis" => {
+                self.llm_token_stats.interaction_analysis_requests += 1;
+                self.llm_token_stats.interaction_analysis_input_tokens += input_tokens;
+                self.llm_token_stats.interaction_analysis_output_tokens += output_tokens;
+            }
+            "transcription_cleanup" => {
+                self.llm_token_stats.transcription_cleanup_requests += 1;
+                self.llm_token_stats.transcription_cleanup_input_tokens += input_tokens;
+                self.llm_token_stats.transcription_cleanup_output_tokens += output_tokens;
+            }
+            "model_recommendation" => {
+                self.llm_token_stats.model_recommendation_requests += 1;
+                self.llm_token_stats.model_recommendation_input_tokens += input_tokens;
+                self.llm_token_stats.model_recommendation_output_tokens += output_tokens;
+            }
+            "repo_description" => {
+                self.llm_token_stats.repo_description_requests += 1;
+                self.llm_token_stats.repo_description_input_tokens += input_tokens;
+                self.llm_token_stats.repo_description_output_tokens += output_tokens;
+            }
+            "repo_recommendation" => {
+                self.llm_token_stats.repo_recommendation_requests += 1;
+                self.llm_token_stats.repo_recommendation_input_tokens += input_tokens;
+                self.llm_token_stats.repo_recommendation_output_tokens += output_tokens;
+            }
+            _ => {}
+        }
     }
 
     fn update_streak(&mut self) {
@@ -767,15 +854,13 @@ impl Default for SessionsViewConfig {
     }
 }
 
-/// Thinking level for extended thinking mode (matches Claude Code)
+/// Thinking level for extended thinking mode
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
     #[default]
     Off,
-    Think,
-    Megathink,
-    Ultrathink,
+    On,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -851,9 +936,9 @@ fn default_session_response_rows() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum LlmProvider {
     #[default]
+    Groq,
     Gemini,
     OpenAI,
-    Groq,
     Local,
     Custom,
 }
@@ -862,8 +947,9 @@ pub enum LlmProvider {
 pub type GeminiProvider = LlmProvider;
 
 /// Model selection priority for Gemini provider
-/// Speed: prioritizes 2.5 Flash-Lite -> 2.5 Flash -> 2.0 Flash
-/// Accuracy: prioritizes 2.5 Flash -> 2.5 Flash-Lite -> 2.0 Flash
+/// Note: As of Dec 2025, free tier is 20 RPD for both 2.5 Flash and 2.5 Flash-Lite
+/// Speed: prioritizes 2.5 Flash-Lite -> 2.5 Flash
+/// Accuracy: prioritizes 2.5 Flash -> 2.5 Flash-Lite
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmModelPriority {
@@ -895,6 +981,9 @@ pub enum RepoAutoSelectConfidence {
 pub struct LlmFeaturesConfig {
     pub auto_name_sessions: bool,
     pub detect_interaction_needed: bool,
+    /// Generate contextual quick actions based on session completion
+    #[serde(default)]
+    pub generate_quick_actions: bool,
     #[serde(default)]
     pub clean_transcription: bool,
     /// Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled)
@@ -915,6 +1004,7 @@ impl Default for LlmFeaturesConfig {
         Self {
             auto_name_sessions: true,
             detect_interaction_needed: true,
+            generate_quick_actions: false,
             clean_transcription: false,
             use_dual_transcription: false,
             recommend_model: false,
@@ -955,7 +1045,7 @@ pub struct LlmConfig {
 pub type GeminiConfig = LlmConfig;
 
 fn default_llm_model() -> String {
-    "gemini-2.0-flash".to_string()
+    "meta-llama/llama-4-maverick-17b-128e-instruct".to_string()
 }
 
 fn default_auto_model() -> bool {

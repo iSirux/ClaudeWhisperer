@@ -64,6 +64,18 @@ pub fn track_token_usage(
 }
 
 #[tauri::command]
+pub fn track_llm_token_usage(
+    stats: State<UsageStatsState>,
+    feature: String,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Result<(), String> {
+    let mut s = stats.lock();
+    s.track_llm_token_usage(&feature, input_tokens, output_tokens);
+    s.save()
+}
+
+#[tauri::command]
 pub fn reset_usage_stats(stats: State<UsageStatsState>) -> Result<(), String> {
     let mut s = stats.lock();
     s.reset();

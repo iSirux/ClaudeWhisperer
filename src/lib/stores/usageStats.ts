@@ -22,6 +22,34 @@ export interface TokenStats {
   total_cost_usd: number;
 }
 
+export interface LlmTokenStats {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_requests: number;
+  // Per-feature breakdown (requests + input/output tokens)
+  session_naming_requests: number;
+  session_naming_input_tokens: number;
+  session_naming_output_tokens: number;
+  session_outcome_requests: number;
+  session_outcome_input_tokens: number;
+  session_outcome_output_tokens: number;
+  interaction_analysis_requests: number;
+  interaction_analysis_input_tokens: number;
+  interaction_analysis_output_tokens: number;
+  transcription_cleanup_requests: number;
+  transcription_cleanup_input_tokens: number;
+  transcription_cleanup_output_tokens: number;
+  model_recommendation_requests: number;
+  model_recommendation_input_tokens: number;
+  model_recommendation_output_tokens: number;
+  repo_description_requests: number;
+  repo_description_input_tokens: number;
+  repo_description_output_tokens: number;
+  repo_recommendation_requests: number;
+  repo_recommendation_input_tokens: number;
+  repo_recommendation_output_tokens: number;
+}
+
 export interface ModelUsageStats {
   opus_sessions: number;
   sonnet_sessions: number;
@@ -45,6 +73,7 @@ export interface DailyStats {
 export interface UsageStats {
   session_stats: SessionStats;
   token_stats: TokenStats;
+  llm_token_stats: LlmTokenStats;
   model_usage: ModelUsageStats;
   repo_usage: RepoUsageStats[];
   daily_stats: DailyStats[];
@@ -74,6 +103,32 @@ const defaultStats: UsageStats = {
     total_cache_read_tokens: 0,
     total_cache_creation_tokens: 0,
     total_cost_usd: 0,
+  },
+  llm_token_stats: {
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    total_requests: 0,
+    session_naming_requests: 0,
+    session_naming_input_tokens: 0,
+    session_naming_output_tokens: 0,
+    session_outcome_requests: 0,
+    session_outcome_input_tokens: 0,
+    session_outcome_output_tokens: 0,
+    interaction_analysis_requests: 0,
+    interaction_analysis_input_tokens: 0,
+    interaction_analysis_output_tokens: 0,
+    transcription_cleanup_requests: 0,
+    transcription_cleanup_input_tokens: 0,
+    transcription_cleanup_output_tokens: 0,
+    model_recommendation_requests: 0,
+    model_recommendation_input_tokens: 0,
+    model_recommendation_output_tokens: 0,
+    repo_description_requests: 0,
+    repo_description_input_tokens: 0,
+    repo_description_output_tokens: 0,
+    repo_recommendation_requests: 0,
+    repo_recommendation_input_tokens: 0,
+    repo_recommendation_output_tokens: 0,
   },
   model_usage: {
     opus_sessions: 0,
@@ -173,6 +228,23 @@ function createUsageStatsStore() {
         // Don't reload for every token update - too frequent
       } catch (error) {
         console.error('Failed to track token usage:', error);
+      }
+    },
+
+    async trackLlmTokenUsage(
+      feature: string,
+      inputTokens: number,
+      outputTokens: number
+    ) {
+      try {
+        await invoke('track_llm_token_usage', {
+          feature,
+          inputTokens,
+          outputTokens,
+        });
+        // Don't reload for every LLM call
+      } catch (error) {
+        console.error('Failed to track LLM token usage:', error);
       }
     },
 

@@ -1,15 +1,27 @@
 <script lang="ts">
+  import type { QuickAction } from '$lib/utils/llm';
+
   let {
     onSendPrompt,
+    generatedActions,
   }: {
     onSendPrompt: (prompt: string) => void;
+    generatedActions?: QuickAction[];
   } = $props();
 
-  const quickActions = [
+  const defaultActions: QuickAction[] = [
     { label: 'Implement', prompt: 'Please implement this.' },
     { label: 'Fix', prompt: 'Please fix the issues.' },
     { label: 'Keep going', prompt: 'Please continue.' },
   ];
+
+  // Use generated actions if available, otherwise fall back to defaults
+  const quickActions = $derived(
+    generatedActions && generatedActions.length > 0 ? generatedActions : defaultActions
+  );
+
+  // Check if we're showing generated (contextual) actions
+  const isContextual = $derived(generatedActions && generatedActions.length > 0);
 </script>
 
 <div class="quick-actions">

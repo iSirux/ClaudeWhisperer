@@ -26,6 +26,8 @@ const NON_PERSISTABLE_FIELDS: Record<string, Set<string>> = {
   // SdkSession fields that shouldn't be persisted
   SdkSession: new Set([
     'currentWorkStartedAt', // Runtime-only timer, accumulated time is persisted instead
+    'draftPrompt', // Transient input state - user is still typing
+    'draftImages', // Transient input state - images pending to be sent
   ]),
   // PendingTranscriptionInfo fields that shouldn't be persisted
   PendingTranscriptionInfo: new Set([
@@ -406,6 +408,11 @@ export async function saveSessionsToDisk(): Promise<void> {
   };
 
   try {
+    // Debug: Log thinking levels being saved
+    persistedData.sdk_sessions.forEach(s => {
+      console.log(`[sessionPersistence] Saving session ${s.id.slice(0, 8)}: thinkingLevel =`, s.thinkingLevel);
+    });
+
     await invoke('save_persisted_sessions', {
       sessions: persistedData,
       maxSessions: currentSettings.session_persistence.max_sessions,
@@ -453,6 +460,11 @@ export async function loadSessionsFromDisk(): Promise<void> {
     const limitedTerminalSessions = persistedData.terminal_sessions.slice(0, restoreLimit);
 
     console.log('[sessionPersistence] Restoring', limitedSdkSessions.length, 'of', persistedData.sdk_sessions.length, 'SDK sessions and', limitedTerminalSessions.length, 'of', persistedData.terminal_sessions.length, 'terminal sessions (limit:', restoreLimit + ')');
+
+    // Debug: Log thinking levels being restored
+    limitedSdkSessions.forEach(s => {
+      console.log(`[sessionPersistence] Loading session ${s.id.slice(0, 8)}: thinkingLevel =`, s.thinkingLevel);
+    });
 
     // Restore SDK sessions
     if (limitedSdkSessions.length > 0) {

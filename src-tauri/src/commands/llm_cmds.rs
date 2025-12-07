@@ -1,14 +1,22 @@
+use crate::commands::usage_cmds::UsageStatsState;
 use crate::config::{AppConfig, LlmProvider};
 use crate::llm::{
     ConnectionTestResult, InteractionAnalysis, LlmClient, ModelRecommendation,
-    RepoDescriptionResult, RepoRecommendation, SessionNameResult, SessionOutcomeResult,
-    TranscriptionCleanupResult,
+    QuickActionsResult, RepoDescriptionResult, RepoRecommendation, SessionNameResult,
+    SessionOutcomeResult, TranscriptionCleanupResult,
 };
 use parking_lot::Mutex;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, State};
 use tauri_plugin_keyring::KeyringExt;
+
+/// Helper to track LLM usage in the stats
+fn track_usage(stats: &State<UsageStatsState>, feature: &str, input_tokens: u64, output_tokens: u64) {
+    let mut s = stats.lock();
+    s.track_llm_token_usage(feature, input_tokens, output_tokens);
+    let _ = s.save();
+}
 
 /// Service name for keyring storage
 const KEYRING_SERVICE: &str = "claude-whisperer";
@@ -180,6 +188,7 @@ pub async fn test_gemini_connection(
 pub async fn generate_session_name(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     user_prompt: String,
 ) -> Result<SessionNameResult, String> {
     let cfg = config.lock().clone();
@@ -189,7 +198,12 @@ pub async fn generate_session_name(
     }
 
     let client = create_client(&app, &cfg)?;
-    client.generate_session_name(&user_prompt).await
+    let result = client.generate_session_name_with_usage(&user_prompt).await?;
+
+    // Track usage
+    track_usage(&stats, "session_naming", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }
 
 /// Generate a session outcome after the session completes
@@ -197,6 +211,7 @@ pub async fn generate_session_name(
 pub async fn generate_session_outcome(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     user_prompt: String,
     assistant_messages: String,
 ) -> Result<SessionOutcomeResult, String> {
@@ -207,9 +222,14 @@ pub async fn generate_session_outcome(
     }
 
     let client = create_client(&app, &cfg)?;
-    client
-        .generate_session_outcome(&user_prompt, &assistant_messages)
-        .await
+    let result = client
+        .generate_session_outcome_with_usage(&user_prompt, &assistant_messages)
+        .await?;
+
+    // Track usage
+    track_usage(&stats, "session_outcome", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }
 
 /// Analyze if the last message needs human interaction
@@ -217,6 +237,7 @@ pub async fn generate_session_outcome(
 pub async fn analyze_interaction_needed(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     last_message: String,
 ) -> Result<InteractionAnalysis, String> {
     let cfg = config.lock().clone();
@@ -226,7 +247,12 @@ pub async fn analyze_interaction_needed(
     }
 
     let client = create_client(&app, &cfg)?;
-    client.analyze_interaction_needed(&last_message).await
+    let result = client.analyze_interaction_needed_with_usage(&last_message).await?;
+
+    // Track usage
+    track_usage(&stats, "interaction_analysis", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }
 
 /// Clean up a voice transcription
@@ -236,6 +262,7 @@ pub async fn analyze_interaction_needed(
 pub async fn clean_transcription(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     raw_transcription: String,
     vosk_transcription: Option<String>,
     repo_context: Option<String>,
@@ -259,9 +286,14 @@ pub async fn clean_transcription(
         None
     };
 
-    client
-        .clean_transcription(&raw_transcription, vosk, repo_context.as_deref())
-        .await
+    let result = client
+        .clean_transcription_with_usage(&raw_transcription, vosk, repo_context.as_deref())
+        .await?;
+
+    // Track usage
+    track_usage(&stats, "transcription_cleanup", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }
 
 /// Recommend the best model for a prompt
@@ -269,6 +301,7 @@ pub async fn clean_transcription(
 pub async fn recommend_model(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     prompt: String,
 ) -> Result<ModelRecommendation, String> {
     let cfg = config.lock().clone();
@@ -282,7 +315,12 @@ pub async fn recommend_model(
     }
 
     let client = create_client(&app, &cfg)?;
-    client.recommend_model(&prompt).await
+    let result = client.recommend_model_with_usage(&prompt).await?;
+
+    // Track usage
+    track_usage(&stats, "model_recommendation", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }
 
 /// Generate a description for a repository by reading its CLAUDE.md or README
@@ -290,6 +328,7 @@ pub async fn recommend_model(
 pub async fn generate_repo_description(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     repo_path: String,
     repo_name: String,
 ) -> Result<RepoDescriptionResult, String> {
@@ -313,9 +352,14 @@ pub async fn generate_repo_description(
         None
     };
 
-    client
-        .generate_repo_description(&repo_name, claude_md_content.as_deref(), readme_content.as_deref())
-        .await
+    let result = client
+        .generate_repo_description_with_usage(&repo_name, claude_md_content.as_deref(), readme_content.as_deref())
+        .await?;
+
+    // Track usage
+    track_usage(&stats, "repo_description", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }
 
 /// Recommend the best repository for a given prompt
@@ -323,6 +367,7 @@ pub async fn generate_repo_description(
 pub async fn recommend_repo(
     app: AppHandle,
     config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
     prompt: String,
     is_transcribed: Option<bool>,
 ) -> Result<RepoRecommendation, String> {
@@ -351,5 +396,42 @@ pub async fn recommend_repo(
         ))
         .collect();
 
-    client.recommend_repo(&prompt, &repos, is_transcribed.unwrap_or(false)).await
+    let result = client.recommend_repo_with_usage(&prompt, &repos, is_transcribed.unwrap_or(false)).await?;
+
+    // Track usage (only if we actually made an LLM call - not for empty repos)
+    if !repos.is_empty() {
+        track_usage(&stats, "repo_recommendation", result.usage.input_tokens, result.usage.output_tokens);
+    }
+
+    Ok(result.data)
+}
+
+/// Generate contextual quick actions based on the session's final message
+#[tauri::command]
+pub async fn generate_quick_actions(
+    app: AppHandle,
+    config: State<'_, Mutex<AppConfig>>,
+    stats: State<'_, UsageStatsState>,
+    user_prompt: String,
+    last_message: String,
+) -> Result<QuickActionsResult, String> {
+    let cfg = config.lock().clone();
+
+    if !cfg.llm.enabled {
+        return Err("LLM integration is not enabled".to_string());
+    }
+
+    if !cfg.llm.features.generate_quick_actions {
+        return Err("Quick actions generation feature is not enabled".to_string());
+    }
+
+    let client = create_client(&app, &cfg)?;
+    let result = client
+        .generate_quick_actions_with_usage(&user_prompt, &last_message)
+        .await?;
+
+    // Track usage
+    track_usage(&stats, "quick_actions", result.usage.input_tokens, result.usage.output_tokens);
+
+    Ok(result.data)
 }

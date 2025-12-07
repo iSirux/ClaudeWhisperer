@@ -206,6 +206,8 @@ export type RepoAutoSelectConfidence = "high" | "medium" | "low";
 export interface LlmFeaturesConfig {
   auto_name_sessions: boolean;
   detect_interaction_needed: boolean;
+  /** Generate contextual quick actions based on session completion */
+  generate_quick_actions: boolean;
   clean_transcription: boolean;
   /** Use both Vosk and Whisper transcriptions for cleanup (requires both to be enabled) */
   use_dual_transcription: boolean;
@@ -377,6 +379,7 @@ const defaultConfig: AppConfig = {
     features: {
       auto_name_sessions: true,
       detect_interaction_needed: true,
+      generate_quick_actions: false,
       clean_transcription: false,
       use_dual_transcription: false,
       recommend_model: false,
