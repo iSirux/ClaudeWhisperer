@@ -2,6 +2,7 @@
   import '../styles/app.css';
   import { onMount } from 'svelte';
   import { beforeNavigate } from '$app/navigation';
+  import { openUrl } from '@tauri-apps/plugin-opener';
 
   // Prevent browser back/forward navigation from causing full page reloads
   // This app uses internal state for navigation, not URL-based routing
@@ -17,8 +18,33 @@
 
     window.addEventListener('popstate', handlePopState);
 
+    // Global click handler to open external links in the default browser
+    const handleLinkClick = async (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      const anchor = target.closest('a');
+
+      if (!anchor) return;
+
+      const href = anchor.getAttribute('href');
+      if (!href) return;
+
+      // Check if it's an external URL (http/https)
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+          await openUrl(href);
+        } catch (err) {
+          console.error('Failed to open URL in browser:', err);
+        }
+      }
+    };
+
+    document.addEventListener('click', handleLinkClick);
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
+      document.removeEventListener('click', handleLinkClick);
     };
   });
 

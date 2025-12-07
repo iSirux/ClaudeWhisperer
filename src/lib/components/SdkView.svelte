@@ -38,6 +38,9 @@
   let session = $state<SdkSession | null>(null);
   let unsubscribe: (() => void) | undefined;
 
+  // Track scroll positions per session (module-level to persist across component re-renders)
+  const scrollPositions = new Map<string, number>();
+
   let messages = $derived(session?.messages ?? []);
 
   // Process messages to merge tool_start/tool_result pairs
@@ -193,23 +196,44 @@
     promptInputRef?.focus();
   }
 
-  // Track previous session ID to save draft before switching
+  // Track previous session ID to save draft and scroll position before switching
   let prevSessionId = $state(sessionId);
 
-  // Save draft to old session before switching to new session
+  // Save draft and scroll position to old session before switching to new session
   $effect(() => {
-    if (sessionId !== prevSessionId && promptInputRef) {
-      // Get the current draft values from the input
-      const draft = promptInputRef.getCurrentDraft();
-      // Save to the OLD session (prevSessionId)
-      if (draft.prompt || draft.images.length > 0) {
-        sdkSessions.updateDraft(
-          prevSessionId,
-          draft.prompt,
-          draft.images.length > 0 ? draft.images : undefined
-        );
+    if (sessionId !== prevSessionId) {
+      // Save scroll position for the OLD session
+      if (messagesEl) {
+        scrollPositions.set(prevSessionId, messagesEl.scrollTop);
+      }
+
+      // Save draft to the OLD session
+      if (promptInputRef) {
+        const draft = promptInputRef.getCurrentDraft();
+        if (draft.prompt || draft.images.length > 0) {
+          sdkSessions.updateDraft(
+            prevSessionId,
+            draft.prompt,
+            draft.images.length > 0 ? draft.images : undefined
+          );
+        }
       }
       prevSessionId = sessionId;
+
+      // Restore scroll position for the NEW session after DOM updates
+      tick().then(() => {
+        if (messagesEl) {
+          const savedPosition = scrollPositions.get(sessionId);
+          if (savedPosition !== undefined) {
+            messagesEl.scrollTop = savedPosition;
+          } else {
+            // No saved position - scroll to bottom for new sessions
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+          // Update userIsNearBottom based on restored position
+          checkIfNearBottom();
+        }
+      });
     }
   });
 

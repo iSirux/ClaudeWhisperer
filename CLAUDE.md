@@ -32,7 +32,7 @@ npm run sidecar:build    # Build the TypeScript sidecar
 
 **Routes:**
 
-- `src/routes/+page.svelte` - Main application view with session list, terminal/SDK view, and transcript
+- `src/routes/+page.svelte` - Main application view with session list, terminal/SDK view, and transcript. Uses composables for recording flow, hotkey management, event handling, and open mic lifecycle.
 - `src/routes/+layout.svelte` - Global layout wrapper for theming and app initialization
 - `src/routes/overlay/+page.svelte` - Floating overlay window for recording status and Vosk real-time transcription
 - `src/routes/settings/+page.svelte` - Settings modal with tabs (General, System, Themes, Audio, Whisper, Vosk, Git, Hotkeys, Overlay, Repositories, LLM)
@@ -101,9 +101,13 @@ Core UI:
 
 **Composables (`src/lib/composables/`) - Svelte 5 Runes:**
 
-- `useHotkeyManager.svelte.ts` - Hotkey registration and listener management
-- `useSidebarResize.svelte.ts` - Sidebar resize drag handle logic
-- `useTranscriptionProcessor.svelte.ts` - Transcription processing with LLM cleanup and model recommendation
+- `useHotkeyManager.svelte.ts` - Global hotkey registration (toggle recording, transcribe-to-input, cycle repo/model with auto-repo support)
+- `useRecordingFlow.svelte.ts` - Recording lifecycle management (start/stop, pending sessions, audio visualization, overlay integration)
+- `useOpenMic.svelte.ts` - Open mic lifecycle with automatic restart after recording stops
+- `useSessionEventHandlers.svelte.ts` - Centralized window and Tauri event listener setup/cleanup
+- `useSidebarResize.svelte.ts` - Sidebar resize drag handle logic with persistence
+- `useTranscriptionProcessor.svelte.ts` - Transcription processing with LLM cleanup, model/repo recommendations, and system prompt building
+- `useDisplaySessions.svelte.ts` - Session filtering and sorting for display
 
 **Utilities (`src/lib/utils/`):**
 

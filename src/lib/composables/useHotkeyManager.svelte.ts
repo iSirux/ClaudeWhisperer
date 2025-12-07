@@ -7,7 +7,7 @@ import { register, unregister, unregisterAll } from '@tauri-apps/plugin-global-s
 import { settings } from '$lib/stores/settings';
 import { isRecording } from '$lib/stores/recording';
 import { overlay } from '$lib/stores/overlay';
-import { isModelRecommendationEnabled } from '$lib/utils/llm';
+import { isModelRecommendationEnabled, isRepoAutoSelectEnabled } from '$lib/utils/llm';
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -144,6 +144,7 @@ export function useHotkeyManager() {
 
   /**
    * Register the cycle-repo hotkey (only while recording)
+   * Supports cycling through repos and auto-repo mode
    */
   async function registerCycleRepoHotkey() {
     if (cycleRepoHotkeyRegistered) {
@@ -152,8 +153,18 @@ export function useHotkeyManager() {
     }
 
     const currentSettings = get(settings);
-    if (currentSettings.repos.length <= 1) {
-      console.log('[Hotkey] Only', currentSettings.repos.length, 'repo(s) configured, skipping cycle repo hotkey');
+    const autoRepoEnabled = isRepoAutoSelectEnabled();
+
+    // Need at least 2 options to cycle: with auto-repo enabled, 1 repo is enough (auto + repo)
+    const minRepos = autoRepoEnabled ? 1 : 2;
+    if (currentSettings.repos.length < minRepos) {
+      console.log(
+        '[Hotkey] Only',
+        currentSettings.repos.length,
+        'repo(s) configured, auto-repo:',
+        autoRepoEnabled,
+        '- skipping cycle repo hotkey'
+      );
       return;
     }
 
@@ -176,21 +187,50 @@ export function useHotkeyManager() {
           }
 
           const s = get(settings);
-          console.log('[Hotkey] Cycling repo from index', s.active_repo_index, 'to', (s.active_repo_index + 1) % s.repos.length);
+          const autoRepoEnabled = isRepoAutoSelectEnabled();
 
-          const nextIndex = (s.active_repo_index + 1) % s.repos.length;
-          await settings.setActiveRepo(nextIndex);
+          // Build list of cyclable options: 'auto' (if enabled) + repo indices
+          const cyclableOptions: ('auto' | number)[] = [];
+          if (autoRepoEnabled) {
+            cyclableOptions.push('auto');
+          }
+          for (let i = 0; i < s.repos.length; i++) {
+            cyclableOptions.push(i);
+          }
 
-          // Update overlay with new repo info
-          const newRepo = s.repos[nextIndex];
-          if (newRepo) {
-            let branch: string | null = null;
-            try {
-              branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
-            } catch (e) {
-              console.error('Failed to get git branch:', e);
+          // Need at least 2 options to cycle
+          if (cyclableOptions.length < 2) return;
+
+          // Determine current position
+          const currentOption: 'auto' | number = s.auto_repo_mode ? 'auto' : s.active_repo_index;
+          const currentIndex = cyclableOptions.indexOf(currentOption);
+          const nextIndex = (currentIndex + 1) % cyclableOptions.length;
+          const nextOption = cyclableOptions[nextIndex];
+
+          console.log('[Hotkey] Cycling repo from', currentOption, 'to', nextOption);
+
+          if (nextOption === 'auto') {
+            // Switch to auto-repo mode
+            await settings.setAutoRepoMode(true);
+            overlay.setSessionInfo(null, get(settings).default_model, false);
+          } else {
+            // Switch to specific repo
+            if (s.auto_repo_mode) {
+              await settings.setAutoRepoMode(false);
             }
-            overlay.setSessionInfo(branch, get(settings).default_model, false);
+            await settings.setActiveRepo(nextOption);
+
+            // Update overlay with new repo info
+            const newRepo = s.repos[nextOption];
+            if (newRepo) {
+              let branch: string | null = null;
+              try {
+                branch = await invoke<string>('get_git_branch', { repoPath: newRepo.path });
+              } catch (e) {
+                console.error('Failed to get git branch:', e);
+              }
+              overlay.setSessionInfo(branch, get(settings).default_model, false);
+            }
           }
         } finally {
           setTimeout(() => {

@@ -17,6 +17,40 @@
     sessionModel?: string;
   } = $props();
 
+  // Track if message top is scrolled out of view (for "go to top" button)
+  let messageEl: HTMLDivElement | undefined = $state();
+  let topSentinelEl: HTMLDivElement | undefined = $state();
+  let showGoToTop = $state(false);
+
+  // Height threshold for showing the button (only show if message is tall enough)
+  const MIN_HEIGHT_FOR_BUTTON = 400;
+
+  $effect(() => {
+    if (!topSentinelEl || message.type !== "text") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        // Show button when top sentinel is NOT visible AND message is tall enough
+        const isTallEnough = messageEl && messageEl.offsetHeight > MIN_HEIGHT_FOR_BUTTON;
+        showGoToTop = !entry.isIntersecting && !!isTallEnough;
+      },
+      {
+        root: null, // Use viewport
+        rootMargin: "0px",
+        threshold: 0,
+      }
+    );
+
+    observer.observe(topSentinelEl);
+
+    return () => observer.disconnect();
+  });
+
+  function scrollToTop() {
+    topSentinelEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function createImagePreviewUrl(img: SdkImageContent): string {
     return `data:${img.mediaType};base64,${img.base64Data}`;
   }
@@ -171,7 +205,9 @@
       </div>
     </div>
   {:else if message.type === "text"}
-    <div class="text-message-container">
+    <div class="text-message-container" bind:this={messageEl}>
+      <!-- Sentinel element at the top for intersection observer -->
+      <div class="top-sentinel" bind:this={topSentinelEl}></div>
       <div class="text-content markdown-body">
         {@html renderMarkdown(message.content ?? "")}
       </div>
@@ -198,10 +234,25 @@
           </svg>
         {/if}
       </button>
+      {#if showGoToTop}
+        <button
+          class="go-to-top-button"
+          onclick={scrollToTop}
+          title="Go to top of message"
+        >
+          <svg viewBox="0 0 16 16" fill="currentColor">
+            <path fill-rule="evenodd" d="M8 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L7.5 2.707V14.5a.5.5 0 0 0 .5.5z"/>
+          </svg>
+          <span>Top</span>
+        </button>
+      {/if}
     </div>
   {:else if message.type === "tool_start"}
-    <div class="tool-call tool-running">
-      <div class="tool-header">
+    <details class="tool-call tool-running">
+      <summary class="tool-header">
+        <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
+        </svg>
         <div class="tool-icon-wrapper">
           {@html getToolSvgIcon(message.tool || "")}
         </div>
@@ -213,22 +264,17 @@
           <span class="spinner"></span>
           Running
         </span>
-      </div>
+      </summary>
       {#if message.input && Object.keys(message.input).length > 0}
-        <details class="tool-details">
-          <summary>
-            <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
-            </svg>
-            Parameters
-          </summary>
-          <pre class="tool-params">{formatInput(message.input)}</pre>
-        </details>
+        <pre class="tool-params">{formatInput(message.input)}</pre>
       {/if}
-    </div>
+    </details>
   {:else if message.type === "tool_result"}
-    <div class="tool-call tool-completed">
-      <div class="tool-header">
+    <details class="tool-call tool-completed">
+      <summary class="tool-header">
+        <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
+        </svg>
         <div class="tool-icon-wrapper">
           {@html getToolSvgIcon(message.tool || "")}
         </div>
@@ -242,19 +288,11 @@
           </svg>
           Done
         </span>
-      </div>
+      </summary>
       {#if message.output}
-        <details class="tool-details">
-          <summary>
-            <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
-            </svg>
-            Output
-          </summary>
-          <pre class="tool-output-content">{message.output}</pre>
-        </details>
+        <pre class="tool-output-content">{message.output}</pre>
       {/if}
-    </div>
+    </details>
   {:else if message.type === "error"}
     <div class="error-message">
       <div class="error-icon-wrapper">
@@ -281,8 +319,11 @@
       </div>
     </div>
   {:else if message.type === "thinking"}
-    <div class="tool-call" class:tool-running={!isThinkingComplete} class:tool-completed={isThinkingComplete}>
-      <div class="tool-header">
+    <details class="tool-call" class:tool-running={!isThinkingComplete} class:tool-completed={isThinkingComplete}>
+      <summary class="tool-header">
+        <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
+        </svg>
         <div class="tool-icon-wrapper">
           <svg viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16ZM6.5 8.5a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0Zm1.5-4a.75.75 0 0 1 .75.75v1a.75.75 0 0 1-1.5 0v-1A.75.75 0 0 1 8 4.5Z"/>
@@ -302,19 +343,11 @@
             Thinking
           </span>
         {/if}
-      </div>
+      </summary>
       {#if message.content}
-        <details class="tool-details">
-          <summary>
-            <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
-            </svg>
-            Thoughts
-          </summary>
-          <pre class="tool-output-content thinking-content">{message.content}</pre>
-        </details>
+        <pre class="tool-output-content thinking-content">{message.content}</pre>
       {/if}
-    </div>
+    </details>
   {/if}
 </div>
 
@@ -351,6 +384,58 @@
 
   .text-message-container:hover .copy-message-button {
     opacity: 1;
+  }
+
+  .top-sentinel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+  }
+
+  .go-to-top-button {
+    position: sticky;
+    bottom: 0.75rem;
+    float: right;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    background: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 0.375rem 0.625rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 10;
+    animation: fadeInUp 0.2s ease-out;
+  }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .go-to-top-button:hover {
+    background: var(--color-border);
+    color: var(--color-text-primary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  }
+
+  .go-to-top-button svg {
+    width: 14px;
+    height: 14px;
   }
 
   .message-actions {
@@ -625,7 +710,6 @@
 
   /* Tool call styles */
   .tool-call {
-    padding: 0.375rem 0.5rem;
     border-radius: 6px;
     background: var(--color-surface);
   }
@@ -643,7 +727,31 @@
     align-items: center;
     gap: 0.5rem;
     min-height: 1.5rem;
-    flex-wrap: wrap;
+    padding: 0.375rem 0.5rem;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+  }
+
+  .tool-header::-webkit-details-marker {
+    display: none;
+  }
+
+  .tool-header:hover {
+    background: color-mix(in srgb, var(--color-text-primary) 5%, transparent);
+    border-radius: 6px;
+  }
+
+  .tool-header .chevron {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    transition: transform 0.15s;
+  }
+
+  .tool-call[open] > .tool-header .chevron {
+    transform: rotate(90deg);
   }
 
   .tool-icon-wrapper {
@@ -728,48 +836,13 @@
     to { transform: rotate(360deg); }
   }
 
-  .tool-details {
-    margin-top: 0.375rem;
-  }
-
-  .tool-details summary {
-    cursor: pointer;
-    font-size: 0.7rem;
-    color: var(--color-text-muted);
-    user-select: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.125rem 0.25rem;
-    border-radius: 4px;
-    transition: background 0.15s, color 0.15s;
-  }
-
-  .tool-details summary:hover {
-    background: var(--color-surface);
-    color: var(--color-text-secondary);
-  }
-
-  .tool-details summary .chevron {
-    width: 12px;
-    height: 12px;
-    transition: transform 0.15s;
-  }
-
-  .tool-details[open] summary .chevron {
-    transform: rotate(90deg);
-  }
-
-  .tool-details summary::-webkit-details-marker {
-    display: none;
-  }
-
   .tool-params,
   .tool-output-content {
-    margin: 0.375rem 0 0 0;
+    margin: 0;
     padding: 0.5rem 0.75rem;
-    background: var(--color-surface);
-    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-surface) 50%, var(--color-background));
+    border-top: 1px solid var(--color-border);
+    border-radius: 0 0 6px 6px;
     font-size: 0.75rem;
     line-height: 1.5;
     overflow-x: auto;

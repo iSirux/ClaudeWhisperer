@@ -1,10 +1,16 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { isOpenMicListening } from "$lib/stores/openMic";
+  import { openMic, isOpenMicListening, isOpenMicPaused, isOpenMicActive } from "$lib/stores/openMic";
 
   let transcript = $state("");
   let isListening = $derived($isOpenMicListening);
+  let isPaused = $derived($isOpenMicPaused);
+  let isActive = $derived($isOpenMicActive);
+
+  function handleClick() {
+    openMic.togglePause();
+  }
   let unlistenTranscript: UnlistenFn | null = null;
   let unlistenVisualization: UnlistenFn | null = null;
 
@@ -196,16 +202,34 @@
   });
 </script>
 
-{#if isListening}
-  <div class="open-mic-marquee" bind:this={container}>
-    <!-- Waveform canvas behind text -->
-    <canvas bind:this={canvas} class="waveform-canvas"></canvas>
+{#if isActive}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="open-mic-marquee"
+    class:paused={isPaused}
+    bind:this={container}
+    onclick={handleClick}
+    title={isPaused ? "Click to resume listening" : "Click to pause listening"}
+  >
+    <!-- Waveform canvas behind text (only when listening) -->
+    {#if isListening}
+      <canvas bind:this={canvas} class="waveform-canvas"></canvas>
+    {/if}
     <!-- Text overlay -->
     <div class="transcript-container">
-      <span class="transcript-text">
-        {transcript || ""}
-        <!-- {transcript || "Listening..."} -->
-      </span>
+      {#if isPaused}
+        <span class="paused-indicator">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="pause-icon">
+            <path fill-rule="evenodd" d="M6.75 5.25a.75.75 0 0 1 .75-.75H9a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75H7.5a.75.75 0 0 1-.75-.75V5.25Zm7.5 0A.75.75 0 0 1 15 4.5h1.5a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75H15a.75.75 0 0 1-.75-.75V5.25Z" clip-rule="evenodd" />
+          </svg>
+          Paused
+        </span>
+      {:else}
+        <span class="transcript-text">
+          {transcript || ""}
+        </span>
+      {/if}
     </div>
   </div>
 {/if}
@@ -219,6 +243,22 @@
     border: 1px solid var(--color-border);
     border-radius: 6px;
     overflow: hidden;
+    cursor: pointer;
+    transition: opacity 0.15s ease, border-color 0.15s ease;
+  }
+
+  .open-mic-marquee:hover {
+    border-color: var(--color-border-hover, var(--color-border));
+    opacity: 0.9;
+  }
+
+  .open-mic-marquee.paused {
+    opacity: 0.7;
+    border-style: dashed;
+  }
+
+  .open-mic-marquee.paused:hover {
+    opacity: 0.85;
   }
 
   .waveform-canvas {
@@ -255,5 +295,21 @@
     text-shadow:
       0 0 4px var(--color-surface-elevated),
       0 0 8px var(--color-surface-elevated);
+  }
+
+  .paused-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+      "Liberation Mono", monospace;
+  }
+
+  .pause-icon {
+    width: 12px;
+    height: 12px;
+    color: var(--color-text-secondary);
   }
 </style>

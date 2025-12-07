@@ -1,9 +1,17 @@
 // @ts-ignore - marked types
-import { Marked } from 'marked';
+import { Marked, Renderer } from 'marked';
 // @ts-ignore - marked-highlight types
 import { markedHighlight } from 'marked-highlight';
 // @ts-ignore - highlight.js types
 import hljs from 'highlight.js';
+
+// Create a custom renderer that opens links in external browser
+const renderer = new Renderer();
+renderer.link = ({ href, title, text }) => {
+  const titleAttr = title ? ` title="${title}"` : '';
+  // Add data-external attribute so our click handler can identify external links
+  return `<a href="${href}"${titleAttr} data-external="true">${text}</a>`;
+};
 
 // Create a configured marked instance with highlight.js for syntax highlighting
 const marked = new Marked(
@@ -25,7 +33,8 @@ const marked = new Marked(
         return code;
       }
     },
-  })
+  }),
+  { renderer }
 );
 
 // Configure marked options

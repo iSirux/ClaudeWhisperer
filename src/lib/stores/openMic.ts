@@ -7,6 +7,7 @@ export type OpenMicState =
   | "disabled"
   | "initializing"
   | "listening"
+  | "paused"
   | "triggered"
   | "error";
 
@@ -357,6 +358,44 @@ function createOpenMicStore() {
     }));
   }
 
+  async function pause() {
+    const currentState = get({ subscribe });
+    if (currentState.state !== "listening") {
+      console.log("[open-mic] Cannot pause - not listening");
+      return;
+    }
+
+    console.log("[open-mic] Pausing passive listening");
+    await cleanup();
+    update((s) => ({
+      ...s,
+      state: "paused",
+      lastTranscript: "",
+    }));
+  }
+
+  async function resume() {
+    const currentState = get({ subscribe });
+    if (currentState.state !== "paused") {
+      console.log("[open-mic] Cannot resume - not paused");
+      return;
+    }
+
+    console.log("[open-mic] Resuming passive listening");
+    // Set to disabled first so start() will actually run
+    update((s) => ({ ...s, state: "disabled" }));
+    await start();
+  }
+
+  async function togglePause() {
+    const currentState = get({ subscribe });
+    if (currentState.state === "listening") {
+      await pause();
+    } else if (currentState.state === "paused") {
+      await resume();
+    }
+  }
+
   async function cleanup() {
     // Clean up event listeners
     if (unlistenPartial) {
@@ -431,6 +470,9 @@ function createOpenMicStore() {
     subscribe,
     start,
     stop,
+    pause,
+    resume,
+    togglePause,
     restart,
   };
 }
@@ -442,6 +484,14 @@ export const openMicState = derived(openMic, ($openMic) => $openMic.state);
 export const isOpenMicListening = derived(
   openMic,
   ($openMic) => $openMic.state === "listening"
+);
+export const isOpenMicPaused = derived(
+  openMic,
+  ($openMic) => $openMic.state === "paused"
+);
+export const isOpenMicActive = derived(
+  openMic,
+  ($openMic) => $openMic.state === "listening" || $openMic.state === "paused"
 );
 export const openMicError = derived(openMic, ($openMic) => $openMic.error);
 
