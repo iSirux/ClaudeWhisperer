@@ -221,6 +221,7 @@
     openMicLifecycle.cleanup();
     recordingFlow.cleanup();
     sidebar.cleanup();
+    hotkeyManager.cleanup();
 
     if (cleanupAutoSave) cleanupAutoSave();
     if (cleanupPeriodicSave) cleanupPeriodicSave();

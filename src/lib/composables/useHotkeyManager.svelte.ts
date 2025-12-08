@@ -348,11 +348,33 @@ export function useHotkeyManager() {
     await unregisterCycleModelHotkey();
   }
 
+  /**
+   * Cleanup all hotkeys - call this on component destroy
+   * This is critical for HMR to work properly, as hotkeys are registered at the OS level
+   */
+  async function cleanup() {
+    console.log('[Hotkey] Cleaning up all hotkeys...');
+    try {
+      await unregisterAll();
+      transcribeHotkeyRegistered = false;
+      cycleRepoHotkeyRegistered = false;
+      cycleModelHotkeyRegistered = false;
+      registeredCycleRepoHotkey = null;
+      registeredCycleModelHotkey = null;
+      registeredToggleRecordingHotkey = null;
+      callbacks = null;
+      console.log('[Hotkey] Cleanup complete');
+    } catch (error) {
+      console.error('[Hotkey] Failed to cleanup hotkeys:', error);
+    }
+  }
+
   return {
     get registeredToggleHotkey() { return registeredToggleRecordingHotkey; },
     setup,
     checkForHotkeyChange,
     registerRecordingHotkeys,
     unregisterRecordingHotkeys,
+    cleanup,
   };
 }

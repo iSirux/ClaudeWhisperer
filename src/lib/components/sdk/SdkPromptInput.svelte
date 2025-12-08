@@ -10,6 +10,7 @@
   } from "$lib/utils/image";
 
   let {
+    sessionId,
     isQuerying = false,
     isRecording = false,
     isTranscribing = false,
@@ -22,6 +23,7 @@
     onStopRecording,
     onDraftChange,
   }: {
+    sessionId: string;
     isQuerying?: boolean;
     isRecording?: boolean;
     isTranscribing?: boolean;
@@ -49,9 +51,8 @@
     }))
   );
 
-  // Track previous draft values to detect session changes
-  let prevDraftPrompt = $state(draftPrompt);
-  let prevDraftImagesLength = $state(draftImages.length);
+  // Track session ID to detect session switches (not draft content)
+  let prevSessionId = $state(sessionId);
 
   // Notify parent of draft changes (debounced to avoid too many updates)
   let draftChangeTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -71,10 +72,10 @@
     }, 300);
   }
 
-  // Reset local state when session changes (detected via prop changes)
+  // Reset local state ONLY when session ID changes (actual session switch)
+  // This prevents resetting when tool calls update the session store
   $effect(() => {
-    // Check if draftPrompt or draftImages changed from outside (session switch)
-    if (draftPrompt !== prevDraftPrompt || draftImages.length !== prevDraftImagesLength) {
+    if (sessionId !== prevSessionId) {
       // Clear any pending debounced save (the parent handles saving before switch)
       if (draftChangeTimeout) {
         clearTimeout(draftChangeTimeout);
@@ -91,8 +92,7 @@
         originalSize: 0,
         compressedSize: 0,
       }));
-      prevDraftPrompt = draftPrompt;
-      prevDraftImagesLength = draftImages.length;
+      prevSessionId = sessionId;
     }
   });
   let isProcessingImages = $state(false);

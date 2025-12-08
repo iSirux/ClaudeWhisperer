@@ -53,6 +53,7 @@
   // Process messages to merge tool_start/tool_result pairs
   // - Skip tool_start if there's a matching tool_result
   // - Copy input from tool_start to tool_result for display
+  // - Completed tools are shown in the order they STARTED, not completed
   // - Supports both toolUseId matching (new) and sequential matching (legacy sessions)
   let processedMessages = $derived(() => {
     const result: SdkMessage[] = [];
@@ -63,13 +64,15 @@
 
     if (hasToolUseIds) {
       // NEW FORMAT: Match by toolUseId
-      const completedToolIds = new Set<string>();
+      // Build a map of toolUseId -> tool_result message
+      const toolResults = new Map<string, SdkMessage>();
       for (const msg of msgs) {
         if (msg.type === "tool_result" && msg.toolUseId) {
-          completedToolIds.add(msg.toolUseId);
+          toolResults.set(msg.toolUseId, msg);
         }
       }
 
+      // Build a map of toolUseId -> input from tool_start
       const toolInputs = new Map<string, Record<string, unknown>>();
       for (const msg of msgs) {
         if (msg.type === "tool_start" && msg.toolUseId && msg.input) {
@@ -77,17 +80,29 @@
         }
       }
 
+      // Track which tool_results we've already output (to avoid duplicates)
+      const outputToolIds = new Set<string>();
+
       for (const msg of msgs) {
         if (msg.type === "tool_start") {
-          // Only show tool_start if it doesn't have a result yet
-          if (!msg.toolUseId || !completedToolIds.has(msg.toolUseId)) {
+          // Check if this tool has a result
+          if (msg.toolUseId && toolResults.has(msg.toolUseId)) {
+            // Tool completed - output the result at the START position (preserving start order)
+            const resultMsg = toolResults.get(msg.toolUseId)!;
+            const input = toolInputs.get(msg.toolUseId);
+            result.push({ ...resultMsg, input });
+            outputToolIds.add(msg.toolUseId);
+          } else {
+            // Tool still running - show tool_start
             result.push(msg);
           }
         } else if (msg.type === "tool_result") {
-          const input = msg.toolUseId
-            ? toolInputs.get(msg.toolUseId)
-            : undefined;
-          result.push({ ...msg, input });
+          // Skip tool_results here - they're output at tool_start position above
+          // (Unless it wasn't matched, which shouldn't happen but handle gracefully)
+          if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
+            const input = msg.toolUseId ? toolInputs.get(msg.toolUseId) : undefined;
+            result.push({ ...msg, input });
+          }
         } else {
           result.push(msg);
         }
@@ -910,6 +925,7 @@
 
   <SdkPromptInput
     bind:this={promptInputRef}
+    {sessionId}
     {isQuerying}
     isRecording={$isRecording}
     isTranscribing={$isProcessing && isRecordingForCurrentSession}

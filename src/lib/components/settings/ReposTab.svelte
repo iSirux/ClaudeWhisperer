@@ -1,6 +1,8 @@
 <script lang="ts">
   import { settings } from "$lib/stores/settings";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { onMount } from "svelte";
 
   interface RepoDescriptionResult {
     description: string;
@@ -11,8 +13,86 @@
   let newRepoPath = $state("");
   let newRepoName = $state("");
   let generatingIndices = $state(new Set<number>());
+  let generatingClaudeIndices = $state(new Set<number>());
   let generatingBatch = $state(false);
   let batchProgress = $state({ current: 0, total: 0, failed: 0 });
+
+  // Track pending Claude generation requests (id -> index)
+  const pendingClaudeRequests = new Map<string, number>();
+  let unlistenResult: UnlistenFn | null = null;
+  let unlistenError: UnlistenFn | null = null;
+
+  onMount(() => {
+    // We'll set up listeners dynamically when we start generating
+    return () => {
+      unlistenResult?.();
+      unlistenError?.();
+    };
+  });
+
+  async function generateRepoDescriptionWithClaude(index: number) {
+    const repo = $settings.repos[index];
+    if (!repo || generatingClaudeIndices.has(index)) return false;
+
+    const requestId = `claude-repo-${index}-${Date.now()}`;
+    pendingClaudeRequests.set(requestId, index);
+    generatingClaudeIndices = new Set([...generatingClaudeIndices, index]);
+
+    // Set up event listeners for this request
+    const resultListener = await listen<RepoDescriptionResult>(
+      `repo-description-result-${requestId}`,
+      (event) => {
+        const idx = pendingClaudeRequests.get(requestId);
+        if (idx !== undefined) {
+          // Update the repo's description, keywords, and vocabulary in settings
+          const updatedRepos = [...$settings.repos];
+          updatedRepos[idx] = {
+            ...updatedRepos[idx],
+            description: event.payload.description,
+            keywords: event.payload.keywords,
+            vocabulary: event.payload.vocabulary,
+          };
+          settings.update((s) => ({ ...s, repos: updatedRepos }));
+          pendingClaudeRequests.delete(requestId);
+          generatingClaudeIndices = new Set([...generatingClaudeIndices].filter(i => i !== idx));
+        }
+        resultListener();
+        errorListener();
+      }
+    );
+
+    const errorListener = await listen<string>(
+      `repo-description-error-${requestId}`,
+      (event) => {
+        const idx = pendingClaudeRequests.get(requestId);
+        if (idx !== undefined) {
+          console.error("Claude repo description failed:", event.payload);
+          alert(`Failed to generate description with Claude: ${event.payload}`);
+          pendingClaudeRequests.delete(requestId);
+          generatingClaudeIndices = new Set([...generatingClaudeIndices].filter(i => i !== idx));
+        }
+        resultListener();
+        errorListener();
+      }
+    );
+
+    try {
+      await invoke("generate_repo_description_with_claude", {
+        id: requestId,
+        repoPath: repo.path,
+        repoName: repo.name,
+      });
+      return true;
+    } catch (error) {
+      console.error("Failed to invoke Claude repo description:", error);
+      alert(`Failed to start Claude generation: ${error}`);
+      pendingClaudeRequests.delete(requestId);
+      generatingClaudeIndices = new Set([...generatingClaudeIndices].filter(i => i !== index));
+      resultListener();
+      errorListener();
+      return false;
+    }
+  }
 
   async function addRepo() {
     console.log(
@@ -195,14 +275,14 @@
             </div>
           </div>
           <div class="flex gap-1 shrink-0">
-            <!-- Generate description button -->
+            <!-- Generate description with LLM button -->
             <button
               class="p-1.5 text-text-muted hover:text-accent transition-colors rounded hover:bg-border disabled:opacity-50"
               onclick={() => generateRepoDescription(index)}
               disabled={!$settings.llm.enabled || generatingIndices.has(index)}
               title={!$settings.llm.enabled
                 ? "Enable LLM integration in LLM settings to generate descriptions"
-                : "Generate description from CLAUDE.md or README"}
+                : "Generate with LLM (reads CLAUDE.md/README)"}
             >
               {#if generatingIndices.has(index)}
                 <svg
@@ -237,6 +317,50 @@
                     stroke-linejoin="round"
                     stroke-width="2"
                     d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                  />
+                </svg>
+              {/if}
+            </button>
+            <!-- Generate description with Claude SDK button -->
+            <button
+              class="p-1.5 text-text-muted hover:text-orange-400 transition-colors rounded hover:bg-border disabled:opacity-50"
+              onclick={() => generateRepoDescriptionWithClaude(index)}
+              disabled={generatingClaudeIndices.has(index)}
+              title="Generate with Claude (explores codebase with tools)"
+            >
+              {#if generatingClaudeIndices.has(index)}
+                <svg
+                  class="w-4 h-4 animate-spin"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    class="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="4"
+                  ></circle>
+                  <path
+                    class="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+              {:else}
+                <!-- Claude/robot icon -->
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
                   />
                 </svg>
               {/if}
@@ -299,9 +423,7 @@
           </div>
         {:else}
           <div class="text-xs text-text-muted italic">
-            No description. {#if $settings.llm.enabled}Click ✨ to
-              generate from CLAUDE.md/README.{:else}Enable LLM
-              integration to auto-generate.{/if}
+            No description. Click ✨ (LLM) or 🖥️ (Claude) to generate.
           </div>
         {/if}
         <!-- MCP Servers selection -->

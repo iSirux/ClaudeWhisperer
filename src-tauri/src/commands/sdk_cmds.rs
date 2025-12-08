@@ -86,3 +86,27 @@ pub fn close_sdk_session(
     }
     sidecar.send(OutboundMessage::Close { id })
 }
+
+/// Generate repository description using Claude SDK (Haiku model)
+/// This explores the codebase with tools and generates description, keywords, vocabulary.
+/// Results are returned via `repo-description-result-{id}` event.
+/// Errors are returned via `repo-description-error-{id}` event.
+#[tauri::command]
+pub fn generate_repo_description_with_claude(
+    app: AppHandle,
+    sidecar: State<Arc<SidecarManager>>,
+    id: String,
+    repo_path: String,
+    repo_name: String,
+) -> Result<(), String> {
+    // Start sidecar if not already running
+    if !sidecar.is_started() {
+        sidecar.start(app)?;
+    }
+
+    sidecar.send(OutboundMessage::GenerateRepoDescription {
+        id,
+        repo_path,
+        repo_name,
+    })
+}

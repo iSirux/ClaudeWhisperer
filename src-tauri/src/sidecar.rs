@@ -71,6 +71,12 @@ pub enum OutboundMessage {
     Close {
         id: String,
     },
+    /// Generate repository description using Claude SDK
+    GenerateRepoDescription {
+        id: String,
+        repo_path: String,
+        repo_name: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +195,18 @@ pub enum InboundMessage {
         #[serde(rename = "featureName")]
         feature_name: String,
         summary: String,
+    },
+    /// Result from Claude SDK repo description generation
+    RepoDescriptionResult {
+        id: String,
+        description: String,
+        keywords: Vec<String>,
+        vocabulary: Vec<String>,
+    },
+    /// Error from Claude SDK repo description generation
+    RepoDescriptionError {
+        id: String,
+        error: String,
     },
 }
 
@@ -550,6 +568,30 @@ impl SidecarManager {
                         "summary": summary,
                     }),
                 );
+            }
+            InboundMessage::RepoDescriptionResult {
+                id,
+                description,
+                keywords,
+                vocabulary,
+            } => {
+                println!(
+                    "[sidecar] Repo description result for {}: {}",
+                    id,
+                    description.chars().take(50).collect::<String>()
+                );
+                let _ = app.emit(
+                    &format!("repo-description-result-{}", id),
+                    serde_json::json!({
+                        "description": description,
+                        "keywords": keywords,
+                        "vocabulary": vocabulary,
+                    }),
+                );
+            }
+            InboundMessage::RepoDescriptionError { id, error } => {
+                eprintln!("[sidecar] Repo description error for {}: {}", id, error);
+                let _ = app.emit(&format!("repo-description-error-{}", id), &error);
             }
         }
     }

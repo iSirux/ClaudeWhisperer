@@ -1,52 +1,163 @@
-import { query, createSdkMcpServer, tool, type Query, type Options, type SDKMessage, type SubagentStartHookInput, type SubagentStopHookInput } from '@anthropic-ai/claude-agent-sdk';
-import * as readline from 'readline';
-import { z } from 'zod';
+import {
+  query,
+  createSdkMcpServer,
+  tool,
+  type Query,
+  type Options,
+  type SDKMessage,
+  type SubagentStartHookInput,
+  type SubagentStopHookInput,
+} from "@anthropic-ai/claude-agent-sdk";
+import * as readline from "readline";
+import { z } from "zod";
 
 // Planning question option schema
 const PlanningQuestionOptionSchema = z.object({
-  label: z.string().describe('Short label for the option'),
-  description: z.string().describe('Longer description explaining this option'),
+  label: z.string().describe("Short label for the option"),
+  description: z.string().describe("Longer description explaining this option"),
 });
 
 // Planning question schema
 const PlanningQuestionSchema = z.object({
-  question: z.string().describe('The full question text to display to the user'),
-  header: z.string().max(12).describe('A short one-word header for the navigation chip (e.g., "Scope", "Auth", "Storage")'),
-  options: z.array(PlanningQuestionOptionSchema).min(2).max(4).describe('Predefined options for the user to choose from (2-4 options)'),
-  multiSelect: z.boolean().describe('Whether the user can select multiple options (true) or just one (false)'),
+  question: z
+    .string()
+    .describe("The full question text to display to the user"),
+  header: z
+    .string()
+    .max(12)
+    .describe(
+      'A short one-word header for the navigation chip (e.g., "Scope", "Auth", "Storage")'
+    ),
+  options: z
+    .array(PlanningQuestionOptionSchema)
+    .min(2)
+    .max(4)
+    .describe("Predefined options for the user to choose from (2-4 options)"),
+  multiSelect: z
+    .boolean()
+    .describe(
+      "Whether the user can select multiple options (true) or just one (false)"
+    ),
 });
 
 // Create the in-process planning MCP server
 const planningMcpServer = createSdkMcpServer({
-  name: 'planning-tools',
-  version: '1.0.0',
+  name: "planning-tools",
+  version: "1.0.0",
   tools: [
     tool(
-      'ask_planning_questions',
-      'Present a set of planning questions to the user through a wizard-style interface. Use this to gather requirements and preferences for the feature being planned. The user will see these questions in an interactive UI and can select options or provide custom text input.',
+      "ask_planning_questions",
+      "Present a set of planning questions to the user through a wizard-style interface. Use this to gather requirements and preferences for the feature being planned. The user will see these questions in an interactive UI and can select options or provide custom text input.",
       {
-        questions: z.array(PlanningQuestionSchema).min(1).max(5).describe('Array of questions to present to the user (1-5 questions)'),
+        questions: z
+          .array(PlanningQuestionSchema)
+          .min(1)
+          .max(5)
+          .describe(
+            "Array of questions to present to the user (1-5 questions)"
+          ),
       },
       async (args) => {
         // The actual handling happens in handleSdkMessage when it sees this tool_use
         // We just return a success message here
         return {
-          content: [{ type: 'text', text: `Presented ${args.questions.length} question(s) to the user. Waiting for their responses...` }],
+          content: [
+            {
+              type: "text",
+              text: `Presented ${args.questions.length} question(s) to the user. Waiting for their responses...`,
+            },
+          ],
         };
       }
     ),
     tool(
-      'complete_planning',
-      'Signal that planning is complete. Call this after you have created the plan file and gathered all necessary information. This will show the user a completion screen with a summary and option to start implementation.',
+      "complete_planning",
+      "Signal that planning is complete. Call this after you have created the plan file and gathered all necessary information. This will show the user a completion screen with a summary and option to start implementation.",
       {
-        plan_path: z.string().describe('The relative path to the plan file that was created (e.g., "plans/auth-feature.md")'),
-        feature_name: z.string().describe('Human-readable name of the feature being planned'),
-        summary: z.string().describe('Brief summary of what was planned and key decisions made'),
+        plan_path: z
+          .string()
+          .describe(
+            'The relative path to the plan file that was created (e.g., "plans/auth-feature.md")'
+          ),
+        feature_name: z
+          .string()
+          .describe("Human-readable name of the feature being planned"),
+        summary: z
+          .string()
+          .describe("Brief summary of what was planned and key decisions made"),
       },
       async (args) => {
         // The actual handling happens in handleSdkMessage when it sees this tool_use
         return {
-          content: [{ type: 'text', text: `Planning complete for "${args.feature_name}". Plan saved to ${args.plan_path}.\n\nSummary: ${args.summary}` }],
+          content: [
+            {
+              type: "text",
+              text: `Planning complete for "${args.feature_name}". Plan saved to ${args.plan_path}.\n\nSummary: ${args.summary}`,
+            },
+          ],
+        };
+      }
+    ),
+  ],
+});
+
+// Repo description result schema
+const RepoDescriptionResultSchema = z.object({
+  description: z
+    .string()
+    .describe("A concise 1-2 sentence description of the repository"),
+  keywords: z
+    .array(z.string())
+    .describe("~20 categorical/conceptual keywords for matching user intent"),
+  vocabulary: z
+    .array(z.string())
+    .describe("20-50 project-specific terms/jargon from the codebase"),
+});
+
+// Pending repo description results (requestId -> result)
+const pendingRepoDescriptions = new Map<
+  string,
+  z.infer<typeof RepoDescriptionResultSchema>
+>();
+
+// Create the in-process repo description MCP server
+const repoDescriptionMcpServer = createSdkMcpServer({
+  name: "repo-description-tools",
+  version: "1.0.0",
+  tools: [
+    tool(
+      "submit_repo_description",
+      "Submit the generated repository description. You MUST call this tool with your analysis after exploring the codebase. This is required to complete the task.",
+      {
+        description: z
+          .string()
+          .describe(
+            "A concise 1-2 sentence description of what the project does and its main technologies"
+          ),
+        keywords: z
+          .array(z.string())
+          .min(10)
+          .max(60)
+          .describe(
+            "Categorical/conceptual terms for matching user intent (20-50 words): technology categories, domain concepts, feature types, action verbs"
+          ),
+        vocabulary: z
+          .array(z.string())
+          .min(15)
+          .max(60)
+          .describe(
+            "Project-specific lingo/jargon from the codebase (20-50 words): function/class names, file names, custom types, abbreviations, framework terms"
+          ),
+      },
+      async (args) => {
+        // Store the result - it will be picked up by the handler
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Repository description submitted successfully.",
+            },
+          ],
         };
       }
     ),
@@ -55,48 +166,52 @@ const planningMcpServer = createSdkMcpServer({
 
 // Message types for conversation history restoration
 interface HistoryUserMessage {
-  type: 'user';
+  type: "user";
   content: string;
 }
 
 interface HistoryAssistantMessage {
-  type: 'assistant';
+  type: "assistant";
   content: string;
 }
 
 interface HistoryToolUseMessage {
-  type: 'tool_use';
+  type: "tool_use";
   tool: string;
   input: unknown;
 }
 
 interface HistoryToolResultMessage {
-  type: 'tool_result';
+  type: "tool_result";
   tool: string;
   output: string;
 }
 
-type HistoryMessage = HistoryUserMessage | HistoryAssistantMessage | HistoryToolUseMessage | HistoryToolResultMessage;
+type HistoryMessage =
+  | HistoryUserMessage
+  | HistoryAssistantMessage
+  | HistoryToolUseMessage
+  | HistoryToolResultMessage;
 
 // MCP Server configuration types
 interface McpServerConfig {
   id: string;
   name: string;
-  server_type: 'stdio' | 'http' | 'sse';
+  server_type: "stdio" | "http" | "sse";
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   enabled: boolean;
   /** Authentication type for HTTP/SSE servers */
-  auth_type?: 'none' | 'bearer_token' | 'oauth';
+  auth_type?: "none" | "bearer_token" | "oauth";
   /** Custom headers for HTTP/SSE servers (includes Authorization header at runtime) */
   headers?: Record<string, string>;
 }
 
 // Types for IPC messages
 interface CreateMessage {
-  type: 'create';
+  type: "create";
   id: string;
   cwd: string;
   model?: string;
@@ -108,42 +223,57 @@ interface CreateMessage {
 }
 
 interface ImageData {
-  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
   base64Data: string;
   width?: number;
   height?: number;
 }
 
 interface QueryMessage {
-  type: 'query';
+  type: "query";
   id: string;
   prompt: string;
   images?: ImageData[];
 }
 
 interface CloseMessage {
-  type: 'close';
+  type: "close";
   id: string;
 }
 
 interface StopMessage {
-  type: 'stop';
+  type: "stop";
   id: string;
 }
 
 interface UpdateModelMessage {
-  type: 'update_model';
+  type: "update_model";
   id: string;
   model: string;
 }
 
 interface UpdateThinkingMessage {
-  type: 'update_thinking';
+  type: "update_thinking";
   id: string;
   maxThinkingTokens: number | null;
 }
 
-type InboundMessage = CreateMessage | QueryMessage | CloseMessage | StopMessage | UpdateModelMessage | UpdateThinkingMessage;
+// LLM Feature: Generate repository description using Claude SDK
+interface GenerateRepoDescriptionMessage {
+  type: "generate_repo_description";
+  id: string; // Request ID for tracking
+  repo_path: string; // Path to the repository
+  repo_name: string; // Name of the repository
+}
+
+type InboundMessage =
+  | CreateMessage
+  | QueryMessage
+  | CloseMessage
+  | StopMessage
+  | UpdateModelMessage
+  | UpdateThinkingMessage
+  | GenerateRepoDescriptionMessage;
 
 interface Session {
   cwd: string;
@@ -166,68 +296,96 @@ const toolUseIdToName = new Map<string, string>();
 const thinkingState = new Map<string, { startTime: number; content: string }>();
 
 function send(msg: object): void {
-  const line = JSON.stringify(msg) + '\n';
+  const line = JSON.stringify(msg) + "\n";
   process.stdout.write(line);
 }
 
 function sendText(id: string, content: string): void {
-  send({ type: 'text', id, content });
+  send({ type: "text", id, content });
 }
 
-function sendToolStart(id: string, tool: string, input: unknown, toolUseId: string): void {
-  send({ type: 'tool_start', id, tool, input, toolUseId });
+function sendToolStart(
+  id: string,
+  tool: string,
+  input: unknown,
+  toolUseId: string
+): void {
+  send({ type: "tool_start", id, tool, input, toolUseId });
 }
 
-function sendToolResult(id: string, tool: string, output: string, toolUseId: string): void {
-  send({ type: 'tool_result', id, tool, output, toolUseId });
+function sendToolResult(
+  id: string,
+  tool: string,
+  output: string,
+  toolUseId: string
+): void {
+  send({ type: "tool_result", id, tool, output, toolUseId });
 }
 
 function sendThinkingStart(id: string, content: string): void {
-  send({ type: 'thinking_start', id, content, timestamp: Date.now() });
+  send({ type: "thinking_start", id, content, timestamp: Date.now() });
 }
 
-function sendThinkingEnd(id: string, durationMs: number, content: string): void {
-  send({ type: 'thinking_end', id, durationMs, content });
+function sendThinkingEnd(
+  id: string,
+  durationMs: number,
+  content: string
+): void {
+  send({ type: "thinking_end", id, durationMs, content });
 }
 
 function sendDone(id: string): void {
-  send({ type: 'done', id });
+  send({ type: "done", id });
 }
 
-function sendUsage(id: string, usage: {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  totalCostUsd: number;
-  durationMs: number;
-  durationApiMs: number;
-  numTurns: number;
-  contextWindow: number;
-}): void {
-  send({ type: 'usage', id, ...usage });
+function sendUsage(
+  id: string,
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    totalCostUsd: number;
+    durationMs: number;
+    durationApiMs: number;
+    numTurns: number;
+    contextWindow: number;
+  }
+): void {
+  send({ type: "usage", id, ...usage });
 }
 
 // Progressive usage during streaming (from assistant messages)
-function sendProgressiveUsage(id: string, usage: {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-}): void {
-  send({ type: 'progressive_usage', id, ...usage });
+function sendProgressiveUsage(
+  id: string,
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  }
+): void {
+  send({ type: "progressive_usage", id, ...usage });
 }
 
 function sendError(id: string, message: string): void {
-  send({ type: 'error', id, message });
+  send({ type: "error", id, message });
 }
 
-function sendSubagentStart(id: string, agentId: string, agentType: string): void {
-  send({ type: 'subagent_start', id, agentId, agentType });
+function sendSubagentStart(
+  id: string,
+  agentId: string,
+  agentType: string
+): void {
+  send({ type: "subagent_start", id, agentId, agentType });
 }
 
-function sendSubagentStop(id: string, agentId: string, transcriptPath: string): void {
-  send({ type: 'subagent_stop', id, agentId, transcriptPath });
+function sendSubagentStop(
+  id: string,
+  agentId: string,
+  transcriptPath: string
+): void {
+  send({ type: "subagent_stop", id, agentId, transcriptPath });
 }
 
 // Planning mode specific events
@@ -243,20 +401,168 @@ interface PlanningQuestion {
   multiSelect: boolean;
 }
 
-function sendPlanningQuestions(id: string, questions: PlanningQuestion[]): void {
-  send({ type: 'planning_questions', id, questions });
+function sendPlanningQuestions(
+  id: string,
+  questions: PlanningQuestion[]
+): void {
+  send({ type: "planning_questions", id, questions });
 }
 
-function sendPlanningComplete(id: string, planPath: string, featureName: string, summary: string): void {
-  send({ type: 'planning_complete', id, planPath, featureName, summary });
+function sendPlanningComplete(
+  id: string,
+  planPath: string,
+  featureName: string,
+  summary: string
+): void {
+  send({ type: "planning_complete", id, planPath, featureName, summary });
+}
+
+// Repo description result event
+function sendRepoDescriptionResult(
+  id: string,
+  result: { description: string; keywords: string[]; vocabulary: string[] }
+): void {
+  send({ type: "repo_description_result", id, ...result });
+}
+
+function sendRepoDescriptionError(id: string, error: string): void {
+  send({ type: "repo_description_error", id, error });
+}
+
+// Handler for generating repo descriptions using Claude SDK
+async function handleGenerateRepoDescription(
+  msg: GenerateRepoDescriptionMessage
+): Promise<void> {
+  const requestId = msg.id;
+
+  send({
+    type: "debug",
+    id: requestId,
+    message: `Starting repo description generation for: ${msg.repo_name} at ${msg.repo_path}`,
+  });
+
+  // Build the prompt that instructs Claude to explore the codebase
+  const prompt = `You are analyzing a software repository to generate metadata for it. Your task is to explore the codebase and then submit a description, keywords, and vocabulary.
+
+Repository: ${msg.repo_name}
+Path: ${msg.repo_path}
+
+## Your Task
+
+1. **Explore the codebase** - Use the available tools to understand the project.
+
+2. **Generate metadata** by calling the \`submit_repo_description\` tool with:
+   - **description**: A concise 1-2 sentence description of what the project does and its main technologies
+   - **keywords**: ~20 categorical/conceptual terms for matching user intent:
+     - Technology categories (e.g., "frontend", "backend", "database", "authentication")
+     - Domain concepts (e.g., "e-commerce", "real-time", "streaming", "desktop app")
+     - Feature types (e.g., "CRUD", "API", "dashboard", "CLI")
+     - Action verbs users might say (e.g., "deploy", "migrate", "refactor", "test")
+   - **vocabulary**: 20-50 project-specific lingo/jargon from the actual codebase:
+     - Function/class/module names (e.g., "SdkSession", "useSettings", "transcribeAudio")
+     - Custom types and interfaces (e.g., "RepoConfig", "WhisperProvider")
+     - Project-specific terminology (e.g., "sidecar", "PTY", "hotkey")
+     - Abbreviations and acronyms used (e.g., "SDK", "LLM", "MCP")
+     - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
+
+The keywords help match user prompts like "I want to add authentication" to the right repo.
+The vocabulary helps speech-to-text correctly transcribe project-specific terms.
+
+**IMPORTANT**: You MUST call the \`submit_repo_description\` tool to complete this task. Do not just output text.`;
+
+  const options: Options = {
+    cwd: msg.repo_path,
+    permissionMode: "acceptEdits",
+    model: "claude-haiku-4-5-20251001", // Use Haiku for cost efficiency
+    mcpServers: {
+      "repo-description-tools": repoDescriptionMcpServer,
+    },
+    allowedTools: [
+      "mcp__repo-description-tools__submit_repo_description",
+      "Read",
+      "Glob",
+      "Grep",
+    ],
+    // Don't load user/project settings for this one-shot operation
+    settingSources: [],
+  };
+
+  let result: {
+    description: string;
+    keywords: string[];
+    vocabulary: string[];
+  } | null = null;
+
+  try {
+    send({ type: "debug", id: requestId, message: `Calling SDK query()...` });
+    const iterator = query({
+      prompt,
+      options,
+    });
+
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Query iterator created, starting iteration...`,
+    });
+    for await (const message of iterator) {
+      // Look for tool_use events with our submit tool
+      if (message.type === "assistant") {
+        for (const block of message.message.content) {
+          if (
+            block.type === "tool_use" &&
+            block.name ===
+              "mcp__repo-description-tools__submit_repo_description"
+          ) {
+            // Extract the result from the tool input
+            const input = block.input as {
+              description: string;
+              keywords: string[];
+              vocabulary: string[];
+            };
+            result = {
+              description: input.description,
+              keywords: input.keywords,
+              vocabulary: input.vocabulary,
+            };
+            send({
+              type: "debug",
+              id: requestId,
+              message: `Captured repo description result: ${result.description.slice(
+                0,
+                50
+              )}...`,
+            });
+          }
+        }
+      }
+    }
+
+    if (result) {
+      sendRepoDescriptionResult(requestId, result);
+    } else {
+      sendRepoDescriptionError(
+        requestId,
+        "Claude did not call the submit_repo_description tool"
+      );
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    send({
+      type: "debug",
+      id: requestId,
+      message: `Error generating repo description: ${errorMessage}`,
+    });
+    sendRepoDescriptionError(requestId, errorMessage);
+  }
 }
 
 async function handleCreate(msg: CreateMessage): Promise<void> {
   const options: Options = {
     cwd: msg.cwd,
-    permissionMode: 'acceptEdits',
+    permissionMode: "acceptEdits",
     // Load CLAUDE.md and settings from filesystem like Claude Code does
-    settingSources: ['user', 'project', 'local'],
+    settingSources: ["user", "project", "local"],
     ...(msg.model && { model: msg.model }),
     ...(msg.system_prompt && { systemPrompt: msg.system_prompt }),
     ...msg.options,
@@ -264,44 +570,57 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     // This callback fires when Claude would show a permission prompt
     canUseTool: async (toolName: string, input: unknown) => {
       // Allow all MCP tools (they start with "mcp__")
-      if (toolName.startsWith('mcp__')) {
-        send({ type: 'debug', id: msg.id, message: `Auto-allowing MCP tool: ${toolName}` });
-        return { behavior: 'allow' as const, updatedInput: input };
+      if (toolName.startsWith("mcp__")) {
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Auto-allowing MCP tool: ${toolName}`,
+        });
+        return { behavior: "allow" as const, updatedInput: input };
       }
       // For non-MCP tools, allow by default (acceptEdits handles file operations)
-      return { behavior: 'allow' as const, updatedInput: input };
+      return { behavior: "allow" as const, updatedInput: input };
     },
   };
 
   // Add in-process MCP server for plan mode at creation time
   // Using createSdkMcpServer for reliable in-process tool registration
   if (msg.plan_mode) {
-    send({ type: 'debug', id: msg.id, message: 'Plan mode: configuring in-process MCP server with planning tools' });
+    send({
+      type: "debug",
+      id: msg.id,
+      message:
+        "Plan mode: configuring in-process MCP server with planning tools",
+    });
 
     options.mcpServers = {
       ...options.mcpServers,
-      'planning-tools': planningMcpServer,
+      "planning-tools": planningMcpServer,
     };
 
     options.allowedTools = [
       ...(options.allowedTools || []),
-      'mcp__planning-tools__ask_planning_questions',
-      'mcp__planning-tools__complete_planning',
+      "mcp__planning-tools__ask_planning_questions",
+      "mcp__planning-tools__complete_planning",
     ];
   }
 
   // Register external MCP servers if provided
   // Also add a wildcard pattern to allowedTools to permit all tools from registered MCP servers
   if (msg.mcp_servers && msg.mcp_servers.length > 0) {
-    const enabledServers = msg.mcp_servers.filter(s => s.enabled);
-    send({ type: 'debug', id: msg.id, message: `Registering ${enabledServers.length} external MCP servers` });
+    const enabledServers = msg.mcp_servers.filter((s) => s.enabled);
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Registering ${enabledServers.length} external MCP servers`,
+    });
 
     // Collect server IDs for allowedTools patterns
     const registeredServerIds: string[] = [];
 
     for (const server of enabledServers) {
       try {
-        if (server.server_type === 'stdio' && server.command) {
+        if (server.server_type === "stdio" && server.command) {
           // Stdio server config
           options.mcpServers = {
             ...options.mcpServers,
@@ -312,56 +631,102 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
             },
           };
           registeredServerIds.push(server.id);
-          send({ type: 'debug', id: msg.id, message: `Registered stdio MCP server: ${server.name} (${server.id})` });
-        } else if (server.server_type === 'http' && server.url) {
+          send({
+            type: "debug",
+            id: msg.id,
+            message: `Registered stdio MCP server: ${server.name} (${server.id})`,
+          });
+        } else if (server.server_type === "http" && server.url) {
           // HTTP server config with optional headers (for auth)
-          const httpConfig: { type: 'http'; url: string; headers?: Record<string, string> } = {
-            type: 'http',
+          const httpConfig: {
+            type: "http";
+            url: string;
+            headers?: Record<string, string>;
+          } = {
+            type: "http",
             url: server.url,
           };
           if (server.headers && Object.keys(server.headers).length > 0) {
             httpConfig.headers = server.headers;
-            send({ type: 'debug', id: msg.id, message: `HTTP server ${server.name} has ${Object.keys(server.headers).length} custom headers` });
+            send({
+              type: "debug",
+              id: msg.id,
+              message: `HTTP server ${server.name} has ${
+                Object.keys(server.headers).length
+              } custom headers`,
+            });
           }
           options.mcpServers = {
             ...options.mcpServers,
             [server.id]: httpConfig,
           };
           registeredServerIds.push(server.id);
-          send({ type: 'debug', id: msg.id, message: `Registered HTTP MCP server: ${server.name} (${server.id})` });
-        } else if (server.server_type === 'sse' && server.url) {
+          send({
+            type: "debug",
+            id: msg.id,
+            message: `Registered HTTP MCP server: ${server.name} (${server.id})`,
+          });
+        } else if (server.server_type === "sse" && server.url) {
           // SSE server config with optional headers (for auth)
-          const sseConfig: { type: 'sse'; url: string; headers?: Record<string, string> } = {
-            type: 'sse',
+          const sseConfig: {
+            type: "sse";
+            url: string;
+            headers?: Record<string, string>;
+          } = {
+            type: "sse",
             url: server.url,
           };
           if (server.headers && Object.keys(server.headers).length > 0) {
             sseConfig.headers = server.headers;
-            send({ type: 'debug', id: msg.id, message: `SSE server ${server.name} has ${Object.keys(server.headers).length} custom headers` });
+            send({
+              type: "debug",
+              id: msg.id,
+              message: `SSE server ${server.name} has ${
+                Object.keys(server.headers).length
+              } custom headers`,
+            });
           }
           options.mcpServers = {
             ...options.mcpServers,
             [server.id]: sseConfig,
           };
           registeredServerIds.push(server.id);
-          send({ type: 'debug', id: msg.id, message: `Registered SSE MCP server: ${server.name} (${server.id})` });
+          send({
+            type: "debug",
+            id: msg.id,
+            message: `Registered SSE MCP server: ${server.name} (${server.id})`,
+          });
         } else {
-          send({ type: 'debug', id: msg.id, message: `Skipping MCP server ${server.name}: missing required config` });
+          send({
+            type: "debug",
+            id: msg.id,
+            message: `Skipping MCP server ${server.name}: missing required config`,
+          });
         }
       } catch (err) {
-        send({ type: 'debug', id: msg.id, message: `Failed to register MCP server ${server.name}: ${err}` });
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Failed to register MCP server ${server.name}: ${err}`,
+        });
       }
     }
 
     // Add wildcard patterns for all registered MCP servers to allowedTools
     // Pattern: mcp__<server_id>__* allows all tools from that server
     if (registeredServerIds.length > 0) {
-      const mcpToolPatterns = registeredServerIds.map(id => `mcp__${id}__*`);
+      const mcpToolPatterns = registeredServerIds.map((id) => `mcp__${id}__*`);
       options.allowedTools = [
         ...(options.allowedTools || []),
         ...mcpToolPatterns,
       ];
-      send({ type: 'debug', id: msg.id, message: `Added MCP tool patterns to allowedTools: ${mcpToolPatterns.join(', ')}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Added MCP tool patterns to allowedTools: ${mcpToolPatterns.join(
+          ", "
+        )}`,
+      });
     }
   }
 
@@ -373,26 +738,37 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
   });
 
   if (msg.messages && msg.messages.length > 0) {
-    send({ type: 'debug', id: msg.id, message: `Session created with ${msg.messages.length} history messages` });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Session created with ${msg.messages.length} history messages`,
+    });
   }
 
   if (msg.plan_mode) {
-    send({ type: 'debug', id: msg.id, message: 'Session created in PLAN MODE - planning tools enabled' });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Session created in PLAN MODE - planning tools enabled",
+    });
   }
 
-  send({ type: 'created', id: msg.id });
+  send({ type: "created", id: msg.id });
 }
 
 // Content block types for multimodal prompts (matching Anthropic API format)
-type TextBlock = { type: 'text'; text: string };
-type ImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+type TextBlock = { type: "text"; text: string };
+type ImageBlock = {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+};
 type ContentBlock = TextBlock | ImageBlock;
 
 // SDKUserMessage type for streaming input (matches SDK types)
 interface SDKUserMessageForInput {
-  type: 'user';
+  type: "user";
   message: {
-    role: 'user';
+    role: "user";
     content: string | ContentBlock[];
   };
   parent_tool_use_id: null;
@@ -404,52 +780,64 @@ interface SDKUserMessageForInput {
  * This allows Claude to understand what happened before in the conversation.
  */
 function formatConversationHistory(messages: HistoryMessage[]): string {
-  if (!messages || messages.length === 0) return '';
+  if (!messages || messages.length === 0) return "";
 
   const parts: string[] = [];
-  parts.push('<conversation_history>');
-  parts.push('The following is the history of our previous conversation. Please continue from where we left off:');
-  parts.push('');
+  parts.push("<conversation_history>");
+  parts.push(
+    "The following is the history of our previous conversation. Please continue from where we left off:"
+  );
+  parts.push("");
 
   for (const msg of messages) {
     switch (msg.type) {
-      case 'user':
+      case "user":
         parts.push(`[User]: ${msg.content}`);
         break;
-      case 'assistant':
+      case "assistant":
         parts.push(`[Assistant]: ${msg.content}`);
         break;
-      case 'tool_use':
-        parts.push(`[Assistant used tool "${msg.tool}"]: ${JSON.stringify(msg.input)}`);
+      case "tool_use":
+        parts.push(
+          `[Assistant used tool "${msg.tool}"]: ${JSON.stringify(msg.input)}`
+        );
         break;
-      case 'tool_result':
+      case "tool_result":
         // Truncate very long tool outputs
-        const output = msg.output.length > 500 ? msg.output.slice(0, 500) + '...[truncated]' : msg.output;
+        const output =
+          msg.output.length > 500
+            ? msg.output.slice(0, 500) + "...[truncated]"
+            : msg.output;
         parts.push(`[Tool "${msg.tool}" result]: ${output}`);
         break;
     }
   }
 
-  parts.push('');
-  parts.push('</conversation_history>');
-  parts.push('');
-  parts.push('Continue the conversation based on the history above. Here is the new request:');
-  parts.push('');
+  parts.push("");
+  parts.push("</conversation_history>");
+  parts.push("");
+  parts.push(
+    "Continue the conversation based on the history above. Here is the new request:"
+  );
+  parts.push("");
 
-  return parts.join('\n');
+  return parts.join("\n");
 }
 
 // Build content blocks for multimodal prompts (text + images)
-function buildContentBlocks(prompt: string, images?: ImageData[]): ContentBlock[] {
+function buildContentBlocks(
+  prompt: string,
+  images?: ImageData[]
+): ContentBlock[] {
   const contentBlocks: ContentBlock[] = [];
 
   // Add image blocks first
   if (images) {
     for (const img of images) {
       contentBlocks.push({
-        type: 'image',
+        type: "image",
         source: {
-          type: 'base64',
+          type: "base64",
           media_type: img.mediaType,
           data: img.base64Data,
         },
@@ -462,7 +850,7 @@ function buildContentBlocks(prompt: string, images?: ImageData[]): ContentBlock[
   const trimmedPrompt = prompt.trim();
   if (trimmedPrompt) {
     contentBlocks.push({
-      type: 'text',
+      type: "text",
       text: trimmedPrompt,
     });
   }
@@ -472,13 +860,17 @@ function buildContentBlocks(prompt: string, images?: ImageData[]): ContentBlock[
 }
 
 // Create an async iterable that yields a single SDKUserMessage for multimodal prompts
-async function* createUserMessageStream(prompt: string, images: ImageData[], sessionId: string): AsyncGenerator<SDKUserMessageForInput> {
+async function* createUserMessageStream(
+  prompt: string,
+  images: ImageData[],
+  sessionId: string
+): AsyncGenerator<SDKUserMessageForInput> {
   const contentBlocks = buildContentBlocks(prompt, images);
 
   yield {
-    type: 'user',
+    type: "user",
     message: {
-      role: 'user',
+      role: "user",
       content: contentBlocks,
     },
     parent_tool_use_id: null,
@@ -489,7 +881,7 @@ async function* createUserMessageStream(prompt: string, images: ImageData[], ses
 async function handleQuery(msg: QueryMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (!session) {
-    sendError(msg.id, 'Session not found');
+    sendError(msg.id, "Session not found");
     return;
   }
 
@@ -500,12 +892,24 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   // If there's already a query in progress, interrupt it first
   // This prevents race conditions where the old query's 'done' event arrives after the new query starts
   if (session.queryIterator) {
-    send({ type: 'debug', id: msg.id, message: 'Previous query still in progress, interrupting it first...' });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Previous query still in progress, interrupting it first...",
+    });
     try {
       await session.queryIterator.interrupt();
-      send({ type: 'debug', id: msg.id, message: 'Previous query interrupted successfully' });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: "Previous query interrupted successfully",
+      });
     } catch (err) {
-      send({ type: 'debug', id: msg.id, message: `Error interrupting previous query: ${err}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Error interrupting previous query: ${err}`,
+      });
       // Fall back to abort controller if interrupt fails
       if (session.abortController) {
         session.abortController.abort();
@@ -519,24 +923,54 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
   session.currentQueryId = queryId;
 
   const hasImages = msg.images && msg.images.length > 0;
-  const hasHistory = session.conversationHistory && session.conversationHistory.length > 0 && !session.sdkSessionId;
-  send({ type: 'debug', id: msg.id, message: `Starting query ${queryId} with prompt: ${msg.prompt.slice(0, 100)}... (images: ${msg.images?.length ?? 0}, history: ${session.conversationHistory?.length ?? 0})` });
+  const hasHistory =
+    session.conversationHistory &&
+    session.conversationHistory.length > 0 &&
+    !session.sdkSessionId;
+  send({
+    type: "debug",
+    id: msg.id,
+    message: `Starting query ${queryId} with prompt: ${msg.prompt.slice(
+      0,
+      100
+    )}... (images: ${msg.images?.length ?? 0}, history: ${
+      session.conversationHistory?.length ?? 0
+    })`,
+  });
 
   try {
     // Create abort controller for this query
     const abortController = new AbortController();
     session.abortController = abortController;
 
-    send({ type: 'debug', id: msg.id, message: `Calling SDK query()... resume=${session.sdkSessionId || 'none'}` });
-    send({ type: 'debug', id: msg.id, message: `Options: cwd=${session.options.cwd}, pathToClaudeCodeExecutable=${session.options.pathToClaudeCodeExecutable}` });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Calling SDK query()... resume=${
+        session.sdkSessionId || "none"
+      }`,
+    });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Options: cwd=${session.options.cwd}, pathToClaudeCodeExecutable=${session.options.pathToClaudeCodeExecutable}`,
+    });
 
     // If this is a restored session without an SDK session ID, prepend conversation history
     // (After first query, we'll have an sdkSessionId and can use the SDK's built-in resume)
     let promptToSend = msg.prompt;
     if (hasHistory) {
-      const historyContext = formatConversationHistory(session.conversationHistory!);
+      const historyContext = formatConversationHistory(
+        session.conversationHistory!
+      );
       promptToSend = historyContext + msg.prompt;
-      send({ type: 'debug', id: msg.id, message: `Prepended ${session.conversationHistory!.length} history messages to prompt` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Prepended ${
+          session.conversationHistory!.length
+        } history messages to prompt`,
+      });
     }
 
     // Build the prompt - for images we need to use AsyncIterable<SDKUserMessage>
@@ -545,8 +979,18 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     if (hasImages) {
       // Use the session ID if we have one, otherwise use the message ID as placeholder
       const sessionId = session.sdkSessionId || msg.id;
-      promptInput = createUserMessageStream(promptToSend, msg.images!, sessionId);
-      send({ type: 'debug', id: msg.id, message: `Built multimodal prompt stream with ${msg.images!.length} image(s)` });
+      promptInput = createUserMessageStream(
+        promptToSend,
+        msg.images!,
+        sessionId
+      );
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Built multimodal prompt stream with ${
+          msg.images!.length
+        } image(s)`,
+      });
     } else {
       promptInput = promptToSend;
     }
@@ -559,29 +1003,47 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
       resume: session.sdkSessionId,
       // Capture stderr for debugging
       stderr: (data: string) => {
-        send({ type: 'debug', id: msg.id, message: `[stderr] ${data}` });
+        send({ type: "debug", id: msg.id, message: `[stderr] ${data}` });
       },
       // Hook callbacks for subagent lifecycle events
       hooks: {
-        SubagentStart: [{
-          hooks: [async (input: SubagentStartHookInput) => {
-            sendSubagentStart(msg.id, input.agent_id, input.agent_type);
-            return { continue: true };
-          }],
-        }],
-        SubagentStop: [{
-          hooks: [async (input: SubagentStopHookInput) => {
-            sendSubagentStop(msg.id, input.agent_id, input.agent_transcript_path);
-            return { continue: true };
-          }],
-        }],
+        SubagentStart: [
+          {
+            hooks: [
+              async (input: SubagentStartHookInput) => {
+                sendSubagentStart(msg.id, input.agent_id, input.agent_type);
+                return { continue: true };
+              },
+            ],
+          },
+        ],
+        SubagentStop: [
+          {
+            hooks: [
+              async (input: SubagentStopHookInput) => {
+                sendSubagentStop(
+                  msg.id,
+                  input.agent_id,
+                  input.agent_transcript_path
+                );
+                return { continue: true };
+              },
+            ],
+          },
+        ],
       },
     };
 
     // Note: MCP servers for plan mode are configured in handleCreate() at session creation time
     // The session.options already include mcpServers and allowedTools for planning tools
     if (session.planMode) {
-      send({ type: 'debug', id: msg.id, message: `Plan mode query - MCP servers configured: ${Object.keys(session.options.mcpServers || {}).join(', ')}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Plan mode query - MCP servers configured: ${Object.keys(
+          session.options.mcpServers || {}
+        ).join(", ")}`,
+      });
     }
 
     // Use the query function from the SDK
@@ -593,7 +1055,11 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
         options: queryOptions,
       });
     } catch (spawnError) {
-      send({ type: 'debug', id: msg.id, message: `Failed to create query: ${spawnError}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Failed to create query: ${spawnError}`,
+      });
       sendError(msg.id, `Failed to spawn query: ${spawnError}`);
       return;
     }
@@ -601,43 +1067,75 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
     // Store the query iterator on the session so we can call interrupt() on it
     session.queryIterator = queryIterator;
 
-    send({ type: 'debug', id: msg.id, message: `Query iterator created, starting iteration...` });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Query iterator created, starting iteration...`,
+    });
 
     let messageCount = 0;
     for await (const message of queryIterator) {
       messageCount++;
-      send({ type: 'debug', id: msg.id, message: `Received message #${messageCount}: type=${message.type}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Received message #${messageCount}: type=${message.type}`,
+      });
       try {
         // Capture SDK session ID from system init message for resume
-        if (message.type === 'system' && message.subtype === 'init') {
+        if (message.type === "system" && message.subtype === "init") {
           session.sdkSessionId = message.session_id;
-          send({ type: 'debug', id: msg.id, message: `Captured SDK session ID: ${message.session_id}` });
+          send({
+            type: "debug",
+            id: msg.id,
+            message: `Captured SDK session ID: ${message.session_id}`,
+          });
         }
         handleSdkMessage(msg.id, message);
       } catch (err) {
-        send({ type: 'debug', id: msg.id, message: `Error handling message: ${err}` });
+        send({
+          type: "debug",
+          id: msg.id,
+          message: `Error handling message: ${err}`,
+        });
       }
     }
 
-    send({ type: 'debug', id: msg.id, message: `Query ${queryId} complete, received ${messageCount} messages` });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Query ${queryId} complete, received ${messageCount} messages`,
+    });
 
     // Only emit done if this query is still the current one
     // This prevents stale done events from affecting newer queries
     if (session.currentQueryId === queryId) {
       sendDone(msg.id);
     } else {
-      send({ type: 'debug', id: msg.id, message: `Query ${queryId} was superseded by ${session.currentQueryId}, not emitting done` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Query ${queryId} was superseded by ${session.currentQueryId}, not emitting done`,
+      });
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : '';
-    send({ type: 'debug', id: msg.id, message: `Query ${queryId} error: ${errorMessage}\n${errorStack}` });
+    const errorStack = error instanceof Error ? error.stack : "";
+    send({
+      type: "debug",
+      id: msg.id,
+      message: `Query ${queryId} error: ${errorMessage}\n${errorStack}`,
+    });
 
     // Only emit error if this query is still the current one
     if (session.currentQueryId === queryId) {
       sendError(msg.id, errorMessage);
     } else {
-      send({ type: 'debug', id: msg.id, message: `Query ${queryId} was superseded, not emitting error` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Query ${queryId} was superseded, not emitting error`,
+      });
     }
   } finally {
     // Only clear the iterator/controller if this is still the current query
@@ -650,27 +1148,49 @@ async function handleQuery(msg: QueryMessage): Promise<void> {
 
 function handleSdkMessage(id: string, message: SDKMessage): void {
   switch (message.type) {
-    case 'assistant':
+    case "assistant":
       // Assistant message with content blocks
-      send({ type: 'debug', id, message: `Assistant message has ${message.message.content.length} content blocks` });
+      send({
+        type: "debug",
+        id,
+        message: `Assistant message has ${message.message.content.length} content blocks`,
+      });
       for (const block of message.message.content) {
-        send({ type: 'debug', id, message: `Content block type: ${block.type}` });
+        send({
+          type: "debug",
+          id,
+          message: `Content block type: ${block.type}`,
+        });
 
         // Handle thinking blocks (extended thinking feature)
-        if (block.type === 'thinking') {
+        if (block.type === "thinking") {
           const thinkingBlock = block as { thinking?: string };
-          const thinkingContent = thinkingBlock.thinking || '';
+          const thinkingContent = thinkingBlock.thinking || "";
 
           if (!thinkingState.has(id)) {
             // First thinking block - start tracking
-            thinkingState.set(id, { startTime: Date.now(), content: thinkingContent });
+            thinkingState.set(id, {
+              startTime: Date.now(),
+              content: thinkingContent,
+            });
             sendThinkingStart(id, thinkingContent);
-            send({ type: 'debug', id, message: `Thinking started: ${thinkingContent.slice(0, 100)}...` });
+            send({
+              type: "debug",
+              id,
+              message: `Thinking started: ${thinkingContent.slice(0, 100)}...`,
+            });
           } else {
             // Additional thinking block - accumulate content
             const state = thinkingState.get(id)!;
-            state.content += '\n\n' + thinkingContent;
-            send({ type: 'debug', id, message: `Thinking continued: ${thinkingContent.slice(0, 100)}...` });
+            state.content += "\n\n" + thinkingContent;
+            send({
+              type: "debug",
+              id,
+              message: `Thinking continued: ${thinkingContent.slice(
+                0,
+                100
+              )}...`,
+            });
           }
           continue;
         }
@@ -681,15 +1201,27 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           const durationMs = Date.now() - state.startTime;
           thinkingState.delete(id);
           sendThinkingEnd(id, durationMs, state.content);
-          send({ type: 'debug', id, message: `Thinking ended after ${durationMs}ms` });
+          send({
+            type: "debug",
+            id,
+            message: `Thinking ended after ${durationMs}ms`,
+          });
         }
 
-        if (block.type === 'text') {
-          send({ type: 'debug', id, message: `Text content: ${block.text.slice(0, 100)}` });
+        if (block.type === "text") {
+          send({
+            type: "debug",
+            id,
+            message: `Text content: ${block.text.slice(0, 100)}`,
+          });
           sendText(id, block.text);
-        } else if (block.type === 'tool_use') {
+        } else if (block.type === "tool_use") {
           // Track tool_use_id to name mapping for matching with tool_result
-          const toolUseBlock = block as { id?: string; name: string; input: unknown };
+          const toolUseBlock = block as {
+            id?: string;
+            name: string;
+            input: unknown;
+          };
           const toolUseId = toolUseBlock.id || `unknown-${Date.now()}`;
           if (toolUseBlock.id) {
             toolUseIdToName.set(toolUseBlock.id, toolUseBlock.name);
@@ -698,22 +1230,41 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
 
           // Handle planning-specific tools (both direct names and MCP-prefixed names)
           const toolName = block.name;
-          const isAskPlanningQuestions = toolName === 'ask_planning_questions' ||
-            toolName === 'mcp__planning-tools__ask_planning_questions';
-          const isCompletePlanning = toolName === 'complete_planning' ||
-            toolName === 'mcp__planning-tools__complete_planning';
+          const isAskPlanningQuestions =
+            toolName === "ask_planning_questions" ||
+            toolName === "mcp__planning-tools__ask_planning_questions";
+          const isCompletePlanning =
+            toolName === "complete_planning" ||
+            toolName === "mcp__planning-tools__complete_planning";
 
           if (isAskPlanningQuestions) {
             const input = block.input as { questions?: PlanningQuestion[] };
             if (input.questions && Array.isArray(input.questions)) {
-              send({ type: 'debug', id, message: `Planning questions tool called with ${input.questions.length} questions` });
+              send({
+                type: "debug",
+                id,
+                message: `Planning questions tool called with ${input.questions.length} questions`,
+              });
               sendPlanningQuestions(id, input.questions);
             }
           } else if (isCompletePlanning) {
-            const input = block.input as { plan_path?: string; feature_name?: string; summary?: string };
+            const input = block.input as {
+              plan_path?: string;
+              feature_name?: string;
+              summary?: string;
+            };
             if (input.plan_path && input.feature_name && input.summary) {
-              send({ type: 'debug', id, message: `Planning complete: ${input.feature_name}` });
-              sendPlanningComplete(id, input.plan_path, input.feature_name, input.summary);
+              send({
+                type: "debug",
+                id,
+                message: `Planning complete: ${input.feature_name}`,
+              });
+              sendPlanningComplete(
+                id,
+                input.plan_path,
+                input.feature_name,
+                input.summary
+              );
             }
           }
         }
@@ -730,19 +1281,22 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       }
       break;
 
-    case 'partial_assistant':
+    case "partial_assistant":
       // Streaming partial message
       if (message.delta?.text) {
         sendText(id, message.delta.text);
       }
       break;
 
-    case 'result':
+    case "result":
       // Final result message - send usage data and handle errors
-      if (message.subtype === 'success') {
+      if (message.subtype === "success") {
         // Extract usage data from successful result
         const modelUsageValues = Object.values(message.modelUsage || {});
-        const contextWindow = modelUsageValues.length > 0 ? modelUsageValues[0].contextWindow : 200000;
+        const contextWindow =
+          modelUsageValues.length > 0
+            ? modelUsageValues[0].contextWindow
+            : 200000;
 
         sendUsage(id, {
           inputTokens: message.usage?.input_tokens || 0,
@@ -755,17 +1309,24 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
           numTurns: message.num_turns || 0,
           contextWindow,
         });
-      } else if (message.subtype === 'error' || message.subtype === 'error_tool_use') {
+      } else if (
+        message.subtype === "error" ||
+        message.subtype === "error_tool_use"
+      ) {
         // Still send usage data even for errors (if available)
         if (message.usage) {
           const modelUsageValues = Object.values(message.modelUsage || {});
-          const contextWindow = modelUsageValues.length > 0 ? modelUsageValues[0].contextWindow : 200000;
+          const contextWindow =
+            modelUsageValues.length > 0
+              ? modelUsageValues[0].contextWindow
+              : 200000;
 
           sendUsage(id, {
             inputTokens: message.usage?.input_tokens || 0,
             outputTokens: message.usage?.output_tokens || 0,
             cacheReadTokens: message.usage?.cache_read_input_tokens || 0,
-            cacheCreationTokens: message.usage?.cache_creation_input_tokens || 0,
+            cacheCreationTokens:
+              message.usage?.cache_creation_input_tokens || 0,
             totalCostUsd: message.total_cost_usd || 0,
             durationMs: message.duration_ms || 0,
             durationApiMs: message.duration_api_ms || 0,
@@ -773,37 +1334,48 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
             contextWindow,
           });
         }
-        sendError(id, message.error || 'Unknown error');
+        sendError(id, message.error || "Unknown error");
       }
       // Don't send result.result as text - it duplicates the assistant message content
       break;
 
-    case 'user':
+    case "user":
       // User messages contain tool results
       // The message.message.content array contains tool_result blocks
       if (message.message?.content && Array.isArray(message.message.content)) {
         for (const block of message.message.content) {
-          if (block.type === 'tool_result') {
+          if (block.type === "tool_result") {
             // tool_result blocks have tool_use_id and content (string or array)
-            const toolResultBlock = block as { tool_use_id?: string; content?: string | Array<{ type: string; text?: string }> };
-            const toolUseId = toolResultBlock.tool_use_id || `unknown-${Date.now()}`;
+            const toolResultBlock = block as {
+              tool_use_id?: string;
+              content?: string | Array<{ type: string; text?: string }>;
+            };
+            const toolUseId =
+              toolResultBlock.tool_use_id || `unknown-${Date.now()}`;
             // Look up tool name from the tool_use_id we tracked earlier
             const toolName = toolResultBlock.tool_use_id
-              ? toolUseIdToName.get(toolResultBlock.tool_use_id) || 'unknown'
-              : 'unknown';
+              ? toolUseIdToName.get(toolResultBlock.tool_use_id) || "unknown"
+              : "unknown";
 
-            let output = '';
-            if (typeof toolResultBlock.content === 'string') {
+            let output = "";
+            if (typeof toolResultBlock.content === "string") {
               output = toolResultBlock.content;
             } else if (Array.isArray(toolResultBlock.content)) {
               // Content can be array of text/image blocks
               output = toolResultBlock.content
-                .filter((c) => c.type === 'text')
-                .map((c) => c.text || '')
-                .join('\n');
+                .filter((c) => c.type === "text")
+                .map((c) => c.text || "")
+                .join("\n");
             }
 
-            send({ type: 'debug', id, message: `Tool result for ${toolName} (${toolUseId}): ${output.slice(0, 100)}...` });
+            send({
+              type: "debug",
+              id,
+              message: `Tool result for ${toolName} (${toolUseId}): ${output.slice(
+                0,
+                100
+              )}...`,
+            });
             sendToolResult(id, toolName, output, toolUseId);
 
             // Clean up the mapping after use
@@ -815,36 +1387,45 @@ function handleSdkMessage(id: string, message: SDKMessage): void {
       }
       break;
 
-    case 'system':
+    case "system":
       // System messages - don't send init to UI, we handle it above
       // Could add other system message handling here if needed
       break;
 
-    case 'auth_status':
+    case "auth_status":
       // Authentication status
       if (message.isAuthenticating) {
-        sendText(id, '[Authenticating...]');
+        sendText(id, "[Authenticating...]");
       }
       if (message.error) {
         sendError(id, `Authentication error: ${message.error}`);
       }
       break;
 
-    case 'tool_progress':
+    case "tool_progress":
       // Tool is running
-      sendText(id, `[${message.tool_name}: ${message.elapsed_time_seconds.toFixed(1)}s]`);
+      sendText(
+        id,
+        `[${message.tool_name}: ${message.elapsed_time_seconds.toFixed(1)}s]`
+      );
       break;
 
     default:
       // Log unknown message types for debugging
-      send({ type: 'debug', id, message: `Unknown SDK message type: ${(message as { type: string }).type}` });
+      send({
+        type: "debug",
+        id,
+        message: `Unknown SDK message type: ${
+          (message as { type: string }).type
+        }`,
+      });
   }
 }
 
 async function handleStop(msg: StopMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (!session) {
-    sendError(msg.id, 'Session not found');
+    sendError(msg.id, "Session not found");
     return;
   }
 
@@ -852,12 +1433,24 @@ async function handleStop(msg: StopMessage): Promise<void> {
   // the query and all subagents. The abort controller alone doesn't properly
   // stop subagents that are already running.
   if (session.queryIterator) {
-    send({ type: 'debug', id: msg.id, message: 'Interrupting query via iterator.interrupt()...' });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "Interrupting query via iterator.interrupt()...",
+    });
     try {
       await session.queryIterator.interrupt();
-      send({ type: 'debug', id: msg.id, message: 'Query interrupted successfully' });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: "Query interrupted successfully",
+      });
     } catch (err) {
-      send({ type: 'debug', id: msg.id, message: `Error interrupting query: ${err}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Error interrupting query: ${err}`,
+      });
       // Fall back to abort controller if interrupt fails
       if (session.abortController) {
         session.abortController.abort();
@@ -866,30 +1459,34 @@ async function handleStop(msg: StopMessage): Promise<void> {
     session.queryIterator = undefined;
     session.abortController = undefined;
   } else if (session.abortController) {
-    send({ type: 'debug', id: msg.id, message: 'No query iterator, falling back to abortController.abort()...' });
+    send({
+      type: "debug",
+      id: msg.id,
+      message: "No query iterator, falling back to abortController.abort()...",
+    });
     session.abortController.abort();
     session.abortController = undefined;
   } else {
-    send({ type: 'debug', id: msg.id, message: 'No active query to stop' });
+    send({ type: "debug", id: msg.id, message: "No active query to stop" });
   }
 }
 
 async function handleUpdateModel(msg: UpdateModelMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (!session) {
-    sendError(msg.id, 'Session not found');
+    sendError(msg.id, "Session not found");
     return;
   }
 
   // Update the model in the session options
   session.options.model = msg.model;
-  send({ type: 'model_updated', id: msg.id, model: msg.model });
+  send({ type: "model_updated", id: msg.id, model: msg.model });
 }
 
 async function handleUpdateThinking(msg: UpdateThinkingMessage): Promise<void> {
   const session = sessions.get(msg.id);
   if (!session) {
-    sendError(msg.id, 'Session not found');
+    sendError(msg.id, "Session not found");
     return;
   }
 
@@ -908,13 +1505,25 @@ async function handleUpdateThinking(msg: UpdateThinkingMessage): Promise<void> {
   if (session.queryIterator) {
     try {
       await session.queryIterator.setMaxThinkingTokens(msg.maxThinkingTokens);
-      send({ type: 'debug', id: msg.id, message: `Updated thinking tokens on active query: ${msg.maxThinkingTokens}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Updated thinking tokens on active query: ${msg.maxThinkingTokens}`,
+      });
     } catch (err) {
-      send({ type: 'debug', id: msg.id, message: `Failed to update thinking on active query: ${err}` });
+      send({
+        type: "debug",
+        id: msg.id,
+        message: `Failed to update thinking on active query: ${err}`,
+      });
     }
   }
 
-  send({ type: 'thinking_updated', id: msg.id, maxThinkingTokens: msg.maxThinkingTokens });
+  send({
+    type: "thinking_updated",
+    id: msg.id,
+    maxThinkingTokens: msg.maxThinkingTokens,
+  });
 }
 
 async function handleClose(msg: CloseMessage): Promise<void> {
@@ -932,31 +1541,37 @@ async function handleClose(msg: CloseMessage): Promise<void> {
     }
   }
   sessions.delete(msg.id);
-  send({ type: 'closed', id: msg.id });
+  send({ type: "closed", id: msg.id });
 }
 
 async function handleMessage(msg: InboundMessage): Promise<void> {
   switch (msg.type) {
-    case 'create':
+    case "create":
       await handleCreate(msg);
       break;
-    case 'query':
+    case "query":
       await handleQuery(msg);
       break;
-    case 'stop':
+    case "stop":
       await handleStop(msg);
       break;
-    case 'update_model':
+    case "update_model":
       await handleUpdateModel(msg);
       break;
-    case 'update_thinking':
+    case "update_thinking":
       await handleUpdateThinking(msg);
       break;
-    case 'close':
+    case "close":
       await handleClose(msg);
       break;
+    case "generate_repo_description":
+      await handleGenerateRepoDescription(msg);
+      break;
     default:
-      sendError('unknown', `Unknown message type: ${(msg as { type: string }).type}`);
+      sendError(
+        "unknown",
+        `Unknown message type: ${(msg as { type: string }).type}`
+      );
   }
 }
 
@@ -966,39 +1581,51 @@ const rl = readline.createInterface({
   terminal: false,
 });
 
-rl.on('line', async (line: string) => {
+rl.on("line", async (line: string) => {
   try {
     const msg = JSON.parse(line) as InboundMessage;
     await handleMessage(msg);
   } catch (err) {
-    sendError('unknown', err instanceof Error ? err.message : String(err));
+    sendError("unknown", err instanceof Error ? err.message : String(err));
   }
 });
 
 // Handle process errors - log but don't crash
-process.on('uncaughtException', (err) => {
-  send({ type: 'debug', id: 'process', message: `Uncaught exception: ${err.message}\n${err.stack}` });
-  sendError('process', `Uncaught exception: ${err.message}`);
+process.on("uncaughtException", (err) => {
+  send({
+    type: "debug",
+    id: "process",
+    message: `Uncaught exception: ${err.message}\n${err.stack}`,
+  });
+  sendError("process", `Uncaught exception: ${err.message}`);
 });
 
-process.on('unhandledRejection', (reason) => {
-  send({ type: 'debug', id: 'process', message: `Unhandled rejection: ${reason}` });
-  sendError('process', `Unhandled rejection: ${reason}`);
+process.on("unhandledRejection", (reason) => {
+  send({
+    type: "debug",
+    id: "process",
+    message: `Unhandled rejection: ${reason}`,
+  });
+  sendError("process", `Unhandled rejection: ${reason}`);
 });
 
 // Handle stdin close gracefully
-process.stdin.on('close', () => {
-  send({ type: 'debug', id: 'process', message: 'stdin closed, exiting' });
+process.stdin.on("close", () => {
+  send({ type: "debug", id: "process", message: "stdin closed, exiting" });
   process.exit(0);
 });
 
-process.stdin.on('error', (err) => {
-  send({ type: 'debug', id: 'process', message: `stdin error: ${err.message}` });
+process.stdin.on("error", (err) => {
+  send({
+    type: "debug",
+    id: "process",
+    message: `stdin error: ${err.message}`,
+  });
 });
 
 // Keep process alive
 process.stdin.resume();
 
 // Log startup
-send({ type: 'ready' });
-send({ type: 'debug', id: 'process', message: 'Sidecar started successfully' });
+send({ type: "ready" });
+send({ type: "debug", id: "process", message: "Sidecar started successfully" });

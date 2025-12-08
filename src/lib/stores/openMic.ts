@@ -48,6 +48,13 @@ function createOpenMicStore() {
   let vizSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
   let vizAnimationId: number | null = null;
 
+  // Pre-roll buffering: keep recent audio to avoid cutting off start of speech
+  const PRE_ROLL_BUFFERS = 8; // ~128ms at 16kHz with 256-sample buffers
+  const HANGOVER_BUFFERS = 4; // Continue sending ~64ms after threshold drops
+  let preRollBuffer: Int16Array[] = [];
+  let wasAboveThreshold = false;
+  let hangoverRemaining = 0;
+
   // Convert Float32 audio samples to Int16 for Vosk
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
     const int16Array = new Int16Array(float32Array.length);
@@ -156,6 +163,11 @@ function createOpenMicStore() {
     // Clear accumulated text at the start of each listening session
     voskAccumulatedText = "";
 
+    // Reset pre-roll buffer state
+    preRollBuffer = [];
+    wasAboveThreshold = false;
+    hangoverRemaining = 0;
+
     // Clean up any existing listeners first (safety measure)
     if (unlistenPartial) {
       unlistenPartial();
@@ -226,6 +238,7 @@ function createOpenMicStore() {
         if (contextRef.state === 'closed' || !processor) return;
 
         const float32Data = event.inputBuffer.getChannelData(0);
+        const int16Data = convertFloat32ToInt16(float32Data);
 
         // Check volume threshold before sending to Vosk
         const rms = calculateRMS(float32Data);
@@ -235,20 +248,45 @@ function createOpenMicStore() {
         // Emit current audio level for UI visualization
         emit("open-mic-audio-level", { rms, threshold, isAboveThreshold });
 
-        if (!isAboveThreshold) {
-          // Audio below threshold, skip sending to save resources
-          return;
+        if (isAboveThreshold) {
+          // If we just crossed the threshold, send buffered pre-roll audio first
+          if (!wasAboveThreshold && preRollBuffer.length > 0) {
+            for (const bufferedChunk of preRollBuffer) {
+              invoke("send_vosk_audio", {
+                sessionId: OPEN_MIC_SESSION_ID,
+                samples: Array.from(bufferedChunk),
+              }).catch(() => {});
+            }
+            preRollBuffer = [];
+          }
+
+          // Send current audio
+          invoke("send_vosk_audio", {
+            sessionId: OPEN_MIC_SESSION_ID,
+            samples: Array.from(int16Data),
+          }).catch(() => {});
+
+          wasAboveThreshold = true;
+          hangoverRemaining = HANGOVER_BUFFERS;
+        } else if (hangoverRemaining > 0) {
+          // Post-roll: continue sending briefly after threshold drops to avoid cutting off word endings
+          hangoverRemaining--;
+          invoke("send_vosk_audio", {
+            sessionId: OPEN_MIC_SESSION_ID,
+            samples: Array.from(int16Data),
+          }).catch(() => {});
+
+          if (hangoverRemaining === 0) {
+            wasAboveThreshold = false;
+          }
+        } else {
+          // Below threshold and hangover expired - buffer for pre-roll
+          preRollBuffer.push(int16Data);
+          if (preRollBuffer.length > PRE_ROLL_BUFFERS) {
+            preRollBuffer.shift(); // Remove oldest, keep buffer size fixed
+          }
+          wasAboveThreshold = false;
         }
-
-        const int16Data = convertFloat32ToInt16(float32Data);
-
-        // Use non-blocking invoke with catch (don't await to prevent backpressure)
-        invoke("send_vosk_audio", {
-          sessionId: OPEN_MIC_SESSION_ID,
-          samples: Array.from(int16Data),
-        }).catch(() => {
-          // Silently handle errors to avoid console spam
-        });
       };
 
       audioSource.connect(processor);
@@ -440,6 +478,11 @@ function createOpenMicStore() {
       unlistenError();
       unlistenError = null;
     }
+
+    // Clear pre-roll buffer state
+    preRollBuffer = [];
+    wasAboveThreshold = false;
+    hangoverRemaining = 0;
 
     // Clean up visualization - disconnect source before closing context
     if (vizAnimationId !== null) {

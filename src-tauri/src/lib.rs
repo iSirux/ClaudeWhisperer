@@ -210,6 +210,7 @@ pub fn run() {
             sdk_cmds::update_sdk_model,
             sdk_cmds::update_sdk_thinking,
             sdk_cmds::close_sdk_session,
+            sdk_cmds::generate_repo_description_with_claude,
             session_cmds::get_persisted_sessions,
             session_cmds::save_persisted_sessions,
             session_cmds::clear_persisted_sessions,
