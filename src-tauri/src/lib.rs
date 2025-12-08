@@ -8,7 +8,7 @@ mod terminal;
 mod vosk;
 mod whisper;
 
-use commands::{audio_cmds, llm_cmds, input_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
+use commands::{audio_cmds, llm_cmds, input_cmds, mcp_cmds, sdk_cmds, session_cmds, settings_cmds, terminal_cmds, usage_cmds, vosk_cmds};
 use config::{AppConfig, UsageStats};
 use parking_lot::Mutex;
 use sidecar::SidecarManager;
@@ -241,6 +241,17 @@ pub fn run() {
             vosk_cmds::start_vosk_session,
             vosk_cmds::send_vosk_audio,
             vosk_cmds::stop_vosk_session,
+            mcp_cmds::test_mcp_server,
+            mcp_cmds::save_mcp_bearer_token,
+            mcp_cmds::get_mcp_bearer_token,
+            mcp_cmds::delete_mcp_bearer_token,
+            mcp_cmds::has_mcp_token,
+            mcp_cmds::start_mcp_oauth_flow,
+            mcp_cmds::exchange_mcp_oauth_code,
+            mcp_cmds::refresh_mcp_oauth_tokens,
+            mcp_cmds::get_mcp_oauth_tokens,
+            mcp_cmds::delete_mcp_oauth_tokens,
+            mcp_cmds::get_mcp_auth_header,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

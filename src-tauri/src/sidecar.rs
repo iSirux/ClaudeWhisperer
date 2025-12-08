@@ -1,3 +1,4 @@
+use crate::config::McpServerConfig;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -46,6 +47,8 @@ pub enum OutboundMessage {
         messages: Option<Vec<HistoryMessage>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         plan_mode: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mcp_servers: Option<Vec<McpServerConfig>>,
     },
     Query {
         id: String,

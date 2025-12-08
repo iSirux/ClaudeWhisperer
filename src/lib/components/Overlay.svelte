@@ -34,34 +34,6 @@
   let unlistenMode: UnlistenFn | null = null;
   let unlistenInlineSessionInfo: UnlistenFn | null = null;
 
-  $: showHotkeyHints = $settings.overlay.show_hotkey_hints ?? true;
-
-  // Parse hotkey string into display-friendly key labels
-  function parseHotkey(hotkey: string): string[] {
-    return hotkey.split("+").map((key) => {
-      const k = key.trim();
-      switch (k) {
-        case "CommandOrControl":
-          return navigator.platform.includes("Mac") ? "⌘" : "Ctrl";
-        case "Control":
-          return "Ctrl";
-        case "Command":
-          return "⌘";
-        case "Shift":
-          return "Shift";
-        case "Alt":
-          return navigator.platform.includes("Mac") ? "⌥" : "Alt";
-        case "Space":
-          return "Space";
-        default:
-          return k;
-      }
-    });
-  }
-
-  $: sendHotkeyKeys = parseHotkey($settings.hotkeys.toggle_recording);
-  $: transcribeHotkeyKeys = parseHotkey($settings.hotkeys.transcribe_to_input);
-
   // Use remote state if available, otherwise local state
   $: isRecordingActive = remoteRecordingState === "recording" || $isRecording;
   $: isProcessingActive =
@@ -307,30 +279,6 @@
       {$recording.error}
     </div>
   {/if}
-
-  <!-- Hotkey hints at bottom (not shown for inline mode since user clicked the mic button) -->
-  {#if isRecordingActive && showHotkeyHints && $overlay.mode !== "inline"}
-    <div
-      class="hotkey-hints mt-3 pt-2 border-t border-border/50 flex gap-4 justify-center"
-    >
-      <div class="hotkey-hint flex items-center gap-2">
-        <div class="keys flex items-center gap-0.5">
-          {#each sendHotkeyKeys as key}
-            <kbd class="key">{key}</kbd>
-          {/each}
-        </div>
-        <span class="action text-xs text-text-secondary">Claude</span>
-      </div>
-      <div class="hotkey-hint flex items-center gap-2">
-        <div class="keys flex items-center gap-0.5">
-          {#each transcribeHotkeyKeys as key}
-            <kbd class="key">{key}</kbd>
-          {/each}
-        </div>
-        <span class="action text-xs text-text-secondary">Transcribe</span>
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -347,39 +295,5 @@
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
-  }
-
-  /* Keyboard key styling */
-  .key {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.5rem;
-    padding: 0.125rem 0.375rem;
-    font-size: 0.65rem;
-    font-weight: 500;
-    font-family:
-      system-ui,
-      -apple-system,
-      sans-serif;
-    color: var(--color-text-primary);
-    background: linear-gradient(
-      180deg,
-      var(--color-surface-elevated) 0%,
-      var(--color-surface) 100%
-    );
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.2),
-      inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  }
-
-  .hotkey-hint {
-    opacity: 0.9;
-  }
-
-  .hotkey-hint .action {
-    opacity: 0.8;
   }
 </style>

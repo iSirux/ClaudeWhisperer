@@ -8,7 +8,7 @@ Based on user preferences:
 - **Server Types**: Stdio + HTTP/SSE (local processes and remote servers)
 - **Configuration**: Global + Per-repository MCP server associations
 - **Lifecycle**: On-demand startup (lazy loading when sessions need them)
-- **UI**: Settings tab only (add/edit/remove servers, no runtime controls)
+- **UI**: Settings tab + runtime status indicators (no active controls)
 
 ## Decisions Made
 | Decision | Choice | Reasoning |
@@ -16,12 +16,12 @@ Based on user preferences:
 | Server types | Stdio + HTTP/SSE | Covers most use cases: local tools via stdio, remote services via HTTP/SSE |
 | Configuration scope | Global + Per-repo | Flexibility to have common tools available everywhere plus project-specific tools |
 | Server lifecycle | On-demand | Saves resources by only starting servers when actually needed |
-| UI complexity | Settings only | Keeps UI simple, users manage servers in settings, no runtime indicators needed |
+| UI complexity | Settings + status indicators | Users manage servers in settings, runtime shows passive status (no start/stop controls) |
 
 ## Alternatives Considered
 - **Auto-start on app launch**: Rejected - wastes resources if user doesn't need MCP tools in current session
 - **Per-session server selection**: Rejected - adds UI complexity; per-repo covers most use cases
-- **Full management UI with logs**: Rejected - overkill for v1; can add status indicators later if needed
+- **Full management UI with logs**: Rejected - overkill for v1; status indicators included but no active controls or log viewing
 
 ## Implementation Plan
 
@@ -104,10 +104,25 @@ Wire MCP servers into session creation flow:
 - [ ] Update `src-tauri/src/sidecar.rs` `OutboundMessage::Create`:
   - Add `mcp_servers: Vec<McpServerConfig>` field
 
-### Phase 6: Testing & Documentation
+### Phase 6: Runtime Status Indicators
+Add passive status display for active MCP servers:
+
+- [ ] Create `src/lib/components/sdk/McpStatusBar.svelte`:
+  - Compact bar showing connected MCP servers for current session
+  - Status badges: connecting (yellow), connected (green), error (red)
+  - Tooltip showing server name and available tool count
+  - Clicking opens settings MCP tab
+- [ ] Add MCP server status tracking to sidecar:
+  - Emit `sdk-mcp-status-${id}` events on server connect/disconnect/error
+  - Include server id, status, and tool count in event payload
+- [ ] Update `sdkSessions.ts` to track MCP server states per session
+- [ ] Add `McpStatusBar` to `SdkSessionHeader.svelte`
+
+### Phase 7: Testing & Documentation
 - [ ] Test stdio MCP server (e.g., filesystem MCP server)
 - [ ] Test HTTP/SSE MCP server connectivity
 - [ ] Test per-repo MCP server association
+- [ ] Test status indicators update correctly (connect/disconnect/error states)
 - [ ] Update CLAUDE.md with MCP configuration documentation
 
 ## Technical Details
@@ -136,6 +151,7 @@ From `@anthropic-ai/claude-agent-sdk`:
 ### New Files
 - `src-tauri/src/commands/mcp_cmds.rs` - MCP Tauri commands
 - `src/lib/components/settings/McpTab.svelte` - MCP settings UI
+- `src/lib/components/sdk/McpStatusBar.svelte` - Runtime status indicator
 - `src/lib/types/mcp.ts` - TypeScript MCP types
 
 ### Modified Files
@@ -145,6 +161,7 @@ From `@anthropic-ai/claude-agent-sdk`:
 - `src-tauri/src/commands/sdk_cmds.rs` - Pass MCP configs to sidecar
 - `src-tauri/src/sidecar.rs` - Add MCP to OutboundMessage
 - `src-tauri/sidecar/src/index.ts` - Register external MCP servers
-- `src/lib/stores/sdkSessions.ts` - Include MCP servers in session creation
+- `src/lib/stores/sdkSessions.ts` - Include MCP servers in session creation, track MCP status
+- `src/lib/components/SdkSessionHeader.svelte` - Add McpStatusBar
 - `src/routes/settings/+page.svelte` - Add MCP tab
 - `CLAUDE.md` - Document MCP configuration

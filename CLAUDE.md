@@ -96,8 +96,9 @@ Core UI:
 - `HotkeysTab.svelte` - Global hotkey configuration
 - `GitTab.svelte` - Git branch/worktree creation settings
 - `OverlayTab.svelte` - Overlay window settings (position, visibility, transparency)
-- `ReposTab.svelte` - Repository management with LLM-generated descriptions
+- `ReposTab.svelte` - Repository management with LLM-generated descriptions and MCP server associations
 - `LlmTab.svelte` - LLM integration settings with provider selection and feature toggles
+- `McpTab.svelte` - MCP server configuration (add/edit/remove/test servers)
 
 **Composables (`src/lib/composables/`) - Svelte 5 Runes:**
 
@@ -151,9 +152,10 @@ Core UI:
 - `settings_cmds.rs` - Config load/save, repo management
 - `terminal_cmds.rs` - PTY session CRUD, terminal I/O, resize
 - `audio_cmds.rs` - Audio transcription, Whisper connection testing
-- `sdk_cmds.rs` - SDK session management, prompt sending, model updates
+- `sdk_cmds.rs` - SDK session management, prompt sending, model updates, MCP server passthrough
 - `llm_cmds.rs` - LLM integration commands (session naming, interaction analysis, transcription cleanup, model/repo recommendations)
 - `vosk_cmds.rs` - Vosk integration commands (connection test, session start/stop, audio streaming)
+- `mcp_cmds.rs` - MCP server commands (connection testing for HTTP/SSE servers)
 - `input_cmds.rs` - System input simulation (clipboard-based text injection)
 - `session_cmds.rs` - Session persistence commands (get/save/clear persisted sessions)
 - `usage_cmds.rs` - Usage tracking commands (track sessions, prompts, tools, recordings, tokens)
@@ -238,7 +240,7 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - `whisper` - Transcription provider, endpoint, model, language, Docker settings
 - `vosk` - Real-time transcription endpoint, sample rate, Docker settings, transcript accumulation
 - `hotkeys` - Global shortcuts (toggle recording, send prompt, switch repo, transcribe to input)
-- `repos` - List of git repositories with paths, optional default models, and LLM-generated descriptions
+- `repos` - List of git repositories with paths, optional default models, LLM-generated descriptions, and MCP server associations
 - `audio` - Recording device, hotkey toggle, sound settings
 - `voice_commands` - Voice command settings (enabled, trigger phrases, confirmation phrases)
 - `open_mic` - Passive listening settings (enabled, wake commands, timeout)
@@ -246,6 +248,7 @@ App config stored in system config directory (`claude-whisperer/config.json`):
 - `overlay` - Position, visibility, transparency settings
 - `system` - Tray behavior, autostart, single instance settings
 - `llm` - LLM integration settings (provider, model, API key, features, auto-model priority)
+- `mcp` - MCP server configuration (global servers list)
 
 ## Key Technologies
 
@@ -378,3 +381,44 @@ Repositories can have LLM-generated descriptions (from CLAUDE.md or README.md) t
 4. (Optional) Repository recommendation via LLM
 5. Prompt sent to Claude with selected model/repo/thinking level
 6. (On completion) Session analysis for naming and interaction detection
+
+## MCP Server Support
+
+The app supports external MCP (Model Context Protocol) servers to extend Claude's capabilities with custom tools. MCP servers can be configured globally or associated with specific repositories.
+
+### Configuration (`mcp` in config)
+
+- `servers` - List of MCP server configurations
+
+### Server Types
+
+- **Stdio** - Local command-line tools (most common). Specify `command` and optional `args`/`env`
+- **HTTP** - Remote HTTP-based MCP servers. Specify `url`
+- **SSE** - Server-Sent Events for real-time communication. Specify `url`
+
+### Per-Server Configuration
+
+Each MCP server has:
+- `id` - Unique identifier
+- `name` - Display name
+- `server_type` - 'stdio', 'http', or 'sse'
+- `command` - Command to run (stdio only)
+- `args` - Command arguments (stdio only)
+- `env` - Environment variables
+- `url` - Server URL (HTTP/SSE only)
+- `enabled` - Whether the server is active
+
+### Repository Association
+
+Repositories can have specific MCP servers assigned via `mcp_servers` in `RepoConfig`. If a repo has servers configured, only those servers are used for sessions in that repo. Otherwise, all enabled global servers are used.
+
+### Server Lifecycle
+
+- Servers are started on-demand when sessions need them
+- Configuration is passed to the sidecar during session creation
+- The Claude Agent SDK manages server connections
+
+### Settings UI
+
+- **Settings → MCP Servers** - Add, edit, remove, and test MCP servers
+- **Settings → Repositories** - Associate servers with specific repos

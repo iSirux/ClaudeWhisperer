@@ -78,6 +78,22 @@ interface HistoryToolResultMessage {
 
 type HistoryMessage = HistoryUserMessage | HistoryAssistantMessage | HistoryToolUseMessage | HistoryToolResultMessage;
 
+// MCP Server configuration types
+interface McpServerConfig {
+  id: string;
+  name: string;
+  server_type: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  enabled: boolean;
+  /** Authentication type for HTTP/SSE servers */
+  auth_type?: 'none' | 'bearer_token' | 'oauth';
+  /** Custom headers for HTTP/SSE servers (includes Authorization header at runtime) */
+  headers?: Record<string, string>;
+}
+
 // Types for IPC messages
 interface CreateMessage {
   type: 'create';
@@ -88,6 +104,7 @@ interface CreateMessage {
   messages?: HistoryMessage[]; // Conversation history for restored sessions
   options?: Partial<Options>;
   plan_mode?: boolean; // Whether this is a plan mode session (enables planning tools)
+  mcp_servers?: McpServerConfig[]; // External MCP servers to register
 }
 
 interface ImageData {
@@ -243,6 +260,17 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     ...(msg.model && { model: msg.model }),
     ...(msg.system_prompt && { systemPrompt: msg.system_prompt }),
     ...msg.options,
+    // Allow all MCP tools to execute without permission prompts
+    // This callback fires when Claude would show a permission prompt
+    canUseTool: async (toolName: string, input: unknown) => {
+      // Allow all MCP tools (they start with "mcp__")
+      if (toolName.startsWith('mcp__')) {
+        send({ type: 'debug', id: msg.id, message: `Auto-allowing MCP tool: ${toolName}` });
+        return { behavior: 'allow' as const, updatedInput: input };
+      }
+      // For non-MCP tools, allow by default (acceptEdits handles file operations)
+      return { behavior: 'allow' as const, updatedInput: input };
+    },
   };
 
   // Add in-process MCP server for plan mode at creation time
@@ -260,6 +288,81 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
       'mcp__planning-tools__ask_planning_questions',
       'mcp__planning-tools__complete_planning',
     ];
+  }
+
+  // Register external MCP servers if provided
+  // Also add a wildcard pattern to allowedTools to permit all tools from registered MCP servers
+  if (msg.mcp_servers && msg.mcp_servers.length > 0) {
+    const enabledServers = msg.mcp_servers.filter(s => s.enabled);
+    send({ type: 'debug', id: msg.id, message: `Registering ${enabledServers.length} external MCP servers` });
+
+    // Collect server IDs for allowedTools patterns
+    const registeredServerIds: string[] = [];
+
+    for (const server of enabledServers) {
+      try {
+        if (server.server_type === 'stdio' && server.command) {
+          // Stdio server config
+          options.mcpServers = {
+            ...options.mcpServers,
+            [server.id]: {
+              command: server.command,
+              args: server.args || [],
+              env: server.env,
+            },
+          };
+          registeredServerIds.push(server.id);
+          send({ type: 'debug', id: msg.id, message: `Registered stdio MCP server: ${server.name} (${server.id})` });
+        } else if (server.server_type === 'http' && server.url) {
+          // HTTP server config with optional headers (for auth)
+          const httpConfig: { type: 'http'; url: string; headers?: Record<string, string> } = {
+            type: 'http',
+            url: server.url,
+          };
+          if (server.headers && Object.keys(server.headers).length > 0) {
+            httpConfig.headers = server.headers;
+            send({ type: 'debug', id: msg.id, message: `HTTP server ${server.name} has ${Object.keys(server.headers).length} custom headers` });
+          }
+          options.mcpServers = {
+            ...options.mcpServers,
+            [server.id]: httpConfig,
+          };
+          registeredServerIds.push(server.id);
+          send({ type: 'debug', id: msg.id, message: `Registered HTTP MCP server: ${server.name} (${server.id})` });
+        } else if (server.server_type === 'sse' && server.url) {
+          // SSE server config with optional headers (for auth)
+          const sseConfig: { type: 'sse'; url: string; headers?: Record<string, string> } = {
+            type: 'sse',
+            url: server.url,
+          };
+          if (server.headers && Object.keys(server.headers).length > 0) {
+            sseConfig.headers = server.headers;
+            send({ type: 'debug', id: msg.id, message: `SSE server ${server.name} has ${Object.keys(server.headers).length} custom headers` });
+          }
+          options.mcpServers = {
+            ...options.mcpServers,
+            [server.id]: sseConfig,
+          };
+          registeredServerIds.push(server.id);
+          send({ type: 'debug', id: msg.id, message: `Registered SSE MCP server: ${server.name} (${server.id})` });
+        } else {
+          send({ type: 'debug', id: msg.id, message: `Skipping MCP server ${server.name}: missing required config` });
+        }
+      } catch (err) {
+        send({ type: 'debug', id: msg.id, message: `Failed to register MCP server ${server.name}: ${err}` });
+      }
+    }
+
+    // Add wildcard patterns for all registered MCP servers to allowedTools
+    // Pattern: mcp__<server_id>__* allows all tools from that server
+    if (registeredServerIds.length > 0) {
+      const mcpToolPatterns = registeredServerIds.map(id => `mcp__${id}__*`);
+      options.allowedTools = [
+        ...(options.allowedTools || []),
+        ...mcpToolPatterns,
+      ];
+      send({ type: 'debug', id: msg.id, message: `Added MCP tool patterns to allowedTools: ${mcpToolPatterns.join(', ')}` });
+    }
   }
 
   sessions.set(msg.id, {

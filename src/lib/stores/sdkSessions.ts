@@ -283,7 +283,10 @@ function calculateWorkPeriod(session: SdkSession): { accumulatedDurationMs: numb
 function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: SdkUsage): SdkSessionUsage {
   const prev = prevUsage || createDefaultUsage(queryUsage.contextWindow);
   const contextWindow = queryUsage.contextWindow || prev.contextWindow || 200000;
-  const currentContextTokens = queryUsage.inputTokens + queryUsage.outputTokens;
+  // Total input tokens includes uncached + cached tokens (cache_read + cache_creation)
+  // See: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+  const totalInputTokens = queryUsage.inputTokens + queryUsage.cacheReadTokens + queryUsage.cacheCreationTokens;
+  const currentContextTokens = totalInputTokens + queryUsage.outputTokens;
   const contextUsagePercent = Math.min(100, (currentContextTokens / contextWindow) * 100);
 
   return {
@@ -308,9 +311,14 @@ function processQueryUsage(prevUsage: SdkSessionUsage | undefined, queryUsage: S
 /** Process progressive usage and return updated session usage */
 function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progressiveUsage: SdkProgressiveUsage): SdkSessionUsage {
   const prev = prevUsage || createDefaultUsage();
-  const progressiveInputTokens = prev.progressiveInputTokens + progressiveUsage.inputTokens;
-  const progressiveOutputTokens = prev.progressiveOutputTokens + progressiveUsage.outputTokens;
-  const liveCurrentTokens = progressiveInputTokens + progressiveOutputTokens;
+  // Progressive usage values from the SDK are cumulative for the current request, not deltas
+  // So we use the latest values directly instead of accumulating
+  const progressiveInputTokens = progressiveUsage.inputTokens;
+  const progressiveOutputTokens = progressiveUsage.outputTokens;
+  const progressiveCacheReadTokens = progressiveUsage.cacheReadTokens;
+  const progressiveCacheCreationTokens = progressiveUsage.cacheCreationTokens;
+  // Total tokens includes uncached + cached tokens for accurate context usage
+  const liveCurrentTokens = progressiveInputTokens + progressiveCacheReadTokens + progressiveCacheCreationTokens + progressiveOutputTokens;
   const contextUsagePercent = Math.min(100, (liveCurrentTokens / prev.contextWindow) * 100);
 
   return {
@@ -318,8 +326,8 @@ function processProgressiveUsage(prevUsage: SdkSessionUsage | undefined, progres
     contextUsagePercent,
     progressiveInputTokens,
     progressiveOutputTokens,
-    progressiveCacheReadTokens: prev.progressiveCacheReadTokens + progressiveUsage.cacheReadTokens,
-    progressiveCacheCreationTokens: prev.progressiveCacheCreationTokens + progressiveUsage.cacheCreationTokens,
+    progressiveCacheReadTokens,
+    progressiveCacheCreationTokens,
   };
 }
 
@@ -647,6 +655,69 @@ function createSdkSessionsStore() {
     const currentSettings = get(settings);
     const resolvedModel = resolveModelForApi(model, currentSettings.enabled_models);
 
+    // Determine which MCP servers to use
+    // 1. Check if the current repo has specific MCP servers configured
+    // 2. Otherwise, use all enabled global servers
+    let mcpServers = null;
+    console.log('[MCP Debug] Total MCP servers in settings:', currentSettings.mcp?.servers?.length ?? 0);
+    if (currentSettings.mcp?.servers?.length > 0) {
+      const repo = currentSettings.repos.find((r) => r.path === cwd);
+      console.log('[MCP Debug] Session cwd:', cwd);
+      console.log('[MCP Debug] Found repo:', repo?.name, 'with mcp_servers:', repo?.mcp_servers);
+      let servers;
+      if (repo?.mcp_servers?.length) {
+        // Use repo-specific servers
+        servers = currentSettings.mcp.servers.filter(
+          (s) => s.enabled && repo.mcp_servers!.includes(s.id)
+        );
+        console.log('[MCP Debug] Using repo-specific servers:', servers.length);
+      } else {
+        // Use all enabled global servers
+        servers = currentSettings.mcp.servers.filter((s) => s.enabled);
+        console.log('[MCP Debug] Using all enabled global servers:', servers.length);
+      }
+      console.log('[MCP Debug] Servers to register:', servers.map(s => ({ id: s.id, name: s.name, enabled: s.enabled, type: s.server_type })));
+
+      // Inject auth headers for HTTP/SSE servers that have authentication configured
+      mcpServers = await Promise.all(
+        servers.map(async (server) => {
+          // Skip stdio servers (they don't use headers)
+          if (server.server_type === 'stdio') {
+            return server;
+          }
+
+          // Skip servers without auth
+          if (!server.auth_type || server.auth_type === 'none') {
+            return server;
+          }
+
+          // Get auth header from secure storage
+          try {
+            const authHeader = await invoke<string | null>('get_mcp_auth_header', {
+              serverId: server.id,
+            });
+
+            if (authHeader) {
+              // Inject Authorization header
+              return {
+                ...server,
+                headers: {
+                  ...server.headers,
+                  Authorization: authHeader,
+                },
+              };
+            }
+          } catch (e) {
+            console.warn(`Failed to get auth header for MCP server ${server.name}:`, e);
+          }
+
+          return server;
+        })
+      );
+    }
+
+    console.log('[MCP Debug] Final mcpServers to send:', mcpServers?.length ?? 0, mcpServers);
+
     await invoke('create_sdk_session', {
       id,
       cwd,
@@ -654,6 +725,7 @@ function createSdkSessionsStore() {
       systemPrompt: systemPrompt ?? null,
       messages: historyMessages && historyMessages.length > 0 ? historyMessages : null,
       planMode: planMode ?? null,
+      mcpServers: mcpServers && mcpServers.length > 0 ? mcpServers : null,
     });
 
     if (thinkingLevel) {
@@ -788,10 +860,13 @@ function createSdkSessionsStore() {
     },
 
     async closeSession(id: string): Promise<void> {
-      try {
-        await invoke('close_sdk_session', { id });
-      } catch (error) {
-        console.error('Failed to close SDK session:', error);
+      // Only try to close sidecar session if it was actually started
+      if (liveSessions.has(id)) {
+        try {
+          await invoke('close_sdk_session', { id });
+        } catch (error) {
+          console.error('Failed to close SDK session:', error);
+        }
       }
 
       const unlisteners = listeners.get(id);

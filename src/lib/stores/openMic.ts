@@ -31,6 +31,7 @@ function createOpenMicStore() {
   // Audio context and processor for passive listening
   let mediaStream: MediaStream | null = null;
   let audioContext: AudioContext | null = null;
+  let audioSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
   let processor: ScriptProcessorNode | null = null;
   let unlistenPartial: UnlistenFn | null = null;
   let unlistenFinal: UnlistenFn | null = null;
@@ -44,6 +45,7 @@ function createOpenMicStore() {
   // Visualization context (to match recording store's audio pipeline)
   let vizAudioContext: AudioContext | null = null;
   let vizAnalyser: AnalyserNode | null = null;
+  let vizSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
   let vizAnimationId: number | null = null;
 
   // Convert Float32 audio samples to Int16 for Vosk
@@ -54,6 +56,15 @@ function createOpenMicStore() {
       int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
     return int16Array;
+  }
+
+  // Calculate RMS (Root Mean Square) volume of audio samples
+  function calculateRMS(float32Array: Float32Array): number {
+    let sum = 0;
+    for (let i = 0; i < float32Array.length; i++) {
+      sum += float32Array[i] * float32Array[i];
+    }
+    return Math.sqrt(sum / float32Array.length);
   }
 
   // Check if a transcript contains any wake command
@@ -182,7 +193,7 @@ function createOpenMicStore() {
       vizAnalyser = vizAudioContext.createAnalyser();
       vizAnalyser.fftSize = 256;
       vizAnalyser.smoothingTimeConstant = 0.8;
-      const vizSource = vizAudioContext.createMediaStreamSource(mediaStream);
+      vizSource = vizAudioContext.createMediaStreamSource(mediaStream);
       vizSource.connect(vizAnalyser);
 
       // Run visualization loop (matches recording store behavior)
@@ -201,27 +212,46 @@ function createOpenMicStore() {
       audioContext = new AudioContext({
         sampleRate: currentSettings.vosk.sample_rate || 16000,
       });
-      const source = audioContext.createMediaStreamSource(mediaStream);
+      audioSource = audioContext.createMediaStreamSource(mediaStream);
 
-      // ScriptProcessor to extract PCM samples
-      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      // ScriptProcessor to extract PCM samples (256 buffer = ~16ms at 16kHz, minimum valid size)
+      processor = audioContext.createScriptProcessor(256, 1, 1);
 
-      // Match recording store's audio processing (no state check - cleanup handles stopping)
-      processor.onaudioprocess = async (event) => {
+      // Store context reference to check validity in callback
+      const contextRef = audioContext;
+
+      // Match recording store's audio processing - use non-blocking invoke
+      processor.onaudioprocess = (event) => {
+        // Skip if context was closed (prevents zombie callbacks)
+        if (contextRef.state === 'closed' || !processor) return;
+
         const float32Data = event.inputBuffer.getChannelData(0);
+
+        // Check volume threshold before sending to Vosk
+        const rms = calculateRMS(float32Data);
+        const threshold = get(settings).audio.open_mic.volume_threshold ?? 0.01;
+        const isAboveThreshold = rms >= threshold;
+
+        // Emit current audio level for UI visualization
+        emit("open-mic-audio-level", { rms, threshold, isAboveThreshold });
+
+        if (!isAboveThreshold) {
+          // Audio below threshold, skip sending to save resources
+          return;
+        }
+
         const int16Data = convertFloat32ToInt16(float32Data);
 
-        try {
-          await invoke("send_vosk_audio", {
-            sessionId: OPEN_MIC_SESSION_ID,
-            samples: Array.from(int16Data),
-          });
-        } catch (error) {
+        // Use non-blocking invoke with catch (don't await to prevent backpressure)
+        invoke("send_vosk_audio", {
+          sessionId: OPEN_MIC_SESSION_ID,
+          samples: Array.from(int16Data),
+        }).catch(() => {
           // Silently handle errors to avoid console spam
-        }
+        });
       };
 
-      source.connect(processor);
+      audioSource.connect(processor);
       processor.connect(audioContext.destination);
 
       // Listen for Vosk partial events (real-time)
@@ -397,7 +427,7 @@ function createOpenMicStore() {
   }
 
   async function cleanup() {
-    // Clean up event listeners
+    // Clean up event listeners first (before any async operations)
     if (unlistenPartial) {
       unlistenPartial();
       unlistenPartial = null;
@@ -411,29 +441,53 @@ function createOpenMicStore() {
       unlistenError = null;
     }
 
-    // Clean up visualization (matches recording store cleanup)
+    // Clean up visualization - disconnect source before closing context
     if (vizAnimationId !== null) {
       cancelAnimationFrame(vizAnimationId);
       vizAnimationId = null;
     }
+    if (vizSource) {
+      try {
+        vizSource.disconnect();
+      } catch (e) {
+        // Ignore - may already be disconnected
+      }
+      vizSource = null;
+    }
+    vizAnalyser = null;
     if (vizAudioContext) {
       try {
-        await vizAudioContext.close();
+        if (vizAudioContext.state !== 'closed') {
+          await vizAudioContext.close();
+        }
       } catch (e) {
         // Ignore errors closing audio context
       }
       vizAudioContext = null;
     }
-    vizAnalyser = null;
 
-    // Clean up audio processing
+    // Clean up audio processing - disconnect source first, then processor
+    if (audioSource) {
+      try {
+        audioSource.disconnect();
+      } catch (e) {
+        // Ignore - may already be disconnected
+      }
+      audioSource = null;
+    }
     if (processor) {
-      processor.disconnect();
+      try {
+        processor.disconnect();
+      } catch (e) {
+        // Ignore - may already be disconnected
+      }
       processor = null;
     }
     if (audioContext) {
       try {
-        await audioContext.close();
+        if (audioContext.state !== 'closed') {
+          await audioContext.close();
+        }
       } catch (e) {
         // Ignore errors closing audio context
       }

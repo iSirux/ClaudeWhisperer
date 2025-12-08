@@ -304,6 +304,46 @@
               integration to auto-generate.{/if}
           </div>
         {/if}
+        <!-- MCP Servers selection -->
+        {#if $settings.mcp.servers.length > 0}
+          <div class="text-xs">
+            <div class="flex items-center gap-1 text-text-muted mb-1">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+              </svg>
+              <span>MCP Servers:</span>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              {#each $settings.mcp.servers.filter(s => s.enabled) as server}
+                {@const isSelected = repo.mcp_servers?.includes(server.id)}
+                <button
+                  class="px-1.5 py-0.5 rounded text-[10px] transition-colors {isSelected ? 'bg-accent text-white' : 'bg-border text-text-muted hover:bg-border/80'}"
+                  onclick={() => {
+                    const updatedRepos = [...$settings.repos];
+                    const currentServers = repo.mcp_servers || [];
+                    if (isSelected) {
+                      updatedRepos[index] = {
+                        ...updatedRepos[index],
+                        mcp_servers: currentServers.filter(id => id !== server.id),
+                      };
+                    } else {
+                      updatedRepos[index] = {
+                        ...updatedRepos[index],
+                        mcp_servers: [...currentServers, server.id],
+                      };
+                    }
+                    settings.update((s) => ({ ...s, repos: updatedRepos }));
+                  }}
+                >
+                  {server.name}
+                </button>
+              {/each}
+            </div>
+            {#if !repo.mcp_servers?.length}
+              <div class="text-text-muted mt-1 italic">Uses all enabled global servers</div>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>

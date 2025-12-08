@@ -31,10 +31,15 @@
 
   onDestroy(() => {
     if (interval) clearInterval(interval);
+    if (branchFetchTimeout) clearTimeout(branchFetchTimeout);
   });
 
   // Unified session list
   let allSessions = $state<DisplaySession[]>([]);
+
+  // Track session IDs to detect when sessions are added/removed (not just updated)
+  let lastSessionIds = '';
+  let branchFetchTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Reactively update sessions when stores change
   $effect(() => {
@@ -45,10 +50,25 @@
     const sorted = transformToDisplaySessions(ptySessions, sdkSessionsList, sortOrder);
     allSessions = sorted;
 
-    // Fetch branches asynchronously
-    fetchBranchesForSessions(sorted, (updated) => {
-      allSessions = updated;
-    });
+    // Only fetch branches when session list changes (add/remove), not on every update
+    const currentSessionIds = sorted.map(s => s.id).sort().join(',');
+    if (currentSessionIds !== lastSessionIds) {
+      lastSessionIds = currentSessionIds;
+
+      // Debounce branch fetching to avoid rapid IPC calls
+      if (branchFetchTimeout) {
+        clearTimeout(branchFetchTimeout);
+      }
+      branchFetchTimeout = setTimeout(() => {
+        fetchBranchesForSessions(sorted, (updated) => {
+          // Verify session list hasn't changed since we started
+          const stillCurrentIds = updated.map(s => s.id).sort().join(',');
+          if (stillCurrentIds === lastSessionIds) {
+            allSessions = updated;
+          }
+        });
+      }, 100);
+    }
   });
 
   // Session creation - creates a setup session that appears in the list
@@ -73,6 +93,19 @@
     }
   }
 
+  // Track active session IDs reactively for proper UI updates
+  let currentActiveSessionId = $state<string | null>(null);
+  let currentActiveSdkSessionId = $state<string | null>(null);
+
+  // Keep local state in sync with stores
+  $effect(() => {
+    currentActiveSessionId = $activeSessionId;
+  });
+
+  $effect(() => {
+    currentActiveSdkSessionId = $activeSdkSessionId;
+  });
+
   // Session selection
   function selectSession(session: DisplaySession) {
     if (session.type === 'pty') {
@@ -89,8 +122,8 @@
   function isSessionActive(session: DisplaySession): boolean {
     if (currentView !== 'sessions') return false;
     return session.type === 'pty'
-      ? $activeSessionId === session.id
-      : $activeSdkSessionId === session.id;
+      ? currentActiveSessionId === session.id
+      : currentActiveSdkSessionId === session.id;
   }
 
   // Confirmation dialog state

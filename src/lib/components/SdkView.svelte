@@ -28,8 +28,15 @@
     recommendRepo,
     isModelRecommendationEnabled,
     isRepoAutoSelectEnabled,
+    isTranscriptionCleanupEnabled,
     needsUserConfirmation,
   } from "$lib/utils/llm";
+  import {
+    processVoiceCommands,
+    cleanupTranscript,
+    buildSingleRepoContext,
+  } from "$lib/composables/useTranscriptionProcessor.svelte";
+  import { get } from "svelte/store";
 
   let { sessionId }: { sessionId: string } = $props();
 
@@ -245,19 +252,24 @@
   );
   let sessionModel = $derived(session?.model ?? "");
   let branch = $state<string | null>(null);
+  let lastFetchedBranchCwd = '';
 
-  // Fetch git branch when session changes (skip for auto mode)
+  // Fetch git branch when cwd actually changes (skip for auto mode)
   $effect(() => {
-    if (cwd && cwd !== ".") {
-      invoke<string>("get_git_branch", { repoPath: cwd })
-        .then((b) => {
-          branch = b;
-        })
-        .catch(() => {
-          branch = null;
-        });
-    } else {
-      branch = null;
+    // Only fetch if cwd actually changed
+    if (cwd !== lastFetchedBranchCwd) {
+      lastFetchedBranchCwd = cwd;
+      if (cwd && cwd !== ".") {
+        invoke<string>("get_git_branch", { repoPath: cwd })
+          .then((b) => {
+            branch = b;
+          })
+          .catch(() => {
+            branch = null;
+          });
+      } else {
+        branch = null;
+      }
     }
   });
 
@@ -272,25 +284,25 @@
   });
 
   onMount(() => {
-    console.log("[SdkView] Setting up subscription for session:", sessionId);
     unsubscribe = sdkSessions.subscribe((sessions) => {
-      try {
-        console.log(
-          "[SdkView] Store updated, sessions count:",
-          sessions.length
-        );
-        const found = sessions.find((s) => s.id === sessionId);
-        console.log(
-          "[SdkView] Found session:",
-          found?.id,
-          "status:",
-          found?.status,
-          "messages:",
-          found?.messages.length
-        );
-        session = found || null;
-      } catch (err) {
-        console.error("[SdkView] Error in subscription:", err);
+      const found = sessions.find((s) => s.id === sessionId);
+      // Only update if session changed meaningfully (avoid reactive updates from audio visualization)
+      if (found !== session) {
+        // Check if key fields actually changed
+        const statusChanged = found?.status !== session?.status;
+        const messagesChanged = found?.messages.length !== session?.messages.length;
+        const cwdChanged = found?.cwd !== session?.cwd;
+        const modelChanged = found?.model !== session?.model;
+        const usageChanged = found?.usage?.totalInputTokens !== session?.usage?.totalInputTokens ||
+                            found?.usage?.totalOutputTokens !== session?.usage?.totalOutputTokens;
+        const pendingChanged = found?.pendingTranscription?.status !== session?.pendingTranscription?.status ||
+                              found?.pendingTranscription?.transcript !== session?.pendingTranscription?.transcript;
+        const planModeChanged = found?.planMode?.isActive !== session?.planMode?.isActive;
+
+        if (!session || statusChanged || messagesChanged || cwdChanged || modelChanged ||
+            usageChanged || pendingChanged || planModeChanged) {
+          session = found || null;
+        }
       }
     });
   });
@@ -633,16 +645,81 @@
 
   async function handleStopRecording() {
     if (!$isRecording) return;
-    const transcript = await recording.stopRecording(true);
-    if (transcript && isRecordingForCurrentSession) {
-      await sdkSessions.sendPrompt(sessionId, transcript);
-      recording.clearTranscript();
-    }
-    isRecordingForCurrentSession = false;
+
+    // Capture Vosk transcript before stopping (for dual-source cleanup)
+    const capturedVoskTranscript = get(recording).realtimeTranscript;
+
+    const whisperTranscript = await recording.stopRecording(true);
 
     // Hide overlay and clear inline session info
     overlay.clearInlineSessionInfo();
     overlay.hide();
+
+    if (!whisperTranscript || !isRecordingForCurrentSession) {
+      isRecordingForCurrentSession = false;
+      return;
+    }
+
+    isRecordingForCurrentSession = false;
+
+    // Process voice commands first
+    const processed = processVoiceCommands(whisperTranscript, capturedVoskTranscript);
+
+    // Handle cancel command
+    if (processed.detectedCommand === 'cancel') {
+      console.log('[SdkView] Cancel command detected, discarding recording');
+      recording.clearTranscript();
+      return;
+    }
+
+    // Handle transcribe command (paste instead of send)
+    if (processed.detectedCommand === 'transcribe') {
+      console.log('[SdkView] Transcribe command detected, pasting to input');
+      // Update draft with the transcript instead of sending
+      sdkSessions.updateDraft(sessionId, processed.transcript, undefined);
+      recording.clearTranscript();
+      return;
+    }
+
+    // Check if transcript is empty after voice command processing
+    if (processed.isEmpty) {
+      console.log('[SdkView] Transcript empty after voice command processing');
+      recording.clearTranscript();
+      return;
+    }
+
+    // Run LLM transcription cleanup with dual-source support
+    let finalTranscript = processed.transcript;
+
+    if (isTranscriptionCleanupEnabled()) {
+      // Get repo context for cleanup
+      const currentRepo = cwd && cwd !== '.'
+        ? $settings.repos.find(r => r.path === cwd)
+        : null;
+      const repoContext = currentRepo ? buildSingleRepoContext(currentRepo) : undefined;
+
+      try {
+        const cleanupResult = await cleanupTranscript(
+          processed.transcript,
+          processed.voskTranscript,
+          repoContext
+        );
+        finalTranscript = cleanupResult.text;
+
+        if (cleanupResult.wasCleanedUp) {
+          console.log(
+            '[SdkView] Transcription cleaned up:',
+            cleanupResult.corrections,
+            cleanupResult.usedDualSource ? '(dual-source)' : ''
+          );
+        }
+      } catch (error) {
+        console.error('[SdkView] Transcription cleanup failed, using original:', error);
+      }
+    }
+
+    await sdkSessions.sendPrompt(sessionId, finalTranscript);
+    recording.clearTranscript();
   }
 
   // Handlers for pending transcription sessions

@@ -7,6 +7,7 @@
   let liveInputTokens = $derived(usage.totalInputTokens + usage.progressiveInputTokens);
   let liveOutputTokens = $derived(usage.totalOutputTokens + usage.progressiveOutputTokens);
   let liveCacheReadTokens = $derived(usage.totalCacheReadTokens + usage.progressiveCacheReadTokens);
+  let contextPercent = $derived(usage.contextUsagePercent ?? 0);
 </script>
 
 <div class="session-header">
@@ -38,17 +39,17 @@
         </span>
       {/if}
     </div>
-    <div class="context-bar-container" title="Context usage: {usage.contextUsagePercent.toFixed(1)}% of {formatTokens(usage.contextWindow)}">
+    <div class="context-bar-container" title="Context usage: {contextPercent.toFixed(1)}% of {formatTokens(usage.contextWindow ?? 0)}">
       <div class="context-bar-bg">
         <div
           class="context-bar-fill"
-          class:warning={usage.contextUsagePercent > 70}
-          class:danger={usage.contextUsagePercent > 90}
+          class:warning={contextPercent > 70}
+          class:danger={contextPercent > 90}
           class:live={isQuerying && (usage.progressiveInputTokens > 0 || usage.progressiveOutputTokens > 0)}
-          style="width: {Math.min(100, usage.contextUsagePercent)}%"
+          style="width: {Math.min(100, contextPercent)}%"
         ></div>
       </div>
-      <span class="context-percent">{usage.contextUsagePercent.toFixed(0)}%</span>
+      <span class="context-percent">{contextPercent.toFixed(0)}%</span>
     </div>
   </div>
 </div>

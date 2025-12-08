@@ -110,19 +110,26 @@
     return content.slice(0, PROMPT_PREVIEW_LENGTH) + '...';
   });
 
-  // Effect to fetch branch when active SDK session changes
+  // Track last fetched cwd to avoid redundant IPC calls
+  let lastFetchedBranchCwd = '';
+
+  // Effect to fetch branch when active SDK session's cwd changes
   $effect(() => {
     const cwd = $activeSdkSession?.cwd;
-    if (cwd && cwd !== '.') {
-      invoke<string>('get_git_branch', { repoPath: cwd })
-        .then((b) => {
-          activeSdkSessionBranch = b;
-        })
-        .catch(() => {
-          activeSdkSessionBranch = null;
-        });
-    } else {
-      activeSdkSessionBranch = null;
+    // Only fetch if cwd actually changed
+    if (cwd !== lastFetchedBranchCwd) {
+      lastFetchedBranchCwd = cwd ?? '';
+      if (cwd && cwd !== '.') {
+        invoke<string>('get_git_branch', { repoPath: cwd })
+          .then((b) => {
+            activeSdkSessionBranch = b;
+          })
+          .catch(() => {
+            activeSdkSessionBranch = null;
+          });
+      } else {
+        activeSdkSessionBranch = null;
+      }
     }
   });
 
@@ -869,27 +876,29 @@
         <Settings initialTab={settingsTabFromNav} />
       {:else if $activeSdkSession}
         <!-- SDK Mode Session -->
+        {@const activeSession = $activeSdkSession}
+        {@const sessionId = activeSession.id}
         {@const isPendingState =
-          $activeSdkSession.status === 'pending_repo' ||
-          $activeSdkSession.status === 'initializing'}
-        {@const isSetupState = $activeSdkSession.status === 'setup'}
+          activeSession.status === 'pending_repo' ||
+          activeSession.status === 'initializing'}
+        {@const isSetupState = activeSession.status === 'setup'}
 
         {#if isSetupState}
           <SessionSetupView
-            initialModel={$activeSdkSession.model}
-            initialThinkingLevel={$activeSdkSession.thinkingLevel}
+            initialModel={activeSession.model}
+            initialThinkingLevel={activeSession.thinkingLevel}
             initialCwd={$activeRepo?.path || ''}
-            initialPlanMode={$activeSdkSession.planMode?.isActive || false}
+            initialPlanMode={activeSession.planMode?.isActive || false}
             isRecordingForSetup={recordingFlow.isRecordingForSetup}
-            onStart={(config) => handleSetupSessionStart($activeSdkSession.id, config)}
+            onStart={(config) => handleSetupSessionStart(sessionId, config)}
             onStartRecording={recordingFlow.startRecordingForSetup}
             onStopRecording={recordingFlow.stopRecordingForSetup}
-            onCancel={() => handleSetupSessionCancel($activeSdkSession.id)}
+            onCancel={() => handleSetupSessionCancel(sessionId)}
           />
         {:else}
           <SdkSessionHeader
-            createdAt={$activeSdkSession.createdAt}
-            messages={$activeSdkSession.messages}
+            createdAt={activeSession.createdAt}
+            messages={activeSession.messages}
             isPending={isPendingState}
             repoName={activeSdkRepoName}
             branch={activeSdkSessionBranch}
@@ -901,18 +910,18 @@
           {#if isPendingState}
             <div class="terminal-wrapper flex-1 overflow-hidden">
               <SessionPendingView
-                status={$activeSdkSession.status as 'pending_repo' | 'initializing'}
+                status={activeSession.status as 'pending_repo' | 'initializing'}
                 repos={$settings.repos}
-                pendingSelection={$activeSdkSession.pendingRepoSelection}
-                pendingPrompt={$activeSdkSession.pendingPrompt}
+                pendingSelection={activeSession.pendingRepoSelection}
+                pendingPrompt={activeSession.pendingPrompt}
                 onSelectRepo={handlePendingRepoSelection}
                 onCancel={handlePendingSessionCancel}
               />
             </div>
           {:else}
             <div class="terminal-wrapper flex-1 overflow-hidden">
-              {#key $activeSdkSession.id}
-                <SdkView bind:this={sdkViewRef} sessionId={$activeSdkSession.id} />
+              {#key sessionId}
+                <SdkView bind:this={sdkViewRef} sessionId={sessionId} />
               {/key}
             </div>
           {/if}

@@ -56,7 +56,6 @@ export interface HotkeyConfig {
 
 export interface OverlayConfig {
   show_when_focused: boolean;
-  show_hotkey_hints: boolean;
   position_x: number | null;
   position_y: number | null;
 }
@@ -107,6 +106,8 @@ export interface OpenMicConfig {
   enabled: boolean;
   /** List of active wake commands that will trigger recording */
   wake_commands: string[];
+  /** Minimum volume threshold (0.0-1.0) to send audio to Vosk (saves resources when silent) */
+  volume_threshold: number;
 }
 
 /** Default open mic wake command presets */
@@ -159,7 +160,13 @@ export interface RepoConfig {
   /** Project-specific vocabulary/lingo for transcription cleanup and repo matching (20-50 words).
    * Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase */
   vocabulary?: string[];
+  /** List of MCP server IDs to use for this repository (overrides global servers) */
+  mcp_servers?: string[];
 }
+
+// Import and re-export MCP types
+import type { McpServerType, McpServerConfig, McpConfig } from '$lib/types/mcp';
+export type { McpServerType, McpServerConfig, McpConfig };
 
 export type TerminalMode = "Interactive" | "Prompt" | "Sdk";
 
@@ -267,6 +274,8 @@ export interface AppConfig {
   llm: LlmConfig;
   /** @deprecated Use llm instead */
   gemini?: LlmConfig;
+  /** MCP server configuration */
+  mcp: McpConfig;
 }
 
 const defaultConfig: AppConfig = {
@@ -308,7 +317,6 @@ const defaultConfig: AppConfig = {
   },
   overlay: {
     show_when_focused: true,
-    show_hotkey_hints: true,
     position_x: null,
     position_y: null,
   },
@@ -331,6 +339,7 @@ const defaultConfig: AppConfig = {
     open_mic: {
       enabled: false,
       wake_commands: ["hey claude"],
+      volume_threshold: 0.01,
     },
   },
   repos: [],
@@ -387,6 +396,9 @@ const defaultConfig: AppConfig = {
     },
     confirm_repo_selection: false,
     min_auto_select_confidence: "high",
+  },
+  mcp: {
+    servers: [],
   },
 };
 

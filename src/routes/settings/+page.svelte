@@ -15,6 +15,7 @@
     HotkeysTab,
     OverlayTab,
     ReposTab,
+    McpTab,
   } from "$lib/components/settings";
 
   // Accept an initial tab from parent component
@@ -104,6 +105,7 @@
     { id: "whisper", label: "Transcription (Whisper)" },
     { id: "vosk", label: "Real-time Transcription (Vosk)" },
     { id: "llm", label: "LLM" },
+    { id: "mcp", label: "MCP Servers" },
     { id: "git", label: "Git" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "overlay", label: "Overlay" },
@@ -174,6 +176,8 @@
         <VoskTab />
       {:else if activeTab === "llm"}
         <LlmTab />
+      {:else if activeTab === "mcp"}
+        <McpTab />
       {:else if activeTab === "git"}
         <GitTab />
       {:else if activeTab === "hotkeys"}

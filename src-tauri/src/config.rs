@@ -192,8 +192,6 @@ impl Default for HotkeyConfig {
 pub struct OverlayConfig {
     #[serde(default = "default_show_when_focused")]
     pub show_when_focused: bool,
-    #[serde(default = "default_show_hotkey_hints")]
-    pub show_hotkey_hints: bool,
     #[serde(default)]
     pub position_x: Option<i32>,
     #[serde(default)]
@@ -204,15 +202,10 @@ fn default_show_when_focused() -> bool {
     true
 }
 
-fn default_show_hotkey_hints() -> bool {
-    true
-}
-
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
             show_when_focused: true,
-            show_hotkey_hints: true,
             position_x: None,
             position_y: None,
         }
@@ -688,6 +681,13 @@ pub struct OpenMicConfig {
     /// List of active wake commands that will trigger recording
     #[serde(default = "default_wake_commands")]
     pub wake_commands: Vec<String>,
+    /// Minimum volume threshold (0.0-1.0) to send audio to Vosk (saves resources when silent)
+    #[serde(default = "default_volume_threshold")]
+    pub volume_threshold: f32,
+}
+
+fn default_volume_threshold() -> f32 {
+    0.01 // 1% - very low default to catch most speech
 }
 
 fn default_wake_commands() -> Vec<String> {
@@ -699,6 +699,7 @@ impl Default for OpenMicConfig {
         Self {
             enabled: false,
             wake_commands: default_wake_commands(),
+            volume_threshold: default_volume_threshold(),
         }
     }
 }
@@ -783,6 +784,9 @@ pub struct RepoConfig {
     /// Unlike keywords which are categorical, vocabulary captures the actual terms/jargon used in the codebase
     #[serde(default)]
     pub vocabulary: Option<Vec<String>>,
+    /// List of MCP server IDs to use for this repository (overrides global servers)
+    #[serde(default)]
+    pub mcp_servers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -863,6 +867,97 @@ pub enum ThinkingLevel {
     On,
 }
 
+/// MCP server transport type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpServerType {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// MCP server authentication type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthType {
+    /// No authentication
+    #[default]
+    None,
+    /// Static bearer token (API key style)
+    BearerToken,
+    /// OAuth 2.1 authorization code flow with PKCE
+    OAuth,
+}
+
+/// OAuth 2.1 configuration for MCP servers
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpOAuthConfig {
+    /// OAuth client ID (public, safe to store in config)
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Authorization endpoint URL
+    #[serde(default)]
+    pub authorization_url: Option<String>,
+    /// Token endpoint URL
+    #[serde(default)]
+    pub token_url: Option<String>,
+    /// Scopes to request (space-separated)
+    #[serde(default)]
+    pub scopes: Option<String>,
+    /// Redirect URI for OAuth callback (default: http://localhost:19256/callback)
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+}
+
+/// Configuration for an individual MCP server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Unique identifier for this server
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Transport type (stdio, http, sse)
+    #[serde(default)]
+    pub server_type: McpServerType,
+    /// Command to run (for stdio servers)
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Command arguments (for stdio servers)
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Environment variables
+    #[serde(default)]
+    pub env: Option<std::collections::HashMap<String, String>>,
+    /// URL endpoint (for HTTP/SSE servers)
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Whether this server is enabled
+    #[serde(default = "default_mcp_enabled")]
+    pub enabled: bool,
+    /// Authentication type for HTTP/SSE servers
+    #[serde(default)]
+    pub auth_type: McpAuthType,
+    /// OAuth configuration (when auth_type is OAuth)
+    #[serde(default)]
+    pub oauth: Option<McpOAuthConfig>,
+    /// Custom headers for HTTP/SSE servers (non-sensitive, stored in config)
+    #[serde(default)]
+    pub headers: Option<std::collections::HashMap<String, String>>,
+}
+
+fn default_mcp_enabled() -> bool {
+    true
+}
+
+/// Global MCP configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    /// List of global MCP servers
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub whisper: WhisperConfig,
@@ -910,6 +1005,9 @@ pub struct AppConfig {
     pub sessions_view: SessionsViewConfig,
     #[serde(default, alias = "gemini")]
     pub llm: LlmConfig,
+    /// MCP server configuration
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 fn default_mark_sessions_unread() -> bool {
@@ -1106,6 +1204,7 @@ impl Default for AppConfig {
             session_response_rows: 2,
             sessions_view: SessionsViewConfig::default(),
             llm: LlmConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }

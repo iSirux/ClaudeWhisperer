@@ -1,6 +1,7 @@
 pub mod audio_cmds;
 pub mod llm_cmds;
 pub mod input_cmds;
+pub mod mcp_cmds;
 
 // Backwards compatibility alias
 pub use llm_cmds as gemini_cmds;

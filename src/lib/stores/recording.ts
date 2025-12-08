@@ -48,12 +48,14 @@ function createRecordingStore() {
   let audioChunks: Blob[] = [];
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
+  let audioSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
   let visualizationAnimationId: number | null = null;
   let recordingStartTime: number | null = null;
 
   // Vosk real-time transcription state
   let voskAudioContext: AudioContext | null = null;
   let voskProcessor: ScriptProcessorNode | null = null;
+  let voskSource: MediaStreamAudioSourceNode | null = null; // Store source for proper cleanup
   let voskUnlistenPartial: UnlistenFn | null = null;
   let voskUnlistenFinal: UnlistenFn | null = null;
   let voskUnlistenError: UnlistenFn | null = null;
@@ -61,6 +63,8 @@ function createRecordingStore() {
   let voskAccumulatedText: string = '';
   // Flag to prevent double-triggering of voice commands
   let voiceCommandTriggered: boolean = false;
+  // Flag to prevent concurrent Vosk session starts
+  let voskSessionStarting: boolean = false;
 
   // Convert Float32 audio samples to Int16 for Vosk
   function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
@@ -84,6 +88,16 @@ function createRecordingStore() {
       return;
     }
 
+    // Prevent concurrent session starts
+    if (voskSessionStarting) {
+      console.log('[recording] Vosk session already starting, skipping');
+      return;
+    }
+    voskSessionStarting = true;
+
+    // Clean up any existing session first (guard against listener leaks)
+    await stopVoskSession();
+
     // Reset voice command flag for new session
     voiceCommandTriggered = false;
 
@@ -95,26 +109,33 @@ function createRecordingStore() {
     try {
       // Create audio context at Vosk's required sample rate (16kHz)
       voskAudioContext = new AudioContext({ sampleRate: currentSettings.vosk.sample_rate || 16000 });
-      const source = voskAudioContext.createMediaStreamSource(stream);
+      voskSource = voskAudioContext.createMediaStreamSource(stream);
 
       // ScriptProcessor to extract PCM samples (4096 samples per buffer)
       voskProcessor = voskAudioContext.createScriptProcessor(4096, 1, 1);
 
-      voskProcessor.onaudioprocess = async (event) => {
+      // Store sessionId in closure, but check if context is still valid before sending
+      const contextRef = voskAudioContext;
+      voskProcessor.onaudioprocess = (event) => {
+        // Skip if context was closed (prevents zombie callbacks)
+        if (contextRef.state === 'closed' || !voskProcessor) return;
+
         const float32Data = event.inputBuffer.getChannelData(0);
         const int16Data = convertFloat32ToInt16(float32Data);
 
-        try {
-          await invoke('send_vosk_audio', {
-            sessionId,
-            samples: Array.from(int16Data),
-          });
-        } catch (error) {
-          console.error('Failed to send audio to Vosk:', error);
-        }
+        // Use non-blocking invoke with catch (don't await to prevent backpressure)
+        invoke('send_vosk_audio', {
+          sessionId,
+          samples: Array.from(int16Data),
+        }).catch((error) => {
+          // Only log if context is still active
+          if (contextRef.state !== 'closed') {
+            console.error('Failed to send audio to Vosk:', error);
+          }
+        });
       };
 
-      source.connect(voskProcessor);
+      voskSource.connect(voskProcessor);
       // Connect to destination to keep processing active (required by ScriptProcessorNode)
       voskProcessor.connect(voskAudioContext.destination);
 
@@ -226,6 +247,8 @@ function createRecordingStore() {
       console.error('Failed to start Vosk session:', error);
       // Clean up on error
       await stopVoskSession();
+    } finally {
+      voskSessionStarting = false;
     }
   }
 
@@ -234,7 +257,7 @@ function createRecordingStore() {
     const currentState = get({ subscribe });
     const sessionId = currentState.voskSessionId;
 
-    // Clean up event listeners
+    // Clean up event listeners first (before any async operations)
     if (voskUnlistenPartial) {
       voskUnlistenPartial();
       voskUnlistenPartial = null;
@@ -248,13 +271,32 @@ function createRecordingStore() {
       voskUnlistenError = null;
     }
 
-    // Clean up audio processing
+    // Clean up audio processing - disconnect source first, then processor
+    if (voskSource) {
+      try {
+        voskSource.disconnect();
+      } catch (e) {
+        // Ignore - may already be disconnected
+      }
+      voskSource = null;
+    }
     if (voskProcessor) {
-      voskProcessor.disconnect();
+      try {
+        voskProcessor.disconnect();
+      } catch (e) {
+        // Ignore - may already be disconnected
+      }
       voskProcessor = null;
     }
     if (voskAudioContext) {
-      await voskAudioContext.close();
+      try {
+        // Check state before closing to avoid errors on already closed contexts
+        if (voskAudioContext.state !== 'closed') {
+          await voskAudioContext.close();
+        }
+      } catch (e) {
+        console.warn('[recording] Error closing Vosk audio context:', e);
+      }
       voskAudioContext = null;
     }
 
@@ -273,14 +315,17 @@ function createRecordingStore() {
   }
 
   function startVisualizationBroadcast(stream: MediaStream) {
+    // Clean up any existing visualization first
+    stopVisualizationBroadcastSync();
+
     try {
       audioContext = new AudioContext();
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.8;
 
-      const source = audioContext.createMediaStreamSource(stream);
-      source.connect(analyser);
+      audioSource = audioContext.createMediaStreamSource(stream);
+      audioSource.connect(analyser);
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
@@ -300,16 +345,38 @@ function createRecordingStore() {
     }
   }
 
-  function stopVisualizationBroadcast() {
+  // Synchronous cleanup for visualization (used internally)
+  function stopVisualizationBroadcastSync() {
     if (visualizationAnimationId !== null) {
       cancelAnimationFrame(visualizationAnimationId);
       visualizationAnimationId = null;
     }
-    if (audioContext) {
-      audioContext.close();
-      audioContext = null;
+    // Disconnect source before closing context
+    if (audioSource) {
+      try {
+        audioSource.disconnect();
+      } catch (e) {
+        // Ignore - may already be disconnected
+      }
+      audioSource = null;
     }
     analyser = null;
+  }
+
+  async function stopVisualizationBroadcast() {
+    stopVisualizationBroadcastSync();
+
+    if (audioContext) {
+      try {
+        // Check state before closing to avoid errors on already closed contexts
+        if (audioContext.state !== 'closed') {
+          await audioContext.close();
+        }
+      } catch (e) {
+        console.warn('[recording] Error closing visualization audio context:', e);
+      }
+      audioContext = null;
+    }
 
     // Emit empty data to signal recording stopped
     emit('audio-visualization', { data: null });
@@ -320,13 +387,21 @@ function createRecordingStore() {
     return `rec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
+  // Flag to track if queue processing is active
+  let queueProcessing = false;
+
   // Process the next item in the transcription queue
   async function processQueue() {
+    // Prevent concurrent processing
+    if (queueProcessing) return;
+
     const currentState = get({ subscribe });
 
     // Find the next pending recording
     const pendingRecording = currentState.queue.find(r => r.status === 'pending');
     if (!pendingRecording) return;
+
+    queueProcessing = true;
 
     // Mark it as transcribing
     update((s) => ({
@@ -378,20 +453,24 @@ function createRecordingStore() {
       emit('transcription-error', { id: pendingRecording.id, error: errorMessage });
     }
 
-    // Process the next item in the queue
-    processQueue();
+    queueProcessing = false;
+
+    // Process the next item in the queue using queueMicrotask to avoid stack overflow
+    queueMicrotask(() => processQueue());
   }
 
   return {
     subscribe,
 
     async startRecording(deviceId?: string) {
+      let stream: MediaStream | null = null;
+
       try {
         const constraints: MediaStreamConstraints = {
           audio: deviceId ? { deviceId: { exact: deviceId } } : true,
         };
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
         mediaRecorder = new MediaRecorder(stream, {
           mimeType: 'audio/webm;codecs=opus',
         });
@@ -409,9 +488,14 @@ function createRecordingStore() {
         // Start broadcasting audio visualization data to all windows
         startVisualizationBroadcast(stream);
 
-        // Start Vosk real-time transcription if enabled
+        // Start Vosk real-time transcription if enabled (wrapped in try-catch to not fail recording)
         const voskSessionId = `vosk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        await startVoskSession(stream, voskSessionId);
+        try {
+          await startVoskSession(stream, voskSessionId);
+        } catch (voskError) {
+          // Log but don't fail recording if Vosk fails
+          console.warn('[recording] Vosk session failed to start, continuing without real-time transcription:', voskError);
+        }
 
         // Also emit recording state change
         emit('recording-state', { state: 'recording' });
@@ -419,6 +503,24 @@ function createRecordingStore() {
         update((s) => ({ ...s, state: 'recording', error: null, transcript: '', realtimeTranscript: '', stream }));
       } catch (error) {
         console.error('Failed to start recording:', error);
+
+        // Clean up any resources that were allocated before the error
+        await stopVisualizationBroadcast();
+        await stopVoskSession();
+
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          try {
+            mediaRecorder.stop();
+          } catch (e) {
+            // Ignore
+          }
+        }
+        mediaRecorder = null;
+        audioChunks = [];
+
         update((s) => ({
           ...s,
           state: 'error',
@@ -431,18 +533,28 @@ function createRecordingStore() {
     async stopRecording(autoTranscribe: boolean = true): Promise<string | null> {
       return new Promise((resolve, reject) => {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-          stopVisualizationBroadcast();
+          // Still need to clean up visualization and Vosk even if mediaRecorder is inactive
+          stopVisualizationBroadcast().catch(console.error);
+          stopVoskSession().catch(console.error);
           emit('recording-state', { state: 'idle' });
           resolve(null);
           return;
         }
 
         mediaRecorder.onstop = async () => {
-          // Stop visualization broadcast after recording has stopped
-          stopVisualizationBroadcast();
+          try {
+            // Stop visualization broadcast after recording has stopped
+            await stopVisualizationBroadcast();
+          } catch (vizError) {
+            console.warn('[recording] Error stopping visualization:', vizError);
+          }
 
-          // Stop Vosk real-time transcription
-          await stopVoskSession();
+          try {
+            // Stop Vosk real-time transcription (wrapped in try-catch to ensure promise resolves)
+            await stopVoskSession();
+          } catch (voskError) {
+            console.warn('[recording] Error stopping Vosk session:', voskError);
+          }
 
           try {
             // Track recording duration

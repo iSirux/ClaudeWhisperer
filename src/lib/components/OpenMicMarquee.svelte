@@ -26,10 +26,13 @@
 
   // Audio visualization data from open mic store
   let audioData: number[] | null = null;
+  let isAboveThreshold = $state(false);
+  let unlistenAudioLevel: UnlistenFn | null = null;
 
   const barWidth = 2;
   const barGap = 2;
-  const waveColor = "#ef4444"; // Recording red
+  const waveColorActive = "#ef4444"; // Recording red - above threshold
+  const waveColorInactive = "#6b7280"; // Grey - below threshold
 
   // Draw waveform from audio data
   function drawWaveform() {
@@ -93,7 +96,7 @@
       const x = i * barTotalWidth;
       const y = (displayHeight - barHeight) / 2;
 
-      ctx.fillStyle = waveColor;
+      ctx.fillStyle = isAboveThreshold ? waveColorActive : waveColorInactive;
       ctx.globalAlpha = 0.5; // Semi-transparent to be behind text
       ctx.beginPath();
       ctx.roundRect(x, y, barWidth, barHeight, barWidth / 2);
@@ -134,6 +137,14 @@
       }
     );
 
+    // Listen for audio level to show threshold state
+    unlistenAudioLevel = await listen<{ rms: number; threshold: number; isAboveThreshold: boolean }>(
+      "open-mic-audio-level",
+      (event) => {
+        isAboveThreshold = event.payload?.isAboveThreshold ?? false;
+      }
+    );
+
     drawWaveform();
   }
 
@@ -149,7 +160,12 @@
       unlistenVisualization();
       unlistenVisualization = null;
     }
+    if (unlistenAudioLevel) {
+      unlistenAudioLevel();
+      unlistenAudioLevel = null;
+    }
     audioData = null;
+    isAboveThreshold = false;
   }
 
   function resetTranscriptTimer() {

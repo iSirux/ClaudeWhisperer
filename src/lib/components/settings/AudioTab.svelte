@@ -7,9 +7,48 @@
     OPEN_MIC_PRESETS,
   } from "$lib/stores/settings";
   import { onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { isValidVoiceCommand } from "$lib/utils/voiceCommands";
   import { isValidWakeCommand } from "$lib/stores/openMic";
   import "./toggle.css";
+
+  // Audio level from open mic for threshold preview
+  let currentRms = $state(0);
+  let isAboveThreshold = $state(false);
+
+  // Start listening for audio level when open mic is enabled
+  $effect(() => {
+    const shouldListen = $settings.audio.open_mic.enabled && $settings.vosk?.enabled;
+    let unlistenFn: UnlistenFn | null = null;
+    let cancelled = false;
+
+    if (shouldListen) {
+      // Set up listener
+      listen<{ rms: number; threshold: number; isAboveThreshold: boolean }>(
+        "open-mic-audio-level",
+        (event) => {
+          if (cancelled) return;
+          currentRms = event.payload?.rms ?? 0;
+          isAboveThreshold = event.payload?.isAboveThreshold ?? false;
+        }
+      ).then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
+      });
+    } else {
+      currentRms = 0;
+      isAboveThreshold = false;
+    }
+
+    // Cleanup function - runs when effect re-runs or component unmounts
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  });
 
   let audioDevices: MediaDeviceInfo[] = $state([]);
   let loadingDevices = $state(false);
@@ -917,6 +956,56 @@
             open mic.
           </p>
         {/if}
+
+        <!-- Volume Threshold Slider -->
+        <div class="border-t border-border/50 pt-4 mt-4">
+          <label class="block text-sm font-medium text-text-secondary mb-1"
+            >Volume Threshold</label
+          >
+          <p class="text-xs text-text-muted mb-2">
+            Minimum audio level to send to Vosk. Higher values save resources but may miss quiet speech.
+          </p>
+          <!-- Live audio level bar -->
+          <div class="relative h-6 bg-surface rounded overflow-hidden mb-2">
+            <!-- Current level bar -->
+            <div
+              class="absolute inset-y-0 left-0"
+              class:bg-green-600={isAboveThreshold}
+              class:bg-gray-500={!isAboveThreshold}
+              style="width: {Math.min(currentRms * 1000, 100)}%"
+            ></div>
+            <!-- Threshold marker -->
+            <div
+              class="absolute inset-y-0 w-0.5 bg-white/80"
+              style="left: {$settings.audio.open_mic.volume_threshold * 1000}%"
+            ></div>
+            <!-- Label -->
+            <div class="absolute inset-0 flex items-center justify-center text-xs text-white/80 font-medium">
+              {#if currentRms > 0}
+                {isAboveThreshold ? "Above threshold" : "Below threshold"}
+              {:else}
+                <span class="text-text-muted">Waiting for audio...</span>
+              {/if}
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <input
+              type="range"
+              min="0"
+              max="0.1"
+              step="0.0001"
+              class="flex-1 accent-green-600"
+              bind:value={$settings.audio.open_mic.volume_threshold}
+            />
+            <span class="text-sm text-text-primary w-20 text-right font-mono"
+              >{($settings.audio.open_mic.volume_threshold * 100).toFixed(2)}%</span
+            >
+          </div>
+          <div class="flex justify-between text-xs text-text-muted mt-1">
+            <span>Sensitive</span>
+            <span>Conservative</span>
+          </div>
+        </div>
       </div>
     {/if}
   </div>
