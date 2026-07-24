@@ -45,9 +45,17 @@ export const ALL_MODELS: ModelInfo[] = [
     maxEffort: "max",
   },
   {
+    id: "claude-opus-5",
+    label: "Opus 5",
+    title: "Opus 5 - Most capable model (1M context, adaptive thinking)",
+    maxContextTokens: 1000000,
+    supportsEffort: true,
+    maxEffort: "max",
+  },
+  {
     id: "claude-opus-4-8",
     label: "Opus 4.8",
-    title: "Opus 4.8 - Most capable model",
+    title: "Opus 4.8 - Previous flagship (1M context)",
     maxContextTokens: 1000000,
     supportsEffort: true,
     maxEffort: "max",

@@ -254,7 +254,7 @@ pub struct AppConfig {
 }
 
 fn default_model() -> String {
-    "claude-opus-4-8".to_string()
+    "claude-opus-5".to_string()
 }
 
 fn default_notify_parallel_agents() -> bool {
@@ -347,6 +347,7 @@ fn default_autocompact_enabled() -> bool {
 fn default_enabled_models() -> Vec<String> {
     vec![
         "claude-fable-5".to_string(),
+        "claude-opus-5".to_string(),
         "claude-opus-4-8".to_string(),
     ]
 }
