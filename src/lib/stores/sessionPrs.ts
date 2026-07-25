@@ -86,6 +86,28 @@ const EMPTY_ENTRY: SessionPrEntry = {
   cleanupResult: null,
 };
 
+/** Uncommitted/unpushed state of a working tree (backend `WorkingTreeState`). */
+export interface WorkingTreeState {
+  uncommitted: number;
+  unpushed: number;
+  branch: string | null;
+}
+
+/**
+ * Read a working tree's uncommitted/unpushed state. Used to warn before merging
+ * a PR that wouldn't include local work. Returns null when it can't be read —
+ * callers treat that as "nothing to warn about" rather than blocking the merge.
+ */
+export async function fetchWorkingTreeState(cwd: string | undefined): Promise<WorkingTreeState | null> {
+  if (!cwd || cwd === '.') return null;
+  try {
+    return await invoke<WorkingTreeState>('get_git_working_tree_state', { repoPath: cwd });
+  } catch (e) {
+    console.warn('[sessionPrs] Failed to read working tree state:', e);
+    return null;
+  }
+}
+
 /** Auto-detection reuses a fetch newer than this; manual refresh bypasses. */
 const STALE_MS = 60 * 1000;
 

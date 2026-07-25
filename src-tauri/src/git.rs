@@ -55,6 +55,17 @@ pub struct BranchCleanupResult {
     pub warnings: Vec<String>,
 }
 
+/// Uncommitted / unpushed state of a working tree, for pre-merge warnings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkingTreeState {
+    /// Uncommitted changed files (staged, unstaged, untracked-not-ignored).
+    pub uncommitted: usize,
+    /// Commits on the branch that are not on the remote.
+    pub unpushed: usize,
+    /// The checked-out branch, when not detached.
+    pub branch: Option<String>,
+}
+
 pub struct GitManager;
 
 impl GitManager {
@@ -95,6 +106,46 @@ impl GitManager {
             total += Self::count_changed_files(&path).unwrap_or(0);
         }
         Ok(total)
+    }
+
+    /// Count commits on `branch` that are not on the remote. Falls back to
+    /// "not reachable from ANY remote ref" when there is no `origin/<branch>`
+    /// tracking ref (e.g. the branch was already deleted on GitHub).
+    fn count_unpushed(repo_path: &str, branch: &str) -> Result<usize, GitError> {
+        let remote_ref = format!("origin/{}", branch);
+        let out = if Self::git(repo_path, &["rev-parse", "--verify", "--quiet", &remote_ref]).is_ok()
+        {
+            Self::git(
+                repo_path,
+                &["rev-list", "--count", &format!("{}..{}", remote_ref, branch)],
+            )?
+        } else {
+            Self::git(
+                repo_path,
+                &["rev-list", "--count", branch, "--not", "--remotes"],
+            )?
+        };
+        Ok(out.trim().parse().unwrap_or(0))
+    }
+
+    /// Uncommitted changes + unpushed commits for the working tree at
+    /// `repo_path`. Used to warn before merging a PR that would not include the
+    /// user's local work. Unreadable pieces contribute 0 rather than failing.
+    pub fn working_tree_state(repo_path: &str) -> Result<WorkingTreeState, String> {
+        let uncommitted = Self::count_changed_files(repo_path).unwrap_or(0);
+        let branch = Self::get_current_branch(repo_path)
+            .ok()
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty() && b != "HEAD");
+        let unpushed = match branch.as_deref() {
+            Some(b) => Self::count_unpushed(repo_path, b).unwrap_or(0),
+            None => 0,
+        };
+        Ok(WorkingTreeState {
+            uncommitted,
+            unpushed,
+            branch,
+        })
     }
 
     pub fn create_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
@@ -546,23 +597,7 @@ impl GitManager {
 
         // Safety check 2: every commit on the branch must be on the remote.
         if branch_exists {
-            let remote_ref = format!("origin/{}", branch);
-            let unpushed = if Self::git(repo_path, &["rev-parse", "--verify", "--quiet", &remote_ref])
-                .is_ok()
-            {
-                Self::git(
-                    repo_path,
-                    &["rev-list", "--count", &format!("{}..{}", remote_ref, branch)],
-                )?
-            } else {
-                // No remote-tracking ref (e.g. already deleted on GitHub): count
-                // commits not reachable from ANY remote ref.
-                Self::git(
-                    repo_path,
-                    &["rev-list", "--count", branch, "--not", "--remotes"],
-                )?
-            };
-            let unpushed: usize = unpushed.trim().parse().unwrap_or(0);
+            let unpushed = Self::count_unpushed(repo_path, branch)?;
             if unpushed > 0 {
                 return Err(format!(
                     "Not cleaning up: branch '{}' has {} commit{} not on the remote",

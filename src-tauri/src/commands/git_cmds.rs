@@ -1,7 +1,8 @@
 use crate::commands::usage_cmds::UsageStatsState;
 use crate::config::AppConfig;
 use crate::git::{
-    BranchCleanupResult, GitManager, WorktreeCreationResult, WorktreeInfo, WorktreeSetupStepResult,
+    BranchCleanupResult, GitManager, WorkingTreeState, WorktreeCreationResult, WorktreeInfo,
+    WorktreeSetupStepResult,
 };
 use parking_lot::Mutex;
 use tauri::{AppHandle, State};
@@ -28,6 +29,15 @@ pub async fn get_git_changed_count(repo_path: String) -> Result<usize, String> {
 #[tauri::command]
 pub async fn get_git_changed_count_all_worktrees(repo_path: String) -> Result<usize, String> {
     tokio::task::spawn_blocking(move || GitManager::count_changed_files_all_worktrees(&repo_path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Uncommitted changes + unpushed commits for a repo/worktree. Used to warn
+/// before merging a PR that would not include the user's local work.
+#[tauri::command]
+pub async fn get_git_working_tree_state(repo_path: String) -> Result<WorkingTreeState, String> {
+    tokio::task::spawn_blocking(move || GitManager::working_tree_state(&repo_path))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
 }

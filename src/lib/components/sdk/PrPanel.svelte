@@ -1,9 +1,11 @@
 <script lang="ts">
   import {
     sessionPrs,
+    fetchWorkingTreeState,
     type SessionPrEntry,
     type MergeStrategy,
   } from '$lib/stores/sessionPrs';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import {
     sdkSessions,
     hasBusySessionsInScope,
@@ -75,7 +77,56 @@
     }
   });
 
-  let canMerge = $derived(!!pr && pr.state === 'open' && !pr.is_draft && !entry.merging);
+  /**
+   * Merging a PR ships what's on the remote — local work that was never
+   * committed or pushed is silently left out. Probe the session's working tree
+   * first and make the user confirm when there is any.
+   */
+  let checkingWorkingTree = $state(false);
+  let mergeConfirm = $state<{ show: boolean; message: string }>({ show: false, message: '' });
+
+  let canMerge = $derived(
+    !!pr && pr.state === 'open' && !pr.is_draft && !entry.merging && !checkingWorkingTree
+  );
+
+  function dirtyMessage(uncommitted: number, unpushed: number, branch: string | null): string {
+    const parts: string[] = [];
+    if (uncommitted > 0) {
+      parts.push(`${uncommitted} uncommitted change${uncommitted === 1 ? '' : 's'}`);
+    }
+    if (unpushed > 0) {
+      parts.push(`${unpushed} unpushed commit${unpushed === 1 ? '' : 's'}`);
+    }
+    return (
+      `This session's working tree has ${parts.join(' and ')}` +
+      `${branch ? ` on '${branch}'` : ''}. ` +
+      `Merging now ships only what's already on the remote — that work will not be included.`
+    );
+  }
+
+  async function requestMerge() {
+    if (!canMerge) return;
+    checkingWorkingTree = true;
+    let state: Awaited<ReturnType<typeof fetchWorkingTreeState>> = null;
+    try {
+      state = await fetchWorkingTreeState(session.cwd);
+    } finally {
+      checkingWorkingTree = false;
+    }
+    if (state && (state.uncommitted > 0 || state.unpushed > 0)) {
+      mergeConfirm = {
+        show: true,
+        message: dirtyMessage(state.uncommitted, state.unpushed, state.branch),
+      };
+      return;
+    }
+    void sessionPrs.merge(session, strategy);
+  }
+
+  function confirmMerge() {
+    mergeConfirm = { show: false, message: '' };
+    void sessionPrs.merge(session, strategy);
+  }
 
   // Poll while the panel is open on an open PR (checks/reviews move on GitHub).
   $effect(() => {
@@ -304,13 +355,13 @@
           <button
             class="pr-merge-btn"
             class:ready={pr.merge_state_status === 'clean'}
-            onclick={() => sessionPrs.merge(session, strategy)}
+            onclick={requestMerge}
             disabled={!canMerge}
             title={pr.merge_state_status === 'clean'
               ? 'All checks green — ready to merge'
               : 'GitHub may reject the merge (pending checks, required reviews, or conflicts)'}
           >
-            {entry.merging ? 'Merging…' : 'Merge'}
+            {entry.merging ? 'Merging…' : checkingWorkingTree ? 'Checking…' : 'Merge'}
           </button>
         {/if}
       </div>
@@ -352,6 +403,17 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  show={mergeConfirm.show}
+  title="Merge with local work outstanding?"
+  message={mergeConfirm.message}
+  confirmLabel="Merge anyway"
+  cancelLabel="Cancel"
+  variant="warning"
+  onconfirm={confirmMerge}
+  oncancel={() => (mergeConfirm = { show: false, message: '' })}
+/>
 
 <style>
   /* Fills its dock pane: fixed header, scrollable body, pinned action footer.

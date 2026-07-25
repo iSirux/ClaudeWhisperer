@@ -423,6 +423,7 @@ pub fn run() {
             git_cmds::run_worktree_post_setup,
             git_cmds::generate_worktree_branch_name,
             git_cmds::get_git_default_branch,
+            git_cmds::get_git_working_tree_state,
             git_cmds::cleanup_merged_branch,
             git_cmds::open_in_vscode,
             git_cmds::open_in_terminal,
