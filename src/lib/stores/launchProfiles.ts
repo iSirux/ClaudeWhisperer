@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { LaunchCommand, LaunchProfile, LaunchRuntime, QueuedLaunch } from "$lib/types/launch";
 import { repos, findRepoById } from "./repos";
-import { sdkSessions, hasBusySessionsInScope, normalizeScopePath } from "./sdkSessions";
+import {
+  sdkSessions,
+  hasBusySessionsInScope,
+  normalizeScopePath,
+  type SdkSession,
+} from "./sdkSessions";
 
 // ---- Store State ----
 
@@ -256,6 +261,31 @@ export function sessionLaunchActivity(
     );
 
   return { running, queued };
+}
+
+/**
+ * Should closing this session warn that launch work will be left behind?
+ * Launches belong to the worktree scope, so another session in the same cwd keeps
+ * that scope represented. Only the final session in the worktree needs the warning.
+ */
+export function shouldWarnForLaunchOnSessionClose(
+  sessionId: string,
+  sessionCwd: string | undefined,
+  sessions: SdkSession[] = get(sdkSessions),
+): boolean {
+  const activity = sessionLaunchActivity(sessionId, sessionCwd);
+  if (!activity.running && !activity.queued) return false;
+  if (!sessionCwd) return true;
+
+  const scope = normalizeScopePath(sessionCwd);
+  const hasSiblingInWorktree = sessions.some(
+    (session) =>
+      session.id !== sessionId &&
+      !!session.cwd &&
+      normalizeScopePath(session.cwd) === scope,
+  );
+
+  return !hasSiblingInWorktree;
 }
 
 /** Get runtime for a specific repo ID */

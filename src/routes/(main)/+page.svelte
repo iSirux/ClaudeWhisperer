@@ -11,7 +11,7 @@
   import PileDetailView from '$lib/components/PileDetailView.svelte';
   import SpareTokensView from '$lib/components/SpareTokensView.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { sessionLaunchActivity } from '$lib/stores/launchProfiles';
+  import { shouldWarnForLaunchOnSessionClose } from '$lib/stores/launchProfiles';
 
   // Refactored components
   import SdkSessionHeader from '$lib/components/SdkSessionHeader.svelte';
@@ -267,7 +267,7 @@
     activeSdkSessionId.set(prev);
   }
 
-  // Confirm before closing a session that owns a running/queued launch profile.
+  // Confirm before closing the last session in a worktree with launch work active.
   let launchCloseConfirm = $state<{ show: boolean; sessionId: string }>({ show: false, sessionId: '' });
 
   function performSessionClose(sessionId: string) {
@@ -281,12 +281,9 @@
   function handleSessionClose() {
     if (!$activeSdkSessionId) return;
     const session = $activeSdkSession;
-    if (session) {
-      const launch = sessionLaunchActivity(session.id, session.cwd);
-      if (launch.running || launch.queued) {
-        launchCloseConfirm = { show: true, sessionId: session.id };
-        return;
-      }
+    if (session && shouldWarnForLaunchOnSessionClose(session.id, session.cwd, $sdkSessions)) {
+      launchCloseConfirm = { show: true, sessionId: session.id };
+      return;
     }
     performSessionClose($activeSdkSessionId);
   }

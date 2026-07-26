@@ -12,7 +12,7 @@
   } from '$lib/composables/useDisplaySessions.svelte';
   import SessionCard from '$lib/components/SessionCard.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { sessionLaunchActivity } from '$lib/stores/launchProfiles';
+  import { shouldWarnForLaunchOnSessionClose } from '$lib/stores/launchProfiles';
 
   let now = $state(Math.floor(Date.now() / 1000));
   let interval: ReturnType<typeof setInterval> | null = null;
@@ -61,7 +61,7 @@
     goto('/');
   }
 
-  // Confirm before closing a session that owns a running/queued launch profile.
+  // Confirm before closing the last session in a worktree with launch work active.
   let launchConfirm = $state<{ show: boolean; sessionId: string }>({ show: false, sessionId: '' });
 
   function performCloseSession(sessionId: string) {
@@ -74,12 +74,9 @@
   function closeSession(session: DisplaySession, event: MouseEvent) {
     event.stopPropagation();
     const sdkSession = $sdkSessions.find((s) => s.id === session.id);
-    if (sdkSession) {
-      const launch = sessionLaunchActivity(session.id, sdkSession.cwd);
-      if (launch.running || launch.queued) {
-        launchConfirm = { show: true, sessionId: session.id };
-        return;
-      }
+    if (sdkSession && shouldWarnForLaunchOnSessionClose(session.id, sdkSession.cwd, $sdkSessions)) {
+      launchConfirm = { show: true, sessionId: session.id };
+      return;
     }
     performCloseSession(session.id);
   }

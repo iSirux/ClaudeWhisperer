@@ -36,7 +36,7 @@
     worktreeHasHeader,
   } from '$lib/stores/sessionGrouping';
   import { repos } from '$lib/stores/repos';
-  import { sessionLaunchActivity } from '$lib/stores/launchProfiles';
+  import { shouldWarnForLaunchOnSessionClose } from '$lib/stores/launchProfiles';
   import RepoIcon from './RepoIcon.svelte';
 
   const archiveCount = archive.archiveCount;
@@ -237,8 +237,8 @@
   }
 
   // Confirmation dialog state
-  // 'working' = session/sequence still running; 'launch' = a launch profile is
-  // running or queued for this session's scope.
+  // 'working' = session/sequence still running; 'launch' = this is the last
+  // session in a worktree where a launch profile is running or queued.
   let confirmDialog = $state<{
     show: boolean;
     sessionId: string;
@@ -267,9 +267,9 @@
         confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk', reason: 'working' };
         return;
       }
-      // Warn if this session owns a launch profile that's running or queued.
-      const launch = sessionLaunchActivity(session.id, sdkSession.cwd);
-      if (launch.running || launch.queued) {
+      // Warn only when closing the last session representing a worktree with
+      // launch work still running or queued.
+      if (shouldWarnForLaunchOnSessionClose(session.id, sdkSession.cwd, $sdkSessions)) {
         confirmDialog = { show: true, sessionId: session.id, sessionType: 'sdk', reason: 'launch' };
         return;
       }
