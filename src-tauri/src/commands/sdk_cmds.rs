@@ -43,7 +43,7 @@ pub async fn create_sdk_session(
         (
             Some(cfg.claude_permission_mode.as_sdk_str().to_string()),
             Some(cfg.codex_permission_mode.approval_policy().to_string()),
-            cfg.codex_permission_mode.sandbox_mode().map(str::to_string),
+            Some(cfg.codex_permission_mode.sandbox_mode().to_string()),
         )
     };
     let mut env_pairs = gh_env;

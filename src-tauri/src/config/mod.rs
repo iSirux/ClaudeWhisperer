@@ -179,7 +179,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub claude_permission_mode: ClaudePermissionMode,
     /// Codex-only: permission mode for new interactive Codex sessions.
-    /// Defaults to `AutoApprove` (current behavior: approvalPolicy "never").
+    /// Defaults to `AutoApprove` (`approvalPolicy: "never"` with explicit
+    /// `danger-full-access`, so Git metadata and other repo-local state remain
+    /// writable without an impossible approval escalation).
     /// `Auto` opts into a workspace-write sandbox with on-request approvals.
     /// Missing on legacy configs deserializes to the default, so no migration.
     #[serde(default)]

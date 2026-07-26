@@ -3,6 +3,7 @@ import { get } from 'svelte/store';
 import { settings } from '$lib/stores/settings';
 import { repos } from '$lib/stores/repos';
 import type { SessionAiMetadata, SdkMessage } from '$lib/stores/sdkSessions';
+import { hasMeaningfulTranscription } from '$lib/utils/transcriptionText';
 
 export interface SessionNameResult {
   name: string;
@@ -403,6 +404,25 @@ export async function cleanTranscription(
       repoContext: repoContext || null,
     });
     console.log('[llm] Transcription cleaned:', result.corrections_made, realtimeToUse ? '(dual-source)' : '(whisper only)');
+
+    // Cleanup is allowed to leave text unchanged, but never to erase a valid
+    // transcription. Prefer the batch transcript, then the finalized realtime
+    // source when Whisper itself contained no meaningful text.
+    if (!hasMeaningfulTranscription(result.cleaned_text)) {
+      const fallback = hasMeaningfulTranscription(whisperTranscription)
+        ? whisperTranscription
+        : realtimeToUse;
+      if (hasMeaningfulTranscription(fallback)) {
+        console.warn('[llm] Cleanup returned no meaningful text; using the source transcription');
+        return {
+          text: fallback!.trim(),
+          wasCleanedUp: false,
+          corrections: [],
+          usedDualSource: !!realtimeToUse,
+        };
+      }
+    }
+
     return {
       text: result.cleaned_text,
       wasCleanedUp: result.corrections_made.length > 0,

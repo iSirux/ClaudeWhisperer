@@ -1123,6 +1123,12 @@
       return;
     }
 
+    const finalizedRealtimeTranscript =
+      await recording.getFinalizedRealtimeTranscript(
+        debugId,
+        capturedRealtimeTranscript,
+      );
+
     debugRecordings.update(debugId, { destination: "session" });
 
     if (!whisperTranscript || !isRecordingForCurrentSession) {
@@ -1137,7 +1143,7 @@
       // Process voice commands first
       const processed = processVoiceCommands(
         whisperTranscript,
-        capturedRealtimeTranscript,
+        finalizedRealtimeTranscript,
       );
 
       // Handle cancel command
@@ -1280,6 +1286,12 @@
         return null;
       }
 
+      const finalizedRealtimeTranscript =
+        await recording.getFinalizedRealtimeTranscript(
+          debugId,
+          capturedRealtimeTranscript,
+        );
+
       if (!whisperTranscript) return null;
 
       debugRecordings.update(debugId, { destination: "append" });
@@ -1299,7 +1311,7 @@
         try {
           const cleanupResult = await cleanupTranscript(
             whisperTranscript,
-            capturedRealtimeTranscript,
+            finalizedRealtimeTranscript,
             repoContext,
           );
           finalTranscript = cleanupResult.text;

@@ -8,7 +8,11 @@
     type StepStatus,
     type AgentActivityItem,
   } from '$lib/stores/validation';
+  import type { EffortLevel } from '$lib/stores/sdkSessions';
+  import { settings } from '$lib/stores/settings';
+  import { getEnabledModels } from '$lib/utils/models';
   import { dockOrientation } from '$lib/stores/dockOrientation';
+  import EffortToggle from '$lib/components/EffortToggle.svelte';
 
   let { run }: { run: ValidationRunView } = $props();
 
@@ -95,6 +99,29 @@
   let gateFindings = $derived(gate ? [...gate.findings, ...run.userFindings] : []);
   let checkedIds = $derived(new Set(run.selectedFindingIds));
   let checkedCount = $derived(run.selectedFindingIds.length);
+
+  // A fresh fix session can use any enabled model from either configured
+  // provider, independent of the model that performed validation.
+  let claudeFixModels = $derived(
+    $settings.enabled_providers.claude
+      ? getEnabledModels($settings.enabled_models, 'claude')
+      : [],
+  );
+  let openaiFixModels = $derived(
+    $settings.enabled_providers.openai
+      ? getEnabledModels($settings.enabled_openai_models, 'openai')
+      : [],
+  );
+  let fixModels = $derived([...claudeFixModels, ...openaiFixModels]);
+
+  // Legacy/live runs may predate the chooser or reference a model that has
+  // since been disabled. Keep their fresh-session choice launchable.
+  $effect(() => {
+    if (run.fixTarget !== 'new-session' || fixModels.length === 0) return;
+    if (fixModels.some((model) => model.id === run.fixModel)) return;
+    const validationModel = fixModels.find((model) => model.id === run.options.reviewerModel);
+    validation.setFixModel(run.id, validationModel?.id ?? fixModels[0].id);
+  });
 
   function toggleFinding(id: string) {
     const next = new Set(run.selectedFindingIds);
@@ -698,6 +725,41 @@
             <option value="new-session">a new session</option>
           </select>
         </label>
+        {#if run.fixTarget === 'new-session'}
+          <label class="v-fix-target" title="Model for the new fix session">
+            using
+            <select
+              class="v-fix-target-select v-fix-model-select"
+              value={run.fixModel}
+              disabled={run.responding || fixModels.length === 0}
+              aria-label="Fix session model"
+              onchange={(e) => validation.setFixModel(run.id, e.currentTarget.value)}
+            >
+              {#if claudeFixModels.length > 0}
+                <optgroup label="Claude">
+                  {#each claudeFixModels as model (model.id)}
+                    <option value={model.id}>{model.label}</option>
+                  {/each}
+                </optgroup>
+              {/if}
+              {#if openaiFixModels.length > 0}
+                <optgroup label="Codex">
+                  {#each openaiFixModels as model (model.id)}
+                    <option value={model.id}>{model.label}</option>
+                  {/each}
+                </optgroup>
+              {/if}
+            </select>
+          </label>
+          <span class="v-fix-effort" title="Effort for the new fix session">
+            <EffortToggle
+              effortLevel={run.fixEffort as EffortLevel}
+              onchange={(effort) => validation.setFixEffort(run.id, effort)}
+              modelId={run.fixModel}
+              size="sm"
+            />
+          </span>
+        {/if}
         {#if gate.kind !== 'ci_failure'}
           <button class="v-btn" onclick={approve} disabled={run.responding} title="Approve — accept the findings and continue">
             Approve
@@ -1201,6 +1263,13 @@
     outline: none;
     border-color: var(--color-accent);
   }
+  .v-fix-model-select {
+    max-width: 9rem;
+  }
+  .v-fix-effort {
+    display: inline-flex;
+    align-items: center;
+  }
   .v-gate-title {
     font-weight: 600;
     color: var(--color-text-primary);
@@ -1362,6 +1431,7 @@
   }
   .v-gate-actions {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
   }

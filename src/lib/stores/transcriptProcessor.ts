@@ -24,6 +24,7 @@ import { recording } from '$lib/stores/recording';
 import { navigation } from '$lib/stores/navigation';
 import { pile } from '$lib/stores/pile';
 import { debugRecordings } from '$lib/stores/debugRecordings';
+import { hasMeaningfulTranscription } from '$lib/utils/transcriptionText';
 
 // Transcription processing utilities (already stateless)
 import {
@@ -886,14 +887,19 @@ export async function handleRetryTranscription(sessionId: string) {
   const realtimeTranscript = session.pendingTranscription.realtimeTranscript;
 
   try {
-    const transcript = await invoke<string>('transcribe_audio', {
+    const whisperTranscript = await invoke<string>('transcribe_audio', {
       audioData: Array.from(session.pendingTranscription.audioData),
     });
+    const transcript = hasMeaningfulTranscription(whisperTranscript)
+      ? whisperTranscript
+      : hasMeaningfulTranscription(realtimeTranscript)
+        ? realtimeTranscript!
+        : '';
 
-    if (transcript) {
+    if (hasMeaningfulTranscription(transcript)) {
       if (debugRecordingId) {
         debugRecordings.update(debugRecordingId, {
-          whisperTranscript: transcript,
+          whisperTranscript,
           error: undefined,
         });
       }

@@ -213,6 +213,12 @@ function createRecordingFlowStore() {
     recording
       .stopRecording(true, debugId)
       .then(async (transcript) => {
+        const finalizedRealtimeTranscript =
+          await recording.getFinalizedRealtimeTranscript(
+            debugId,
+            capturedRealtimeTranscript,
+          );
+
         if (sessionIdToProcess) {
           const audioData = get(recording).audioData;
           if (audioData) {
@@ -236,7 +242,7 @@ function createRecordingFlowStore() {
             await handlePileTranscriptReady(
               transcript || '',
               sessionIdToProcess,
-              capturedRealtimeTranscript,
+              finalizedRealtimeTranscript,
               transcript ? undefined : 'No transcription returned',
               debugId
             );
@@ -245,14 +251,14 @@ function createRecordingFlowStore() {
               await handlePrepareTranscriptReady(
                 transcript,
                 sessionIdToProcess,
-                capturedRealtimeTranscript,
+                finalizedRealtimeTranscript,
                 debugId
               );
             } else {
               await handleTranscriptReady(
                 transcript,
                 sessionIdToProcess,
-                capturedRealtimeTranscript,
+                finalizedRealtimeTranscript,
                 debugId
               );
             }
@@ -263,7 +269,7 @@ function createRecordingFlowStore() {
             await handlePileTranscriptReady(
               '',
               sessionIdToProcess,
-              capturedRealtimeTranscript,
+              finalizedRealtimeTranscript,
               'No transcription returned',
               debugId
             );
@@ -509,13 +515,23 @@ function createRecordingFlowStore() {
       return null;
     }
 
+    const finalizedRealtimeTranscript =
+      await recording.getFinalizedRealtimeTranscript(
+        debugId,
+        capturedRealtimeTranscript,
+      );
+
     debugRecordings.update(debugId, { destination: 'setup' });
     if (!transcript || !isTranscriptionCleanupEnabled()) return transcript;
 
     // Apply LLM cleanup (dual-source when a realtime transcript exists), same as
     // every other dictation path, and attach the result to the recordings log.
     const repoContext = buildAllReposContext(get(repos).list.filter(isRepoActive));
-    const cleanupResult = await cleanupTranscript(transcript, capturedRealtimeTranscript, repoContext);
+    const cleanupResult = await cleanupTranscript(
+      transcript,
+      finalizedRealtimeTranscript,
+      repoContext
+    );
     debugRecordings.update(debugId, {
       cleanedTranscript: cleanupResult.text,
       wasCleanedUp: cleanupResult.wasCleanedUp,

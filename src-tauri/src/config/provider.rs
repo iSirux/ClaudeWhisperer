@@ -83,8 +83,11 @@ impl ClaudePermissionMode {
 /// Only affects OpenAI/Codex sessions; Claude ignores it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum CodexPermissionMode {
-    /// Current behavior: `approvalPolicy: "never"`, sandbox left at the
-    /// app-server default. Codex never pauses to ask; nothing is confined.
+    /// Fully unattended mode: `approvalPolicy: "never"` with an explicit
+    /// `danger-full-access` sandbox. The explicit sandbox is important because
+    /// the app-server default may be `workspace-write`, which protects `.git`;
+    /// combined with `never`, that would make commits impossible with no
+    /// approval path.
     #[default]
     AutoApprove,
     /// Codex "Auto" preset: `sandbox: "workspace-write"` +
@@ -103,13 +106,28 @@ impl CodexPermissionMode {
         }
     }
 
-    /// The app-server `sandbox` value, or None to leave it at the server default
-    /// (preserving the historical AutoApprove behavior).
-    pub fn sandbox_mode(&self) -> Option<&'static str> {
+    /// The app-server `sandbox` value. Always send this explicitly so app-server
+    /// defaults cannot silently change the selected permission mode.
+    pub fn sandbox_mode(&self) -> &'static str {
         match self {
-            CodexPermissionMode::AutoApprove => None,
-            CodexPermissionMode::Auto => Some("workspace-write"),
+            CodexPermissionMode::AutoApprove => "danger-full-access",
+            CodexPermissionMode::Auto => "workspace-write",
         }
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_permission_modes_are_explicit_and_coherent() {
+        assert_eq!(CodexPermissionMode::AutoApprove.approval_policy(), "never");
+        assert_eq!(
+            CodexPermissionMode::AutoApprove.sandbox_mode(),
+            "danger-full-access"
+        );
+        assert_eq!(CodexPermissionMode::Auto.approval_policy(), "on-request");
+        assert_eq!(CodexPermissionMode::Auto.sandbox_mode(), "workspace-write");
+    }
+}

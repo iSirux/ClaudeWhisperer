@@ -369,18 +369,17 @@ pub struct GateState {
 #[serde(rename_all = "camelCase")]
 pub struct RunOptions {
     pub steps: Vec<StepName>,
-    /// Claude model id, or "session" (= use the session's model).
+    /// Model id from either configured provider, or "session".
     pub reviewer_model: String,
+    /// Effort used by every validation agent.
     #[serde(default)]
     pub reviewer_effort: Option<String>,
     #[serde(default)]
     pub adversarial_verify: bool,
     #[serde(default)]
     pub base_branch: Option<String>,
-    /// Model id for the simplify step's headless agent — any provider (the
-    /// sidecar routes Claude models to the SDK rail, GPT/Codex models to a
-    /// Codex thread). "session" is resolved frontend-side; `None` falls back
-    /// to the reviewer model.
+    /// Legacy per-simplify override. New clients omit this so every validation
+    /// agent uses `reviewer_model`; retained only for compatible deserialization.
     #[serde(default)]
     pub simplify_model: Option<String>,
 }

@@ -298,7 +298,7 @@ interface CreateMessage {
   autocompact_pct?: number; // Claude-only: 0 = DISABLE_AUTO_COMPACT=1; 1-99 = CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; null/undefined/100 = Claude default
   permission_mode?: string; // Claude-only interactive permission mode (SDK permissionMode): "acceptEdits" (default) | "auto". Ignored for OpenAI/Codex.
   codex_approval_policy?: string; // Codex-only app-server approvalPolicy: "never" (default) | "on-request". Ignored for Claude.
-  codex_sandbox_mode?: string; // Codex-only app-server sandbox: e.g. "workspace-write". Undefined = server default. Ignored for Claude.
+  codex_sandbox_mode?: string; // Codex-only app-server sandbox: "danger-full-access" or "workspace-write". Ignored for Claude.
   env?: Record<string, string>; // Extra env vars for the session's agent process (e.g., GH_TOKEN to pin a gh account per repo)
 }
 
@@ -429,10 +429,8 @@ interface AnswerCodexApprovalMessage {
 }
 
 // One-shot Validation pipeline agent (simplify/review/verify/evidence/docs/lint).
-// Most roles run a restricted, read-only-ish Claude query() that must finish by
-// calling a single role-specific submit tool (structured output). The simplify
-// role can edit files, and routes by model provider: Claude models use the
-// query() rail, GPT/Codex models run a headless workspace-write Codex thread.
+// Claude models return structured output through a role-specific MCP submit
+// tool; Codex models use the same role schema as structured final output.
 type ValidationRole =
   | "simplify"
   | "review"
@@ -446,7 +444,7 @@ interface ValidationAgentMessage {
   cwd: string; // Working directory (session cwd)
   role: ValidationRole;
   prompt: string; // Fully-composed prompt (built in Rust)
-  model: string; // Model id (any provider for simplify; Claude otherwise)
+  model: string; // Model id from either configured provider
   effort?: string; // UI effort level ('low'|'medium'|'high'|'xhigh'|'max'); omit/undefined = off
   resumeSessionId?: string; // SDK session id to resume (durable reviewer across rounds)
 }
@@ -529,7 +527,7 @@ interface Session {
   extraEnv?: Record<string, string>; // Per-session extra env vars (e.g., GH_TOKEN) applied to spawned agent processes
   appServerTurnId?: string; // Active app-server turn ID
   codexApprovalPolicy?: string; // Codex app-server approvalPolicy for thread/start|resume ("never" default)
-  codexSandboxMode?: string; // Codex app-server sandbox for thread/start|resume ("workspace-write" for Auto mode)
+  codexSandboxMode?: string; // Codex app-server sandbox for thread/start|resume
   // Outstanding Codex approval requests (JSON-RPC request id -> nothing; presence = pending).
   // The app-server blocks the turn until we respond via appServerWriteJson.
   pendingCodexApprovalIds?: Set<number>;
@@ -2140,9 +2138,10 @@ async function handleCodexAppServerQuery(
         `resumeThreadId=${session.sdkSessionId || session.passedSdkSessionId || "none"}`,
     });
 
-    // Permission fragment shared by thread/start and thread/resume. Defaults to
-    // the historical "never" (auto-approve) when the session carries no override.
-    // A workspace-write sandbox + on-request policy drives the approval dialog.
+    // Permission fragment shared by thread/start and thread/resume. New OW
+    // sessions always carry an explicit sandbox: danger-full-access for
+    // unattended Auto-approve, or workspace-write for approval-driven Auto.
+    // Defaults remain only for compatibility with older create messages.
     const approvalParams: Record<string, unknown> = {
       approvalPolicy: session.codexApprovalPolicy ?? "never",
       ...(session.codexSandboxMode ? { sandbox: session.codexSandboxMode } : {}),
@@ -3325,7 +3324,7 @@ Path: ${msg.repo_path}
 }
 
 // =============================================================================
-// Validation pipeline one-shot agents (Claude only)
+// Validation pipeline one-shot agents
 // =============================================================================
 
 const VALIDATION_MCP_SERVER_NAME = "validation-tools";
@@ -3342,6 +3341,54 @@ const validationFindingShape = {
   description: z.string(),
   action: z.enum(["auto-fix", "ask-user", "no-op"]),
 };
+
+const validationFindingSchema = z.object(validationFindingShape);
+
+/** The provider-neutral result schema for one validation role. */
+function validationResultSchema(role: ValidationRole): z.ZodType {
+  switch (role) {
+    case "simplify":
+      return z.object({
+        summary: z.string(),
+      });
+    case "review":
+      return z.object({
+        findings: z.array(validationFindingSchema),
+        summary: z.string(),
+        risk_level: z.enum(["low", "medium", "high"]),
+        risk_rationale: z.string(),
+      });
+    case "verify":
+      return z.object({
+        verdict: z.enum(["confirmed", "refuted"]),
+        reason: z.string(),
+      });
+    case "evidence":
+      return z.object({
+        findings: z.array(validationFindingSchema),
+        tested: z.array(z.string()),
+        testing_summary: z.string(),
+        artifacts: z.array(
+          z.object({
+            kind: z.string(),
+            label: z.string(),
+            path: z.string(),
+          })
+        ),
+      });
+    case "docs":
+    case "lint":
+      return z.object({
+        findings: z.array(
+          z.object({
+            ...validationFindingShape,
+            category: z.enum(["documentation", "lint"]),
+          })
+        ),
+        summary: z.string(),
+      });
+  }
+}
 
 const validationSubmitAck = async () => ({
   content: [{ type: "text" as const, text: "Structured output submitted." }],
@@ -3714,16 +3761,15 @@ async function runValidationQuery(
   };
 }
 
-// Headless Codex thread for the simplify role: same verbatim prompt, a
-// GPT/Codex model, and a workspace-write sandbox so the agent can apply its
-// fixes itself. Codex has no in-process submit tools, so the final agent
-// message doubles as the structured summary.
-async function runSimplifyCodexThread(msg: ValidationAgentMessage): Promise<void> {
+// Headless Codex thread for any validation role. Codex has no in-process
+// submit tools, so its final response is constrained with the same schema the
+// Claude rail exposes through MCP.
+async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<void> {
   const requestId = msg.id;
   send({
     type: "debug",
     id: requestId,
-    message: `Starting Codex simplify agent (model=${msg.model}) at ${msg.cwd}`,
+    message: `Starting Codex validation agent (role=${msg.role}, model=${msg.model}, resume=${msg.resumeSessionId ? "yes" : "no"}) at ${msg.cwd}`,
   });
 
   const truncate = (text: string, max: number): string => {
@@ -3734,20 +3780,34 @@ async function runSimplifyCodexThread(msg: ValidationAgentMessage): Promise<void
   try {
     const codex = getCodexInstance();
     const effort = mapEffortForProvider(msg.effort, "openai", msg.model);
-    const thread = codex.startThread({
+    const role = buildValidationRole(msg.role);
+    const threadOptions: ThreadOptions = {
       workingDirectory: msg.cwd,
       skipGitRepoCheck: true,
       model: msg.model,
-      sandboxMode: "workspace-write",
+      // Evidence/lint may need build caches or formatter output just as their
+      // Claude rail may run unrestricted shell commands. Review/docs/verify
+      // remain read-only; simplify is intentionally allowed to edit.
+      sandboxMode: role.readOnly ? "read-only" : "workspace-write",
       approvalPolicy: "never",
       ...(effort
         ? { modelReasoningEffort: effort as ThreadOptions["modelReasoningEffort"] }
         : {}),
-    });
+    };
+    const thread = msg.resumeSessionId
+      ? codex.resumeThread(msg.resumeSessionId, threadOptions)
+      : codex.startThread(threadOptions);
 
     const texts: string[] = [];
     let usage: Record<string, number> | undefined;
-    const { events } = await thread.runStreamed(msg.prompt, {});
+    const prompt = `${msg.prompt}
+
+Provider-specific completion requirement: you are running through Codex, so the submit_* tools
+named above are not available. Do the requested work, then return the result as your final response
+using the provided JSON schema. Do not merely describe the JSON and do not wrap it in Markdown.`;
+    const { events } = await thread.runStreamed(prompt, {
+      outputSchema: z.toJSONSchema(validationResultSchema(msg.role)),
+    });
     for await (const event of events) {
       if (event.type === "item.started" || event.type === "item.completed") {
         const item = event.item as {
@@ -3813,13 +3873,26 @@ async function runSimplifyCodexThread(msg: ValidationAgentMessage): Promise<void
       }
     }
 
+    let structured: unknown;
+    let parseError: unknown;
+    for (let i = texts.length - 1; i >= 0; i--) {
+      try {
+        structured = JSON.parse(texts[i]);
+        break;
+      } catch (err) {
+        parseError = err;
+      }
+    }
+    if (structured === undefined) {
+      throw new Error(
+        `Codex validation agent did not return valid structured output: ${
+          parseError instanceof Error ? parseError.message : "empty response"
+        }`
+      );
+    }
+
     sendValidationAgentResult(requestId, {
-      structured: {
-        summary:
-          texts.length > 0
-            ? texts[texts.length - 1]
-            : "Simplify agent finished without a summary.",
-      },
+      structured,
       transcript: texts.join("\n\n"),
       sdkSessionId: thread.id ?? undefined,
       usage,
@@ -3829,7 +3902,7 @@ async function runSimplifyCodexThread(msg: ValidationAgentMessage): Promise<void
     send({
       type: "debug",
       id: requestId,
-      message: `Codex simplify agent error: ${errorMessage}`,
+      message: `Codex validation agent error: ${errorMessage}`,
     });
     sendValidationAgentError(requestId, errorMessage);
   }
@@ -3838,10 +3911,9 @@ async function runSimplifyCodexThread(msg: ValidationAgentMessage): Promise<void
 async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void> {
   const requestId = msg.id;
 
-  // Simplify routes by model provider: GPT/Codex models run a headless
-  // workspace-write Codex thread; Claude models use the query() rail below.
-  if (msg.role === "simplify" && inferProvider(undefined, msg.model) === "openai") {
-    await runSimplifyCodexThread(msg);
+  // Route every role by the selected model's provider.
+  if (inferProvider(undefined, msg.model) === "openai") {
+    await runValidationCodexThread(msg);
     return;
   }
 

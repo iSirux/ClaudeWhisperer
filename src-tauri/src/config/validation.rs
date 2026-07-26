@@ -14,10 +14,10 @@ pub struct ValidationConfig {
     /// Steps enabled by default for a new run (fixed order applied by the executor).
     #[serde(default = "default_validation_steps")]
     pub default_steps: Vec<String>,
-    /// Reviewer model id, or the literal `"session"` to reuse the session's model.
+    /// Model used by every validation agent, or `"session"` to reuse the session's model.
     #[serde(default = "default_reviewer_model")]
     pub reviewer_model: String,
-    /// Reviewer effort level ("low"|"medium"|"high"|"xhigh"|"max"). Effort is
+    /// Effort used by every validation agent ("low"|"medium"|"high"|"xhigh"|"max"). It is
     /// always on; `None` (pre-grounding configs) is treated as "medium".
     #[serde(default = "default_reviewer_effort")]
     pub reviewer_effort: Option<String>,

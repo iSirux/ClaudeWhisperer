@@ -19,11 +19,22 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { sdkSessions, hasBusySessionsInScope, type SdkSession, type SessionValidationSummary } from './sdkSessions';
+import {
+  sdkSessions,
+  hasBusySessionsInScope,
+  type EffortLevel,
+  type SdkSession,
+  type SessionValidationSummary,
+} from './sdkSessions';
 import { settings } from './settings';
 import { buildFixPrompt } from '$lib/utils/validationFix';
 import { providerExhaustion, nextWindowResetAt } from './queueDetection';
-import type { SdkProvider } from '$lib/utils/models';
+import {
+  clampEffortForModel,
+  getProviderForModel,
+  modelSupportsEffort,
+  type SdkProvider,
+} from '$lib/utils/models';
 import type { SendTiming } from '$lib/utils/sendTiming';
 
 // ---------------------------------------------------------------------------
@@ -154,20 +165,14 @@ export interface GateState {
 
 export interface RunOptions {
   steps: StepName[];
-  /** Claude model id, or "session" (= use the session's model). */
+  /** Model id from either configured provider, or "session". */
   reviewerModel: string;
-  /** "low" | "medium" | "high" | null */
+  /** Effort used by every validation agent. */
   reviewerEffort?: string | null;
   /** Error findings get a verify pass before gating. */
   adversarialVerify: boolean;
   /** Defaults to the repo's default branch. */
   baseBranch?: string | null;
-  /**
-   * Model for the simplify step's headless agent — any active provider's
-   * model, or "session" (resolved to the session's model before startRun).
-   * Null falls back to the reviewer model on the backend.
-   */
-  simplifyModel?: string | null;
 }
 
 /** The FULL run snapshot emitted on every `validation-update` event. */
@@ -227,6 +232,9 @@ export interface ValidationRunView extends ValidationRun {
   /** Where fix prompts are sent: the run's own session, or a fresh session
    *  created in the same cwd with the run's context prepended. */
   fixTarget: FixTarget;
+  /** Model and effort used when `fixTarget` is a fresh session. */
+  fixModel: string;
+  fixEffort: EffortLevel;
   /** Client-only: whether the dock panel for this run is shown. Closing it does
    *  NOT cancel/dismiss the run — a collapsed status strip stays visible, and a
    *  new gate or a terminal outcome reopens the panel. Persisted on the session. */
@@ -310,6 +318,15 @@ function appendActivity(
   const next = [...activity, item];
   if (next.length > MAX_ACTIVITY_ITEMS) next.splice(0, next.length - MAX_ACTIVITY_ITEMS);
   return next;
+}
+
+/** Fresh fix sessions always use a supported, concrete effort when available. */
+function normalizeFixEffort(
+  model: string,
+  effort: EffortLevel | string | undefined,
+): EffortLevel {
+  if (!modelSupportsEffort(model)) return null;
+  return clampEffortForModel((effort ?? 'medium') as EffortLevel, model);
 }
 
 function patchView(
@@ -454,6 +471,8 @@ function applySnapshot(runId: string, incoming: ValidationUpdatePayload): void {
       log: prev.log,
       activity: prev.activity,
       fixTarget: prev.fixTarget,
+      fixModel: prev.fixModel,
+      fixEffort: prev.fixEffort,
       panelOpen,
       selectedFindingIds,
       userFindings,
@@ -542,6 +561,8 @@ async function startRun(
     options,
   });
 
+  const origin = get(sdkSessions).find((session) => session.id === sessionId);
+  const fixModel = origin?.model ?? options.reviewerModel;
   const seed: ValidationRunView = {
     id: runId,
     sessionId,
@@ -559,6 +580,11 @@ async function startRun(
     log: [],
     activity: [],
     fixTarget: 'session',
+    fixModel,
+    fixEffort: normalizeFixEffort(
+      fixModel,
+      origin?.effortLevel ?? options.reviewerEffort ?? undefined,
+    ),
     panelOpen: true,
     selectedFindingIds: [],
     userFindings: [],
@@ -585,10 +611,16 @@ function viewFromPersisted(p: PersistedValidationRun): ValidationRunView {
   const selectedFindingIds = (p.gate?.findings ?? [])
     .filter((f) => f.action === 'auto-fix')
     .map((f) => f.id);
+  const origin = get(sdkSessions).find((session) => session.id === p.sessionId);
   return {
     ...p,
     panelOpen: p.panelOpen ?? false,
     fixTarget: p.fixTarget ?? 'session',
+    fixModel: p.fixModel ?? origin?.model ?? p.options.reviewerModel,
+    fixEffort: normalizeFixEffort(
+      p.fixModel ?? origin?.model ?? p.options.reviewerModel,
+      p.fixEffort ?? origin?.effortLevel ?? p.options.reviewerEffort ?? undefined,
+    ),
     log: [],
     activity: [],
     selectedFindingIds,
@@ -902,6 +934,23 @@ function setFixTarget(runId: string, target: FixTarget): void {
   persistRun(runId);
 }
 
+/** Choose the model for fixes dispatched to a fresh session. */
+function setFixModel(runId: string, model: string): void {
+  patchView(runId, (run) => ({
+    fixModel: model,
+    fixEffort: normalizeFixEffort(model, run.fixEffort ?? undefined),
+  }));
+  persistRun(runId);
+}
+
+/** Choose the effort for fixes dispatched to a fresh session. */
+function setFixEffort(runId: string, effort: EffortLevel): void {
+  patchView(runId, (run) => ({
+    fixEffort: normalizeFixEffort(run.fixModel, effort ?? undefined),
+  }));
+  persistRun(runId);
+}
+
 /**
  * Add a user-authored finding to the current gate and select it. Sent to the
  * fixer as an `addedFinding` on the next `fix` response.
@@ -1012,10 +1061,10 @@ async function startFix(runId: string, payload: ValidationFixRequestPayload): Pr
 }
 
 /**
- * Fix in a fresh session: clone the origin session's provider/model/effort/
- * account into a new session running in the run's cwd (same branch/worktree —
- * that's where the changes live), send a context-rich fix prompt as its first
- * turn, and watch that session instead. The origin session stays untouched.
+ * Fix in a fresh session using the model/effort selected at the gate. Run it in
+ * the run's cwd (same branch/worktree — that's where the changes live), send a
+ * context-rich fix prompt as its first turn, and watch that session instead.
+ * The origin session stays untouched.
  */
 async function startFixInNewSession(
   runId: string,
@@ -1041,10 +1090,20 @@ async function startFixInNewSession(
   fixWatchers.set(runId, watcher);
 
   try {
+    const model = view.fixModel || origin.model;
+    const provider = getProviderForModel(model);
+    const originProvider = origin.provider ?? getProviderForModel(origin.model);
+    const effort = normalizeFixEffort(
+      model,
+      view.fixEffort ?? origin.effortLevel ?? undefined,
+    );
+    // Account pins are provider-specific. Preserve the pin when the chosen
+    // model stays on the origin provider; otherwise use that provider's default.
+    const accountId = provider === originProvider ? origin.accountId : undefined;
     const newId = sdkSessions.createSetupSession(
-      origin.model,
-      origin.effortLevel,
-      origin.provider,
+      model,
+      effort,
+      provider,
       view.cwd,
     );
     watcher.sessionId = newId;
@@ -1052,10 +1111,10 @@ async function startFixInNewSession(
       prompt,
       cwd: view.cwd,
       repoId: origin.repoId ?? undefined,
-      model: origin.model,
-      effortLevel: origin.effortLevel,
-      provider: origin.provider,
-      accountId: origin.accountId,
+      model,
+      effortLevel: effort,
+      provider,
+      accountId,
     });
   } catch (err) {
     finishFix(watcher, 'failed', errMsg(err));
@@ -1194,7 +1253,6 @@ export function loadRunOptions(repoId: string | undefined): RunOptions | null {
       reviewerEffort: parsed.reviewerEffort ?? null,
       adversarialVerify: !!parsed.adversarialVerify,
       baseBranch: parsed.baseBranch ?? null,
-      simplifyModel: parsed.simplifyModel ?? null,
     };
   } catch {
     return null;
@@ -1242,7 +1300,6 @@ export function seedRunOptions(args: {
     reviewerEffort: saved?.reviewerEffort ?? defaults.reviewer_effort ?? null,
     adversarialVerify: saved?.adversarialVerify ?? defaults.adversarial_verify,
     baseBranch: saved?.baseBranch ?? null,
-    simplifyModel: saved?.simplifyModel ?? null,
   };
 }
 
@@ -1261,6 +1318,8 @@ export const validation = {
   dismiss,
   selectFindings,
   setFixTarget,
+  setFixModel,
+  setFixEffort,
   addUserFinding,
   openPanel,
   closePanel,

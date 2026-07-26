@@ -364,7 +364,7 @@ export interface AgentAccount {
 
 export type CodexMode = "Sdk" | "AppServer";
 /** Codex-only interactive permission mode for new sessions.
- *  "AutoApprove" = current behavior (approvalPolicy "never", no sandbox confinement).
+ *  "AutoApprove" = approvalPolicy "never" + explicit danger-full-access.
  *  "Auto" = workspace-write sandbox + on-request approvals (prompts to leave the workspace/network). */
 export type CodexPermissionMode = "AutoApprove" | "Auto";
 
@@ -544,14 +544,14 @@ export interface QueueConfig {
   fuzzy_delay_between_runs_max_secs: number;
 }
 
-/** Validation pipeline configuration (defaults for reviewer model, steps, auto-fix limits). */
+/** Validation pipeline configuration (defaults for model, effort, steps, and auto-fix limits). */
 export interface ValidationConfig {
   /** Default step set for new runs (subset of review/test/docs/lint/ship/ci). */
   default_steps: string[];
-  /** Reviewer Claude model id, or "session" to use the session's own model. */
+  /** Model id from either configured provider, or "session". */
   reviewer_model: string;
   /**
-   * Reviewer effort level ("low"|"medium"|"high"|"xhigh"|"max"). Effort is
+   * Effort used by every validation agent ("low"|"medium"|"high"|"xhigh"|"max"). It is
    * always on — a null (from configs saved before this was grounded) is
    * treated as "medium" by the UI.
    */

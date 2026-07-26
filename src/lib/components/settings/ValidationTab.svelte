@@ -5,8 +5,26 @@
   import EffortToggle from "$lib/components/EffortToggle.svelte";
   import "./toggle.css";
 
-  // Only the user's active Claude models (Settings → Claude) are offered.
-  const models = $derived(getEnabledModels($settings.enabled_models));
+  // One model/effort pair drives every validation agent. Offer the active
+  // models from each provider the user has enabled.
+  const claudeModels = $derived(
+    $settings.enabled_providers.claude
+      ? getEnabledModels($settings.enabled_models, "claude")
+      : [],
+  );
+  const openaiModels = $derived(
+    $settings.enabled_providers.openai
+      ? getEnabledModels($settings.enabled_openai_models, "openai")
+      : [],
+  );
+  const models = $derived([...claudeModels, ...openaiModels]);
+
+  $effect(() => {
+    const selected = $settings.validation.reviewer_model;
+    if (selected !== "session" && !models.some((model) => model.id === selected)) {
+      $settings.validation.reviewer_model = "session";
+    }
+  });
 
   const STEP_ORDER = ["simplify", "review", "test", "docs", "lint", "ship", "ci"] as const;
   const STEP_LABELS: Record<string, string> = {
@@ -58,23 +76,34 @@
     </div>
   </div>
 
-  <!-- Reviewer model / effort -->
+  <!-- Validation model / effort -->
   <div class="border-t border-border pt-4 mt-4 grid grid-cols-2 gap-3">
     <div>
-      <label class="block text-sm font-medium text-text-secondary mb-1" for="val-model">Reviewer model</label>
+      <label class="block text-sm font-medium text-text-secondary mb-1" for="val-model">Validation model</label>
       <select
         id="val-model"
         class="w-full px-3 py-2 bg-background border border-border rounded text-sm focus:outline-none focus:border-accent"
         bind:value={$settings.validation.reviewer_model}
       >
         <option value="session">Session model</option>
-        {#each models as m (m.id)}
-          <option value={m.id}>{m.label}</option>
-        {/each}
+        {#if claudeModels.length > 0}
+          <optgroup label="Claude">
+            {#each claudeModels as m (m.id)}
+              <option value={m.id}>{m.label}</option>
+            {/each}
+          </optgroup>
+        {/if}
+        {#if openaiModels.length > 0}
+          <optgroup label="Codex">
+            {#each openaiModels as m (m.id)}
+              <option value={m.id}>{m.label}</option>
+            {/each}
+          </optgroup>
+        {/if}
       </select>
     </div>
     <div>
-      <span class="block text-sm font-medium text-text-secondary mb-1">Reviewer effort</span>
+      <span class="block text-sm font-medium text-text-secondary mb-1">Validation effort</span>
       <div class="flex items-center min-h-[38px]">
         <EffortToggle
           effortLevel={($settings.validation.reviewer_effort ?? "medium") as EffortLevel}

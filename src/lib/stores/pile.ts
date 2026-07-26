@@ -24,6 +24,7 @@ import {
   buildAllReposContext,
 } from '$lib/composables/useTranscriptionProcessor.svelte';
 import { generateSessionName, isRepoAutoSelectEnabled } from '$lib/utils/llm';
+import { hasMeaningfulTranscription } from '$lib/utils/transcriptionText';
 import { debugRecordings } from '$lib/stores/debugRecordings';
 
 // ---------------------------------------------------------------------------
@@ -400,9 +401,14 @@ function createPileStore() {
 
     try {
       const audioData = await invoke<number[]>('read_pile_audio', { id });
-      const transcript = await invoke<string>('transcribe_audio', { audioData });
+      const whisperTranscript = await invoke<string>('transcribe_audio', { audioData });
+      const transcript = hasMeaningfulTranscription(whisperTranscript)
+        ? whisperTranscript
+        : hasMeaningfulTranscription(item.realtimeTranscript)
+          ? item.realtimeTranscript!
+          : '';
 
-      if (transcript?.trim()) {
+      if (hasMeaningfulTranscription(transcript)) {
         updateItem(id, {
           transcript,
           rawTranscript: transcript,
@@ -410,7 +416,7 @@ function createPileStore() {
         });
         if (item.debugRecordingId) {
           debugRecordings.update(item.debugRecordingId, {
-            whisperTranscript: transcript,
+            whisperTranscript,
             error: undefined,
           });
         }

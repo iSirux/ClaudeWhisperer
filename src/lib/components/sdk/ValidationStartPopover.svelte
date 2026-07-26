@@ -10,6 +10,7 @@
   import { buildValidationIntent } from '$lib/utils/validationIntent';
   import {
     getEnabledModels,
+    getProviderForModel,
     isAutoModel,
     modelSupportsEffort,
     DEFAULT_MODEL_ID,
@@ -20,7 +21,6 @@
   import SendTimingIcon from '$lib/components/sdk/SendTimingIcon.svelte';
   import { modifierCombo } from '$lib/stores/ctrlHint';
   import { sendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
-  import type { SdkProvider } from '$lib/utils/models';
 
   let {
     session,
@@ -54,18 +54,15 @@
     seedRunOptions({ repoId, repoSteps, defaults: $settings.validation }),
   );
 
-  // Reviewer choices come from the user's ACTIVE Claude models (same source as
-  // the session model selector), plus "Session model". Computed once at mount —
-  // the popover is short-lived.
-  const models = getEnabledModels($settings.enabled_models);
-  // The simplify agent can run on any active provider's model (the sidecar
-  // routes Claude models to the SDK rail, GPT/Codex models to a Codex thread).
-  const simplifyModels = [
-    ...($settings.enabled_providers.claude ? getEnabledModels($settings.enabled_models, 'claude') : []),
-    ...($settings.enabled_providers.openai
-      ? getEnabledModels($settings.enabled_openai_models, 'openai')
-      : []),
-  ];
+  // One model/effort pair drives every validation agent. Offer models from
+  // every provider the user enabled during onboarding.
+  const claudeModels = $settings.enabled_providers.claude
+    ? getEnabledModels($settings.enabled_models, 'claude')
+    : [];
+  const openaiModels = $settings.enabled_providers.openai
+    ? getEnabledModels($settings.enabled_openai_models, 'openai')
+    : [];
+  const models = [...claudeModels, ...openaiModels];
 
   let selectedSteps = $state<Set<StepName>>(new Set(seeded.steps));
   let reviewerModel = $state(
@@ -73,12 +70,7 @@
       ? seeded.reviewerModel
       : 'session',
   );
-  let simplifyModel = $state(
-    seeded.simplifyModel && simplifyModels.some((m) => m.id === seeded.simplifyModel)
-      ? seeded.simplifyModel
-      : 'session',
-  );
-  // Effort is always on for the reviewer; older saved options may carry null.
+  // Effort is always on; older saved options may carry null.
   let reviewerEffort = $state<EffortLevel>(
     (seeded.reviewerEffort || $settings.validation.reviewer_effort || 'medium') as EffortLevel,
   );
@@ -107,7 +99,7 @@
 
   /**
    * The backend cannot see the live session's model, so "session" must be
-   * resolved to a concrete Claude model id here before we call startRun. The
+   * resolved to a concrete model id here before we call startRun. The
    * user's "session" preference is still persisted (so it tracks the session's
    * model over time); only the id sent to the run is resolved.
    */
@@ -118,17 +110,6 @@
     // Unknown / Auto session model — fall back to the global default.
     const fallback = $settings.validation.reviewer_model;
     return fallback && fallback !== 'session' ? fallback : DEFAULT_MODEL_ID;
-  }
-
-  /**
-   * Like resolveReviewerModel, but for the simplify agent — the session's model
-   * is used as-is whatever its provider (a Codex session gets a Codex agent).
-   */
-  function resolveSimplifyModel(choice: string): string {
-    if (choice !== 'session') return choice;
-    const sessionModel = session.model;
-    if (sessionModel && !isAutoModel(sessionModel)) return sessionModel;
-    return resolveReviewerModel('session');
   }
 
   /**
@@ -150,16 +131,19 @@
       baseBranch: seeded.baseBranch ?? null,
     };
     // Persist the user's raw choice (may be "session"); send the resolved id.
-    const persisted: RunOptions = { ...base, reviewerModel, simplifyModel };
+    const persisted: RunOptions = { ...base, reviewerModel };
+    const resolvedModel = resolveReviewerModel(reviewerModel);
     const runOptions: RunOptions = {
       ...base,
-      reviewerModel: resolveReviewerModel(reviewerModel),
-      simplifyModel: resolveSimplifyModel(simplifyModel),
+      reviewerModel: resolvedModel,
     };
     try {
       saveRunOptions(repoId, persisted);
       const intent = buildValidationIntent(session);
-      const provider = (session.provider ?? 'claude') as SdkProvider;
+      const provider = getProviderForModel(resolvedModel);
+      // An account id belongs to one provider. When validation crosses to the
+      // other provider, use that provider's default configured credentials.
+      const accountId = provider === (session.provider ?? 'claude') ? session.accountId : undefined;
       await validation.scheduleRun(
         session.id,
         cwd,
@@ -168,7 +152,7 @@
         runOptions,
         timing,
         provider,
-        session.accountId,
+        accountId,
       );
       onClose();
     } catch (err) {
@@ -207,26 +191,25 @@
     </div>
   </div>
 
-  {#if selectedSteps.has('simplify')}
-    <div class="vsp-section">
-      <label class="vsp-section-label" for="vsp-simplify-model">Simplify model</label>
-      <select id="vsp-simplify-model" class="vsp-select" bind:value={simplifyModel}>
-        <option value="session">Session model</option>
-        {#each simplifyModels as m (m.id)}
-          <option value={m.id}>{m.label}</option>
-        {/each}
-      </select>
-    </div>
-  {/if}
-
   <div class="vsp-section vsp-grid">
     <div class="vsp-field">
-      <label class="vsp-section-label" for="vsp-model">Reviewer model</label>
+      <label class="vsp-section-label" for="vsp-model">Model</label>
       <select id="vsp-model" class="vsp-select" bind:value={reviewerModel}>
         <option value="session">Session model</option>
-        {#each models as m (m.id)}
-          <option value={m.id}>{m.label}</option>
-        {/each}
+        {#if claudeModels.length > 0}
+          <optgroup label="Claude">
+            {#each claudeModels as m (m.id)}
+              <option value={m.id}>{m.label}</option>
+            {/each}
+          </optgroup>
+        {/if}
+        {#if openaiModels.length > 0}
+          <optgroup label="Codex">
+            {#each openaiModels as m (m.id)}
+              <option value={m.id}>{m.label}</option>
+            {/each}
+          </optgroup>
+        {/if}
       </select>
     </div>
     <div class="vsp-field">

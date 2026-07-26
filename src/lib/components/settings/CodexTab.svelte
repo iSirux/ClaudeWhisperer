@@ -216,7 +216,9 @@
       Controls how new Codex sessions handle command and file-change approvals.
       <strong class="text-text-secondary">Auto-approve</strong> is the current
       behavior — Codex runs everything without pausing (approval policy
-      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">never</code>).
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">never</code>,
+      sandbox
+      <code class="px-1 py-0.5 bg-background rounded text-text-secondary">danger-full-access</code>).
       <strong class="text-text-secondary">Auto (sandboxed)</strong> confines Codex to a
       <code class="px-1 py-0.5 bg-background rounded text-text-secondary">workspace-write</code>
       sandbox and prompts for approval when it wants to leave the workspace or use the

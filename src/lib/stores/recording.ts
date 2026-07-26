@@ -5,6 +5,7 @@ import { usageStats } from './usageStats';
 import { settings } from './settings';
 import { debugRecordings } from './debugRecordings';
 import { processVoiceCommand } from '$lib/utils/voiceCommands';
+import { hasMeaningfulTranscription } from '$lib/utils/transcriptionText';
 import { acquireMicStream, type MicLease } from './micStream';
 import { openMic } from './openMic';
 
@@ -24,6 +25,8 @@ interface QueuedRecording {
   id: string;
   audioData: Uint8Array;
   status: 'pending' | 'transcribing' | 'done' | 'error';
+  transcriptionMode: 'Whisper' | 'Realtime' | 'Both';
+  realtimeHarvest: Promise<string>;
   transcript?: string;
   error?: string;
   // Id of the on-disk capture (crash insurance); deleted once transcription settles.
@@ -96,6 +99,19 @@ function createRecordingStore() {
   // In-flight background realtime start (recording no longer awaits it).
   // Stop paths settle this first so they can't race a half-started session.
   let realtimeStartPromise: Promise<void> | null = null;
+  // Finalized realtime results keyed by the caller-owned debug/recording id.
+  // Callers use this instead of racing the live preview store at key release.
+  const finalizedRealtimeHarvests = new Map<string, Promise<string>>();
+  const MAX_FINALIZED_HARVESTS = 50;
+
+  function rememberRealtimeHarvest(id: string, harvest: Promise<string>) {
+    finalizedRealtimeHarvests.set(id, harvest);
+    while (finalizedRealtimeHarvests.size > MAX_FINALIZED_HARVESTS) {
+      const oldestId = finalizedRealtimeHarvests.keys().next().value;
+      if (oldestId === undefined) break;
+      finalizedRealtimeHarvests.delete(oldestId);
+    }
+  }
 
   async function settleRealtimeStart() {
     if (realtimeStartPromise) {
@@ -510,12 +526,33 @@ function createRecordingStore() {
     }));
 
     try {
-      const transcript = await invoke<string>('transcribe_audio', {
+      const whisperTranscript = await invoke<string>('transcribe_audio', {
         audioData: Array.from(pendingRecording.audioData),
       });
+      debugRecordings.update(pendingRecording.id, { whisperTranscript });
+
+      // A punctuation-only response (commonly "." for a short clip) is not a
+      // usable transcription. In Both mode, wait for the finalized realtime
+      // harvest and use it exactly as we already do for a thrown Whisper error.
+      let transcript = hasMeaningfulTranscription(whisperTranscript)
+        ? whisperTranscript
+        : '';
+      if (!transcript && pendingRecording.transcriptionMode === 'Both') {
+        const harvestedTranscript = await pendingRecording.realtimeHarvest;
+        if (hasMeaningfulTranscription(harvestedTranscript)) {
+          console.warn(
+            '[recording] Whisper returned no meaningful text in Both mode; falling back to realtime harvest'
+          );
+          transcript = harvestedTranscript.trim();
+        }
+      }
 
       // Track transcription
       usageStats.trackTranscription();
+
+      if (!transcript) {
+        throw new Error('Transcription produced no meaningful text');
+      }
 
       // Transcription settled successfully: the transcript is durable, drop the capture.
       if (pendingRecording.captureId) {
@@ -718,6 +755,7 @@ function createRecordingStore() {
               return '';
             }
           })();
+          rememberRealtimeHarvest(debugId, harvestPromise);
           // Debug log (dev mode): attach the raw harvest whenever it lands.
           const attachHarvestToDebugLog = () => {
             harvestPromise.then((harvest) => {
@@ -834,10 +872,11 @@ function createRecordingStore() {
                     audioData,
                     captureId,
                     status: 'pending',
+                    transcriptionMode,
+                    realtimeHarvest: harvestPromise,
                     onComplete: (transcript: string) => {
                       // Update the store with the transcript when done
                       update((s2) => ({ ...s2, transcript }));
-                      debugRecordings.update(recordingId, { whisperTranscript: transcript });
                       resolve(transcript);
                     },
                     onError: async (transcriptionError: Error) => {
@@ -929,9 +968,13 @@ function createRecordingStore() {
           throw new Error('No audio data available');
         }
 
-        const transcript = await invoke<string>('transcribe_audio', {
+        const rawTranscript = await invoke<string>('transcribe_audio', {
           audioData: Array.from(currentAudioData),
         });
+        if (!hasMeaningfulTranscription(rawTranscript)) {
+          throw new Error('Transcription produced no meaningful text');
+        }
+        const transcript = rawTranscript.trim();
 
         // Track transcription
         usageStats.trackTranscription();
@@ -958,6 +1001,27 @@ function createRecordingStore() {
     /** Owner of the current recording (null when idle). */
     getOwner(): RecordingOwner | null {
       return recordingOwner;
+    },
+
+    /**
+     * Return the finalized realtime transcript for one completed recording.
+     * The fallback is the live preview snapshot captured at key release and is
+     * only used when no finalized harvest was registered or it stayed empty.
+     */
+    async getFinalizedRealtimeTranscript(
+      recordingId: string,
+      fallback: string = ''
+    ): Promise<string> {
+      const harvest = finalizedRealtimeHarvests.get(recordingId);
+      if (!harvest) return fallback.trim();
+      try {
+        const finalized = (await harvest).trim();
+        return hasMeaningfulTranscription(finalized) ? finalized : fallback.trim();
+      } catch {
+        return fallback.trim();
+      } finally {
+        finalizedRealtimeHarvests.delete(recordingId);
+      }
     },
 
     async cancelRecording() {

@@ -48,6 +48,9 @@ export function makeInlineDictation(getRepo?: () => RepoLike | undefined) {
         return null;
       }
 
+      const finalizedRealtimeTranscript =
+        await recording.getFinalizedRealtimeTranscript(debugId, realtimeTranscript);
+
       debugRecordings.update(debugId, { destination: 'dictation' });
 
       if (!raw || !raw.trim() || !isTranscriptionCleanupEnabled()) return raw;
@@ -55,7 +58,11 @@ export function makeInlineDictation(getRepo?: () => RepoLike | undefined) {
       const repo = getRepo?.();
       const repoContext = repo ? buildSingleRepoContext(repo) : undefined;
       try {
-        const result = await cleanupTranscript(raw, realtimeTranscript, repoContext);
+        const result = await cleanupTranscript(
+          raw,
+          finalizedRealtimeTranscript,
+          repoContext
+        );
         debugRecordings.update(debugId, {
           cleanedTranscript: result.text,
           wasCleanedUp: result.wasCleanedUp,
