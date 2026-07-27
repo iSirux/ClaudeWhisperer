@@ -902,7 +902,21 @@ impl RunCtx {
     /// headless Codex thread).
     async fn run_simplify(&mut self) -> StepEnd {
         self.set_step_status(StepName::Simplify, StepStatus::Running);
-        let prompt = prompts::simplify_prompt(&self.base_branch());
+        let base = self.base_branch();
+        // Only let the agent commit+push its own work when the tree was clean
+        // going in (so everything left over is unambiguously its edits) and we
+        // are on a real feature branch.
+        let commit_branch = match self.simplify_commit_branch(&base).await {
+            Some(branch) => {
+                self.log(format!(
+                    "simplify: clean tree on `{}` — agent will commit and push its fixes",
+                    branch
+                ));
+                Some(branch)
+            }
+            None => None,
+        };
+        let prompt = prompts::simplify_prompt(&base, commit_branch.as_deref());
         let model = self.simplify_model();
         self.log(format!("simplify: running headless agent ({})", model));
         let outcome = match self
@@ -1452,6 +1466,30 @@ impl RunCtx {
     }
 
     // ── Small helpers ───────────────────────────────────────────────────────
+
+    /// The branch the simplify agent may commit and push to: `Some(branch)` only
+    /// when the working tree is clean right now and the checkout is on a feature
+    /// branch (not the base branch, not main/master).
+    async fn simplify_commit_branch(&self, base: &str) -> Option<String> {
+        let branch = GitManager::get_current_branch(&self.cwd()).ok()?;
+        if branch.is_empty()
+            || branch == base
+            || branch == "main"
+            || branch == "master"
+            || branch == "HEAD"
+        {
+            return None;
+        }
+        let out = run_command_async(
+            "git",
+            &["status".into(), "--porcelain".into()],
+            Some(Path::new(&self.cwd())),
+            &[],
+        )
+        .await
+        .ok()?;
+        (out.success && out.stdout.trim().is_empty()).then_some(branch)
+    }
 
     fn base_branch(&self) -> String {
         if let Some(b) = self

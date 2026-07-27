@@ -3336,13 +3336,97 @@ const validationFindingShape = {
     .string()
     .describe("Short imperative title for the finding (a few words, no file paths)"),
   severity: z.enum(["error", "warning", "info"]),
-  file: z.string().optional(),
-  line: z.number().optional(),
+  file: z
+    .string()
+    .optional()
+    .describe("File the finding refers to; omit or null when it is not file-specific"),
+  line: z
+    .number()
+    .optional()
+    .describe("Line number within the file; omit or null when unknown"),
   description: z.string(),
   action: z.enum(["auto-fix", "ask-user", "no-op"]),
 };
 
 const validationFindingSchema = z.object(validationFindingShape);
+
+type JsonSchemaNode = Record<string, unknown>;
+
+/** Widen a schema node so `null` is an accepted value. */
+function allowNull(node: unknown): void {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return;
+  const obj = node as JsonSchemaNode;
+  if (Array.isArray(obj.anyOf)) {
+    if (!obj.anyOf.some((v) => (v as JsonSchemaNode)?.type === "null")) {
+      obj.anyOf.push({ type: "null" });
+    }
+    return;
+  }
+  if (typeof obj.type === "string") {
+    if (obj.type !== "null") obj.type = [obj.type, "null"];
+  } else if (Array.isArray(obj.type)) {
+    if (!obj.type.includes("null")) obj.type = [...obj.type, "null"];
+  } else {
+    obj.anyOf = [{ ...obj }, { type: "null" }];
+    for (const key of Object.keys(obj)) {
+      if (key !== "anyOf" && key !== "description") delete obj[key];
+    }
+    return;
+  }
+  if (Array.isArray(obj.enum) && !obj.enum.includes(null)) {
+    obj.enum = [...obj.enum, null];
+  }
+}
+
+/**
+ * Rewrite a JSON schema in place for OpenAI structured outputs, which run in
+ * strict mode: every key in `properties` must be listed in `required` and
+ * `additionalProperties` must be false. Zod emits optional fields (a finding's
+ * `file`/`line`) as absent from `required`, which the API rejects outright, so
+ * they become required-but-nullable instead.
+ */
+function strictifyJsonSchema(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const child of node) strictifyJsonSchema(child);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  const obj = node as JsonSchemaNode;
+
+  const props = obj.properties as Record<string, unknown> | undefined;
+  if (props && typeof props === "object") {
+    const keys = Object.keys(props);
+    const required = new Set(
+      Array.isArray(obj.required) ? (obj.required as string[]) : []
+    );
+    for (const key of keys) {
+      if (!required.has(key)) allowNull(props[key]);
+      strictifyJsonSchema(props[key]);
+    }
+    obj.required = keys;
+    obj.additionalProperties = false;
+  }
+
+  for (const key of ["items", "anyOf", "oneOf", "allOf", "$defs", "definitions"]) {
+    const child = obj[key];
+    if (key === "$defs" || key === "definitions") {
+      if (child && typeof child === "object") {
+        for (const def of Object.values(child as Record<string, unknown>)) {
+          strictifyJsonSchema(def);
+        }
+      }
+    } else {
+      strictifyJsonSchema(child);
+    }
+  }
+}
+
+/** Role result schema as a strict-mode JSON schema for the Codex rail. */
+function validationResultJsonSchema(role: ValidationRole): JsonSchemaNode {
+  const schema = z.toJSONSchema(validationResultSchema(role)) as JsonSchemaNode;
+  strictifyJsonSchema(schema);
+  return schema;
+}
 
 /** The provider-neutral result schema for one validation role. */
 function validationResultSchema(role: ValidationRole): z.ZodType {
@@ -3806,7 +3890,7 @@ Provider-specific completion requirement: you are running through Codex, so the 
 named above are not available. Do the requested work, then return the result as your final response
 using the provided JSON schema. Do not merely describe the JSON and do not wrap it in Markdown.`;
     const { events } = await thread.runStreamed(prompt, {
-      outputSchema: z.toJSONSchema(validationResultSchema(msg.role)),
+      outputSchema: validationResultJsonSchema(msg.role),
     });
     for await (const event of events) {
       if (event.type === "item.started" || event.type === "item.completed") {

@@ -169,9 +169,23 @@ Call submit_evidence with findings, tested (what you exercised), testing_summary
 
 /// Simplify prompt — the Claude Code "Simplify" skill instructions, verbatim.
 /// The agent finds AND fixes autonomously (no findings, no gates); the only
-/// addition is a trailing context line naming the run's base branch. The
+/// additions are a trailing context line naming the run's base branch and, when
+/// `commit_branch` is set (the tree was clean before the step and we're on a
+/// non-default branch), an instruction to commit and push its own edits. The
 /// sidecar appends its own submit instruction on the Claude rail.
-pub fn simplify_prompt(base_branch: &str) -> String {
+pub fn simplify_prompt(base_branch: &str, commit_branch: Option<&str>) -> String {
+    let commit_section = match commit_branch {
+        Some(branch) => format!(
+            "\n\n## Phase 3 — Commit and push\n\n\
+The working tree was clean before this review and the checkout is on branch \
+`{branch}`, not the base branch — so commit and push whatever you changed: \
+`git add -A`, `git commit`, then `git push` (use `git push -u origin {branch}` \
+if the branch has no upstream yet). Every uncommitted change in the tree is \
+yours. If you fixed nothing, skip this entirely — do not create an empty commit.",
+            branch = branch,
+        ),
+        None => String::new(),
+    };
     format!(
         r#"You are improving the quality of the changed code, not hunting for bugs. Review
 it for reuse, simplification, efficiency, and altitude issues, then fix what you
@@ -229,10 +243,11 @@ line or mechanism, and fix each remaining one directly. Skip any finding whose
 fix would change intended behavior, require changes well outside the reviewed
 diff, or that you judge to be a false positive — note the skip rather than
 arguing with it. Finish with a brief summary of what was fixed and what was
-skipped (or confirm the code was already clean).
+skipped (or confirm the code was already clean).{commit}
 
 Context: the base branch to diff against is `{base}`."#,
         base = base_branch,
+        commit = commit_section,
     )
 }
 
