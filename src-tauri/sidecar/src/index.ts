@@ -3873,6 +3873,9 @@ async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<vo
       // Claude rail may run unrestricted shell commands. Review/docs/verify
       // remain read-only; simplify is intentionally allowed to edit.
       sandboxMode: role.readOnly ? "read-only" : "workspace-write",
+      // workspace-write blocks network by default, which would fail the
+      // simplify agent's `git push` when it is told to commit its own fixes.
+      ...(msg.role === "simplify" ? { networkAccessEnabled: true } : {}),
       approvalPolicy: "never",
       ...(effort
         ? { modelReasoningEffort: effort as ThreadOptions["modelReasoningEffort"] }
