@@ -51,6 +51,36 @@ export function getElapsedTime(
   return formatDuration(elapsedSeconds);
 }
 
+/** Zero-padded local wall-clock time, e.g. "09:00" (24h — matches the schedule presets). */
+function formatClock(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * Absolute label for a scheduled moment (native scheduling / Smart Queue custom times).
+ * Short and calendar-anchored rather than a countdown — surfaces that show a countdown
+ * render it alongside this.
+ *
+ * "today 14:30" / "tomorrow 09:00" / "Fri 09:00" (within a week) / "Aug 12 09:00" (beyond).
+ * @param ts - Target time (epoch ms)
+ * @param nowMs - Reference "now" (epoch ms), injectable for live-ticking callers
+ */
+export function formatScheduleTarget(ts: number, nowMs: number = Date.now()): string {
+  const target = new Date(ts);
+  const time = formatClock(target);
+
+  // Compare calendar days (not 24h spans) so "tomorrow 09:00" reads correctly at 23:00.
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDelta = Math.round((startOfDay(target) - startOfDay(new Date(nowMs))) / 86_400_000);
+
+  if (dayDelta === 0) return `today ${time}`;
+  if (dayDelta === 1) return `tomorrow ${time}`;
+  if (dayDelta > 1 && dayDelta < 7) {
+    return `${target.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`;
+  }
+  return `${target.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+}
+
 /**
  * Extract repository name from a path
  * @param path - Full repository path

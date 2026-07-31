@@ -1,10 +1,24 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { queuedCount, nextQueueResetAt, isDraining } from '$lib/stores/smartQueue';
+  import { enabledScheduleCount, nextScheduleFireAt } from '$lib/stores/schedules';
 
   let count = $derived($queuedCount);
   let resetAt = $derived($nextQueueResetAt);
   let draining = $derived($isDraining);
+
+  // Native schedules are a second source of "something happens later" — folded into
+  // the same pill so there's one place to look for upcoming work.
+  let scheduledCount = $derived($enabledScheduleCount);
+  let scheduleAt = $derived($nextScheduleFireAt);
+
+  // The soonest of the two: a queued dispatch or a schedule firing.
+  let nextAt = $derived.by(() => {
+    const candidates = [resetAt, scheduleAt].filter(
+      (v): v is number => v != null
+    );
+    return candidates.length > 0 ? Math.min(...candidates) : undefined;
+  });
 
   // Tick so the countdown stays fresh between store updates.
   let now = $state(Date.now());
@@ -33,35 +47,55 @@
     return `${minutes}m`;
   }
 
-  let countdown = $derived(formatMsRemaining(resetAt, now));
-  let tooltip = $derived(
-    draining
-      ? 'Dispatching queued sessions…'
-      : `${count} session${count === 1 ? '' : 's'} queued${countdown ? ` · next dispatch in ${countdown}` : ''}`
+  let countdown = $derived(formatMsRemaining(nextAt, now));
+
+  // Compact value: "2" (queue only), "1" (schedules only), "2·1" (both).
+  let value = $derived(
+    count > 0 && scheduledCount > 0
+      ? `${count}·${scheduledCount}`
+      : String(count > 0 ? count : scheduledCount)
   );
+
+  let tooltip = $derived.by(() => {
+    if (draining) return 'Dispatching queued sessions…';
+    const parts: string[] = [];
+    if (count > 0) parts.push(`${count} session${count === 1 ? '' : 's'} queued`);
+    if (scheduledCount > 0) {
+      parts.push(`${scheduledCount} schedule${scheduledCount === 1 ? '' : 's'} upcoming`);
+    }
+    return `${parts.join(' · ')}${countdown ? ` · next in ${countdown}` : ''}`;
+  });
+
+  let visible = $derived(count > 0 || scheduledCount > 0);
 </script>
 
-{#if count > 0}
+{#if visible}
   <div class="indicator" class:draining title={tooltip}>
     <div class="row">
       {#if draining}
         <svg class="icon spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
         </svg>
-      {:else}
+      {:else if count > 0}
         <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h10" />
         </svg>
+      {:else}
+        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
       {/if}
-      <span class="val">{count}</span>
+      <span class="val">{value}</span>
     </div>
     <div class="row sub">
       {#if draining}
         <span>launching…</span>
       {:else if countdown}
         <span>next in {countdown}</span>
-      {:else}
+      {:else if count > 0}
         <span>queued</span>
+      {:else}
+        <span>scheduled</span>
       {/if}
     </div>
   </div>

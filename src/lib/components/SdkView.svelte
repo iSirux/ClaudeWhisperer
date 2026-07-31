@@ -37,7 +37,9 @@
   import RateLimitBanner from "./sdk/RateLimitBanner.svelte";
   import QueuedTurnGhost from "./sdk/QueuedTurnGhost.svelte";
   import { type QueueWindow } from "$lib/stores/queueDetection";
+  import { schedules, type RecurrenceRule } from "$lib/stores/schedules";
   import { type SendTiming } from "$lib/utils/sendTiming";
+  import { formatScheduleTarget } from "$lib/utils/duration";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
   import { launchStore, getLaunchRuntime, queuedLaunch } from "$lib/stores/launchProfiles";
@@ -1540,9 +1542,18 @@
         : "",
   );
   let queueCountdown = $derived(formatCountdown(queueInfo?.targetStartAt));
+  // Native scheduling: a scheduled launch with a target time but no usage window is a
+  // custom wall-clock time ("tomorrow 09:00"), not a window boundary.
+  let queuedAtCustomTime = $derived(
+    queueInfo?.reason === "scheduled" &&
+      !queueInfo?.window &&
+      queueInfo?.targetStartAt != null,
+  );
   let queuedReasonLabel = $derived(
     queueInfo?.reason === "scheduled"
-      ? "Scheduled"
+      ? queuedAtCustomTime && queueInfo?.targetStartAt != null
+        ? `Scheduled for ${formatScheduleTarget(queueInfo.targetStartAt, nowTick)}`
+        : "Scheduled"
       : queueInfo?.reason === "after_sessions"
         ? "Waiting for repo to go idle"
         : "Queued — rate limited",
@@ -1577,6 +1588,49 @@
     images?: SdkImageContent[],
   ) {
     await sdkSessions.queueTurnForWindow(sessionId, prompt, images, window);
+  }
+
+  // "At a time…": park the turn for a custom wall-clock instant. Rides the same
+  // Smart Queue rails as the window-boundary sends, just with a custom target.
+  async function handleScheduleSendAt(
+    at: number,
+    prompt: string,
+    images?: SdkImageContent[],
+  ) {
+    await sdkSessions.queueTurnAtTime(sessionId, prompt, images, at);
+  }
+
+  /**
+   * "Recurring…": turn the draft into a durable Schedule that keeps sending this
+   * prompt into THIS session. `fallback` is snapshotted now so the schedule could
+   * still run if the user later switches it to "launch a new session"; the default
+   * stays `skip` — an unattended repeat shouldn't silently spawn a session.
+   */
+  function handleScheduleRecurring(
+    rule: RecurrenceRule,
+    label: string,
+    prompt: string,
+  ) {
+    const current = session;
+    schedules.add({
+      label,
+      prompt,
+      when: { kind: "recurring", rule },
+      target: {
+        kind: "message",
+        sessionId,
+        ifSessionGone: "skip",
+        fallback: current?.repoId
+          ? {
+              repoId: current.repoId,
+              model: current.model,
+              effortLevel: current.effortLevel,
+              provider: current.provider ?? "claude",
+              accountId: current.accountId,
+            }
+          : undefined,
+      },
+    });
   }
 
   // Ctrl+Shift Send / "Send when repo is idle": park the turn until every session
@@ -1753,7 +1807,9 @@
           <div class="queued-body">
             <div class="queued-title">{queuedReasonLabel}</div>
             <div class="queued-sub">
-              {#if queueInfo?.reason === "scheduled"}
+              {#if queuedAtCustomTime}
+                Will launch automatically at the scheduled time{queueCountdown ? ` — in ${queueCountdown}` : ""}.
+              {:else if queueInfo?.reason === "scheduled"}
                 Will launch at the next{queueWindowLabel ? ` ${queueWindowLabel}` : ""} reset{queueCountdown ? ` — in ${queueCountdown}` : ""}.
               {:else if queueInfo?.reason === "after_sessions"}
                 Will launch once every other session in this repo/worktree has finished.
@@ -2101,6 +2157,8 @@
       showScheduleSend={canScheduleSend}
       onSendPrompt={handleSendPrompt}
       onScheduleSend={handleScheduleSend}
+      onScheduleSendAt={handleScheduleSendAt}
+      onScheduleRecurring={handleScheduleRecurring}
       onSendSessionIdle={handleSendSessionIdle}
       onSendAfterIdle={handleSendAfterIdle}
       onStopQuery={handleStopQuery}

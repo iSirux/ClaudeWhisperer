@@ -3,10 +3,14 @@
 // =============================================================================
 //
 // A single global driver that dispatches deferred work once a provider's usage
-// window resets (rate-limit queueing), a user-scheduled window boundary passes
-// (fire-and-forget scheduling), or every session in the same repo+worktree has
-// finished ('after_sessions', Ctrl+click). It owns detection + draining for both
-// providers.
+// window resets (rate-limit queueing), a scheduled moment passes — a user-picked
+// window boundary or a custom wall-clock time (native scheduling) — or every session
+// in the same repo+worktree has finished ('after_sessions', Ctrl+click). It owns
+// detection + draining for both providers.
+//
+// Policy: the `queue.enabled` master toggle gates ONLY the automatic `rate_limit`
+// reason. `scheduled` and `after_sessions` are explicit per-item user actions and
+// always dispatch, without the fuzzy stagger delays.
 //
 // Two waiting shapes, one driver:
 //   - `status: 'queued'`  → a never-launched session, dispatched via `launchPrepared`.
@@ -45,7 +49,7 @@ interface PendingItem {
   kind: 'queued' | 'rateLimited';
   /** FIFO ordering key. */
   queuedAt: number;
-  /** For scheduled items: the target window-boundary time (epoch ms). */
+  /** For scheduled items: when to fire (epoch ms) — a window boundary or a custom time. */
   targetStartAt?: number;
   /** For after_sessions items: the repo/worktree scope to wait on (the session's cwd). */
   cwd?: string;
@@ -139,10 +143,12 @@ function pendingItemsForProvider(sessions: SdkSession[], provider: SdkProvider):
  *   the store is still null (e.g. right after app startup, before the first
  *   rate-limit fetch) we deliberately hold — otherwise every queued session would
  *   false-drain immediately on launch.
- * - `scheduled`: ready IF `now` has passed the snapshot target time AND the
- *   provider isn't exhausted. When the store is null we treat the provider as
- *   not-exhausted (`providerExhaustion` already returns `exhausted: false` for a
- *   null store), honoring the time the user explicitly scheduled.
+ * - `scheduled`: ready as soon as `now` passes the target time — a user-picked
+ *   window boundary or an arbitrary wall-clock time (native scheduling). Exhaustion
+ *   is deliberately NOT checked: the user asked for this moment, and holding here
+ *   would silently slip the send with no visible reason. If the provider does reject
+ *   it, the send path re-parks the turn as `rate_limit`, which then drains at the
+ *   real reset — a visible, self-correcting roll-forward.
  * - `after_sessions`: ready once the waited-on scope is idle. Scope `'session'`
  *   (parked follow-ups only) waits on just the own session's running query;
  *   `'worktree'` (the default) waits until no session in the same repo+worktree
@@ -170,8 +176,7 @@ function isReady(item: PendingItem, now: number, sessions: SdkSession[]): boolea
 
   // reason === 'scheduled'
   if (item.targetStartAt == null) return false; // nothing to fire against
-  if (now <= item.targetStartAt) return false; // not time yet
-  return !exhausted; // if exhausted at the scheduled moment, hold and roll forward
+  return now > item.targetStartAt; // fire at the scheduled moment, exhausted or not
 }
 
 // -----------------------------------------------------------------------------
@@ -186,13 +191,15 @@ async function drain(provider: SdkProvider): Promise<void> {
   // Re-entrancy guard (synchronous up to the first await, so this is race-free).
   if (draining[provider]) return;
 
-  // The master toggle governs rate-limit/scheduled queueing. 'after_sessions' items are
-  // an explicit per-item user action (Ctrl+click) and dispatch even when the queue is off.
+  // The master toggle governs ONLY automatic rate-limit queueing (the "retry my rejected
+  // turns for me" behavior). `scheduled` (a picked window boundary or wall-clock time) and
+  // `after_sessions` (Ctrl+click) are explicit per-item user actions — the user asked for
+  // this specific dispatch, so it happens even when the queue is switched off.
   const queueEnabled = get(settings).queue.enabled;
   const sessionsNow = get(sdkSessions);
   const readyNow = pendingItemsForProvider(sessionsNow, provider).filter(
     (item) =>
-      (queueEnabled || item.reason === 'after_sessions') && isReady(item, Date.now(), sessionsNow)
+      (queueEnabled || item.reason !== 'rate_limit') && isReady(item, Date.now(), sessionsNow)
   );
   if (readyNow.length === 0) return; // nothing to do — don't flip the draining flag
 
@@ -201,31 +208,32 @@ async function drain(provider: SdkProvider): Promise<void> {
 
   try {
     const cfg = get(settings).queue;
-    // FIFO by queue time, but hoist explicit `after_sessions` items ahead of
-    // reset-driven ones so an "start when idle" dispatch is never held behind a
-    // rate-limit stagger delay.
+    // FIFO by queue time, but hoist the user-driven items (`scheduled` / `after_sessions`)
+    // ahead of rate-limit ones so an "at 09:00" or "when idle" dispatch is never held
+    // behind a rate-limit stagger delay.
     const ordered = [...readyNow].sort((a, b) => {
-      const aImmediate = a.reason === 'after_sessions' ? 0 : 1;
-      const bImmediate = b.reason === 'after_sessions' ? 0 : 1;
+      const aImmediate = a.reason !== 'rate_limit' ? 0 : 1;
+      const bImmediate = b.reason !== 'rate_limit' ? 0 : 1;
       if (aImmediate !== bImmediate) return aImmediate - bImmediate;
       return a.queuedAt - b.queuedAt;
     });
     const dispatched = new Set<string>();
     let dispatchedCount = 0;
     // Whether the once-per-drain "after reset" stagger has been applied yet. Only
-    // reset-driven items (rate_limit / scheduled) trigger it.
+    // rate_limit items trigger it.
     let appliedAfterResetDelay = false;
 
     for (const item of ordered) {
       if (dispatched.has(item.id)) continue;
 
-      // Fuzzy stagger applies only to reset-driven items (rate_limit / scheduled),
-      // which fire on a usage-window boundary and want to be spread out. An
-      // `after_sessions` item is an explicit "start when the repo is idle" action —
-      // when the scope is already idle it must dispatch immediately, with no delay.
-      if (item.reason !== 'after_sessions') {
+      // Fuzzy stagger applies only to `rate_limit` items: those all pile up on the same
+      // usage-window boundary and want to be spread out. The user-driven reasons dispatch
+      // with no delay — a `scheduled` item fires at the moment the user picked (09:00 means
+      // 09:00, not 09:00 plus a random minute), and an `after_sessions` item is an explicit
+      // "start when the repo is idle" action that must go the instant the scope frees up.
+      if (item.reason === 'rate_limit') {
         if (!appliedAfterResetDelay) {
-          // "After reset" fuzzy delay — once, before the first reset-driven dispatch.
+          // "After reset" fuzzy delay — once, before the first rate-limit dispatch.
           if (cfg.fuzzy_delay_after_reset) {
             await sleep(
               randomDelayMs(
@@ -287,9 +295,9 @@ async function drain(provider: SdkProvider): Promise<void> {
 }
 
 /**
- * Kick a drain pass. The master toggle is applied per item inside `drain` —
- * rate-limit/scheduled items require the queue to be enabled, while
- * `after_sessions` items (explicit per-item user action) always dispatch.
+ * Kick a drain pass. The master toggle is applied per item inside `drain` — only
+ * `rate_limit` items require the queue to be enabled; `scheduled` and `after_sessions`
+ * items (explicit per-item user actions) always dispatch.
  */
 function evaluate(provider: SdkProvider): void {
   void drain(provider);
@@ -387,7 +395,9 @@ export const nextQueueResetAt = derived(sdkSessions, ($sessions) => {
     if (s.status === 'queued' && s.queueInfo) {
       target = s.queueInfo.targetStartAt;
     } else if (s.rateLimited) {
-      target = s.rateLimited.resetsAt ?? s.rateLimited.targetStartAt;
+      // `targetStartAt` first (same precedence as `toPendingItem` and RateLimitBanner):
+      // it's what the driver actually fires on, and a custom-time schedule has no `resetsAt`.
+      target = s.rateLimited.targetStartAt ?? s.rateLimited.resetsAt;
     }
     if (target == null) continue;
 

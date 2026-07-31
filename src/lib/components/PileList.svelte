@@ -8,6 +8,7 @@
     type PileItem,
   } from '$lib/stores/pile';
   import { sdkSessions, activeSdkSessionId } from '$lib/stores/sdkSessions';
+  import { selectedScheduleId } from '$lib/stores/schedules';
   import { repos, findRepoById } from '$lib/stores/repos';
   import { navigation } from '$lib/stores/navigation';
   import { createSessionQueue } from '$lib/utils/sessionLaunch';
@@ -69,6 +70,10 @@
 
   function openItem(item: PileItem) {
     selectedPileItemId.set(item.id);
+    // Clear the sibling selections that share the main pane (mirrors
+    // ScheduleList.openSchedule) — otherwise closing this item falls through to a
+    // still-selected schedule's editor.
+    selectedScheduleId.set(null);
     activeSdkSessionId.set(null);
     navigation.setView('sessions');
   }

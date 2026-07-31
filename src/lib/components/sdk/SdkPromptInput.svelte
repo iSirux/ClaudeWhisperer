@@ -15,6 +15,9 @@
     type SendTiming,
   } from "$lib/utils/sendTiming";
   import { nextWindowResetAt, type QueueWindow } from "$lib/stores/queueDetection";
+  import ScheduleTimePicker from "$lib/components/schedule/ScheduleTimePicker.svelte";
+  import RecurrenceDialog from "$lib/components/schedule/RecurrenceDialog.svelte";
+  import type { RecurrenceRule } from "$lib/stores/schedules";
   import { rateLimitData, codexRateLimitData, accountRateLimits } from "$lib/stores/rateLimits";
   import { isDefaultAccountId } from "$lib/utils/accounts";
   import type { SdkProvider } from "$lib/utils/models";
@@ -36,6 +39,8 @@
     showScheduleSend = false,
     onSendPrompt,
     onScheduleSend,
+    onScheduleSendAt,
+    onScheduleRecurring,
     onSendSessionIdle,
     onSendAfterIdle,
     onStopQuery,
@@ -68,6 +73,21 @@
       window: QueueWindow,
       prompt: string,
       images?: SdkImageContent[],
+    ) => void;
+    /** Park this turn for a custom wall-clock time picked in the schedule menu. */
+    onScheduleSendAt?: (
+      at: number,
+      prompt: string,
+      images?: SdkImageContent[],
+    ) => void;
+    /**
+     * Turn the current draft into a recurring Schedule bound to this session.
+     * Images are not carried (a Schedule stores a text prompt only).
+     */
+    onScheduleRecurring?: (
+      rule: RecurrenceRule,
+      label: string,
+      prompt: string,
     ) => void;
     /** Defer this turn until this session's own running query is done (Shift+click Send). */
     onSendSessionIdle?: (prompt: string, images?: SdkImageContent[]) => void;
@@ -367,24 +387,25 @@
     if (scheduleMenuOpen && !canScheduleSend) scheduleMenuOpen = false;
   });
 
-  function handleScheduleSend(window: QueueWindow) {
-    scheduleMenuOpen = false;
-    if (!onScheduleSend) return;
-    if (!prompt.trim() && pendingImages.length === 0) return;
+  /**
+   * Snapshot the current draft and clear it exactly like a normal send (cancelling
+   * the debounced persist so stale text can't be restored). Returns null when
+   * there is nothing to send.
+   */
+  function takeDraft(): { prompt: string; images?: SdkImageContent[] } | null {
+    if (!prompt.trim() && pendingImages.length === 0) return null;
 
     const currentPrompt = prompt;
-    const currentImages =
-      pendingImages.length > 0 ? [...pendingImages] : undefined;
-    const imageContent: SdkImageContent[] | undefined = currentImages?.map(
-      (img) => ({
-        mediaType: img.mediaType,
-        base64Data: img.base64Data,
-        width: img.width,
-        height: img.height,
-      }),
-    );
+    const images: SdkImageContent[] | undefined =
+      pendingImages.length > 0
+        ? pendingImages.map((img) => ({
+            mediaType: img.mediaType,
+            base64Data: img.base64Data,
+            width: img.width,
+            height: img.height,
+          }))
+        : undefined;
 
-    // Clear the draft exactly like a normal send.
     if (draftChangeTimeout) {
       clearTimeout(draftChangeTimeout);
       draftChangeTimeout = null;
@@ -394,7 +415,62 @@
     prevDraftPrompt = "";
     prevDraftImagesKey = "[]";
     emitDraftChange(prevSessionId, "", []);
-    onScheduleSend(window, currentPrompt, imageContent);
+
+    return { prompt: currentPrompt, images };
+  }
+
+  function handleScheduleSend(window: QueueWindow) {
+    scheduleMenuOpen = false;
+    if (!onScheduleSend) return;
+    const draft = takeDraft();
+    if (!draft) return;
+    onScheduleSend(window, draft.prompt, draft.images);
+  }
+
+  // --- Custom time / recurring schedule ---
+
+  /** Whether the inline time picker is expanded inside the send menu. */
+  let timePickerOpen = $state(false);
+  let recurringDialogOpen = $state(false);
+  /** Draft snapshot taken when the recurring dialog opens (cleared only on save). */
+  let recurringPrompt = $state("");
+
+  // The picker only makes sense while the menu is open.
+  $effect(() => {
+    if (!scheduleMenuOpen) timePickerOpen = false;
+  });
+
+  function handleScheduleSendAt(at: number) {
+    scheduleMenuOpen = false;
+    timePickerOpen = false;
+    if (!onScheduleSendAt) return;
+    const draft = takeDraft();
+    if (!draft) return;
+    onScheduleSendAt(at, draft.prompt, draft.images);
+  }
+
+  function openRecurringDialog() {
+    scheduleMenuOpen = false;
+    recurringPrompt = prompt;
+    recurringDialogOpen = true;
+  }
+
+  function handleRecurringSave(rule: RecurrenceRule, label: string) {
+    recurringDialogOpen = false;
+    if (!onScheduleRecurring) return;
+    const promptText = recurringPrompt.trim();
+    if (!promptText) return;
+    onScheduleRecurring(rule, label, promptText);
+    // Clear the draft exactly like a send — the prompt now lives on the schedule.
+    takeDraft();
+  }
+
+  /** Escape closes the send menu, matching the app's other popovers. */
+  function handleMenuKeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape" || !scheduleMenuOpen) return;
+    event.preventDefault();
+    if (timePickerOpen) timePickerOpen = false;
+    else scheduleMenuOpen = false;
   }
 
   function handleDragOver(e: DragEvent) {
@@ -458,6 +534,8 @@
     </span>
   {/if}
 {/snippet}
+
+<svelte:window onkeydown={handleMenuKeydown} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="input-area" ondragover={handleDragOver} ondrop={handleDrop}>
@@ -728,6 +806,37 @@
             <span class="menu-item-label">Send on next 7d reset</span>
             {#if countdown7d}<span class="menu-item-countdown">in {countdown7d}</span>{/if}
           </button>
+          {#if onScheduleSendAt}
+            <button
+              class="send-menu-item"
+              role="menuitem"
+              aria-expanded={timePickerOpen}
+              onclick={() => (timePickerOpen = !timePickerOpen)}
+            >
+              <span class="menu-item-label">At a time…</span>
+              <span class="menu-item-countdown">{timePickerOpen ? "▾" : "▸"}</span>
+            </button>
+            {#if timePickerOpen}
+              <div class="menu-picker">
+                <ScheduleTimePicker onPick={handleScheduleSendAt} confirmLabel="Send then" />
+              </div>
+            {/if}
+          {/if}
+          {#if onScheduleRecurring}
+            <!-- Needs prompt TEXT specifically: a schedule carries no images, so an
+                 images-only draft would open the dialog and then silently discard it. -->
+            <button
+              class="send-menu-item"
+              role="menuitem"
+              disabled={!prompt.trim()}
+              title={prompt.trim()
+                ? "Repeat this prompt on a recurring rule"
+                : "Write the prompt first — it becomes the schedule's prompt"}
+              onclick={openRecurringDialog}
+            >
+              <span class="menu-item-label">Recurring…</span>
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -738,6 +847,15 @@
     </div>
   {/if}
 </div>
+
+<RecurrenceDialog
+  show={recurringDialogOpen}
+  title="Repeat this message"
+  description="Creates a schedule that sends this prompt into this session on a recurring rule. Images in the draft are not included."
+  promptPreview={recurringPrompt}
+  onSave={handleRecurringSave}
+  onCancel={() => (recurringDialogOpen = false)}
+/>
 
 <style>
   .input-area {
@@ -891,6 +1009,13 @@
     font-size: 0.7rem;
     color: var(--color-text-muted);
     white-space: nowrap;
+  }
+
+  /* Inline time picker expanded inside the send menu */
+  .menu-picker {
+    padding: 0.4rem 0.625rem 0.5rem;
+    border-top: 1px solid var(--color-border);
+    margin-top: 0.25rem;
   }
 
   .stop-button {

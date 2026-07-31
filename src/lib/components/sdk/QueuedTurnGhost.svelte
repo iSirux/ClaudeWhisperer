@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import { sdkSessions, type SdkSession, type SdkImageContent, type SdkMessage } from "$lib/stores/sdkSessions";
   import { sendTimingLabel, type SendTiming } from "$lib/utils/sendTiming";
+  import { formatScheduleTarget } from "$lib/utils/duration";
   import SendTimingIcon from "./SendTimingIcon.svelte";
 
   // The parked (not-yet-sent) turn. `message` is the flagged ghost bubble pulled
@@ -10,24 +11,33 @@
   let { session, message }: { session: SdkSession; message: SdkMessage } = $props();
 
   // Prefer the flag the turn was parked with; fall back to the rateLimited reason for
-  // turns parked before the `queued` flag existed.
-  let timing = $derived.by<SendTiming>(() => {
+  // turns parked before the `queued` flag existed. 'at_time' (native scheduling) has no
+  // SendTiming equivalent — it's a custom wall-clock target, handled alongside them here.
+  let timing = $derived.by<SendTiming | "at_time">(() => {
     if (message.queued) return message.queued;
     const rl = session.rateLimited;
     if (rl?.reason === "scheduled") return "reset_5h";
     if (rl?.reason === "after_sessions") return rl.scope === "session" ? "session_idle" : "repo_idle";
     return "session_idle";
   });
-  let label = $derived(sendTimingLabel(timing));
 
-  // Live countdown for a reset-scheduled turn.
+  // Live countdown for a time-targeted turn (window reset or custom time).
   let now = $state(Date.now());
   const timer = setInterval(() => (now = Date.now()), 1000);
   onDestroy(() => clearInterval(timer));
 
   let targetMs = $derived(session.rateLimited?.targetStartAt);
+  let label = $derived(
+    timing === "at_time"
+      ? targetMs != null
+        ? `Sends ${formatScheduleTarget(targetMs, now)}`
+        : "Sends at the scheduled time"
+      : sendTimingLabel(timing),
+  );
+  // The clock glyph doubles as the custom-time marker (there is no 'at_time' timing icon).
+  let iconTiming: SendTiming = $derived(timing === "at_time" ? "repo_idle" : timing);
   let countdown = $derived.by(() => {
-    if (timing !== "reset_5h" || targetMs == null) return "";
+    if ((timing !== "reset_5h" && timing !== "at_time") || targetMs == null) return "";
     const diff = targetMs - now;
     if (diff <= 0) return "now";
     const hours = Math.floor(diff / 3_600_000);
@@ -63,7 +73,7 @@
 
 <div class="ghost-turn">
   <div class="ghost-chip" title={label}>
-    <SendTimingIcon {timing} />
+    <SendTimingIcon timing={iconTiming} />
     <span class="ghost-chip-label">{label}{countdown ? ` · ${countdown}` : ""}</span>
   </div>
 

@@ -9,6 +9,7 @@
   import {
     getElapsedTime,
     getRepoName,
+    formatScheduleTarget,
   } from "$lib/utils/duration";
   import {
     getShortModelName,
@@ -143,12 +144,24 @@
     const window = qi?.window === "7d" ? "7d" : "5h";
     const countdown = formatMsRemaining(qi?.targetStartAt, now * 1000);
     switch (qi?.reason) {
-      case "scheduled":
+      case "scheduled": {
+        // Native scheduling: a target time with no usage window is a custom wall-clock
+        // moment ("tomorrow 09:00"), not a window boundary.
+        const customTarget = qi?.window ? undefined : qi?.targetStartAt;
+        if (customTarget != null) {
+          const at = formatScheduleTarget(customTarget, now * 1000);
+          return {
+            label: "Scheduled",
+            detail: countdown ? `${at} · in ${countdown}` : at,
+            title: `Scheduled launch for ${at}`,
+          };
+        }
         return {
           label: "Scheduled",
           detail: countdown ? `next ${window} reset · in ${countdown}` : `next ${window} reset`,
           title: `Scheduled launch for the next ${window} reset`,
         };
+      }
       case "after_sessions":
         return {
           label: "Queued",
@@ -499,6 +512,15 @@
         <path stroke-linecap="round" d="M22 10v4" />
       </svg>
       <span class="truncate">{session.spareTokens.auto ? "Auto · " : ""}{spareTitle}</span>
+    </div>
+  {/if}
+
+  {#if session.scheduleTag}
+    <div class="notion-card-link" title="Schedule: {session.scheduleTag.label}">
+      <svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.7">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+      </svg>
+      <span class="truncate">{session.scheduleTag.label}</span>
     </div>
   {/if}
 

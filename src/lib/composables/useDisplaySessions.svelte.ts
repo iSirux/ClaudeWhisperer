@@ -391,6 +391,7 @@ export function transformToDisplaySessions(
         pileItem: s.pileItem,
         sequenceNode: s.sequenceNode,
         spareTokens: s.spareTokens,
+        scheduleTag: s.scheduleTag,
         queueInfo: s.queueInfo,
         rateLimited: s.rateLimited,
       };

@@ -9,6 +9,8 @@
   import NotionKanban from '$lib/components/NotionKanban.svelte';
   import PileList from '$lib/components/PileList.svelte';
   import PileDetailView from '$lib/components/PileDetailView.svelte';
+  import ScheduleList from '$lib/components/schedule/ScheduleList.svelte';
+  import ScheduleDetailView from '$lib/components/schedule/ScheduleDetailView.svelte';
   import SpareTokensView from '$lib/components/SpareTokensView.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { shouldWarnForLaunchOnSessionClose } from '$lib/stores/launchProfiles';
@@ -39,6 +41,11 @@
   import { paneLayout, visibleSessionIds } from '$lib/stores/panes';
   import { pile, sidebarTab, pileCount, selectedPileItem, selectedPileItemId } from '$lib/stores/pile';
   import {
+    scheduleCount,
+    selectedSchedule,
+    selectedScheduleId,
+  } from '$lib/stores/schedules';
+  import {
     activeExecution,
     activeExecutionId,
   } from '$lib/stores/sequenceExecutions';
@@ -63,18 +70,20 @@
   // No Voice Mode: the pile is a voice-recording inbox, so hide it entirely.
   const noVoice = $derived($settings.system.voice_mode_disabled);
 
-  // Selecting a session clears the pile selection (they share the main pane)
+  // Selecting a session clears the pile/schedule selection (they share the main pane)
   $effect(() => {
     if ($activeSdkSessionId) {
       selectedPileItemId.set(null);
+      selectedScheduleId.set(null);
     }
   });
 
-  // When No Voice Mode is on, force the sidebar back to Sessions and drop any
-  // stale pile selection so it can't occupy the main pane.
+  // When No Voice Mode is on, drop the pile tab (it's a voice-recording inbox) and
+  // any stale pile selection so it can't occupy the main pane. The Scheduled tab
+  // is voice-independent and stays available.
   $effect(() => {
     if (noVoice) {
-      sidebarTab.set('sessions');
+      if ($sidebarTab === 'pile') sidebarTab.set('sessions');
       selectedPileItemId.set(null);
     }
   });
@@ -380,16 +389,16 @@
           markSessionsUnread={$settings.mark_sessions_unread}
           onShowSessions={showSessionsView}
         />
-        {#if !noVoice}
-          <div class="flex border-b border-border px-1.5 pt-1 gap-1 shrink-0">
-            <button
-              class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'sessions'
-                ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
-                : 'text-text-muted hover:text-text-secondary'}"
-              onclick={() => sidebarTab.set('sessions')}
-            >
-              Sessions{$sdkSessions.length > 0 ? ` (${$sdkSessions.length})` : ''}
-            </button>
+        <div class="flex border-b border-border px-1.5 pt-1 gap-1 shrink-0">
+          <button
+            class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'sessions'
+              ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+              : 'text-text-muted hover:text-text-secondary'}"
+            onclick={() => sidebarTab.set('sessions')}
+          >
+            Sessions{$sdkSessions.length > 0 ? ` (${$sdkSessions.length})` : ''}
+          </button>
+          {#if !noVoice}
             <button
               class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'pile'
                 ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
@@ -398,11 +407,21 @@
             >
               Pile{$pileCount > 0 ? ` (${$pileCount})` : ''}
             </button>
-          </div>
-        {/if}
+          {/if}
+          <button
+            class="flex-1 px-2 py-1 text-xs font-medium rounded-t transition-colors {$sidebarTab === 'scheduled'
+              ? 'bg-surface-elevated text-text-primary border border-b-0 border-border'
+              : 'text-text-muted hover:text-text-secondary'}"
+            onclick={() => sidebarTab.set('scheduled')}
+          >
+            Scheduled{$scheduleCount > 0 ? ` (${$scheduleCount})` : ''}
+          </button>
+        </div>
         <div class="flex-1 overflow-hidden">
           {#if $sidebarTab === 'pile' && !noVoice}
             <PileList />
+          {:else if $sidebarTab === 'scheduled'}
+            <ScheduleList />
           {:else}
             <SessionList {currentView} />
           {/if}
@@ -432,6 +451,8 @@
         <RepoIssuesView repoId={currentRepoId} />
       {:else if $selectedPileItem}
         <PileDetailView item={$selectedPileItem} />
+      {:else if $selectedSchedule}
+        <ScheduleDetailView schedule={$selectedSchedule} />
       {:else if $activeSdkSession && activeSetupState}
       {@const activeSession = $activeSdkSession}
       {@const sessionId = activeSession.id}

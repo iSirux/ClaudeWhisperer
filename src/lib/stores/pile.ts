@@ -545,8 +545,12 @@ export const selectedPileItem = derived(
   ([$pile, $id]) => ($id ? $pile.find((item) => item.id === $id) ?? null : null)
 );
 
-/** Which tab the session sidebar shows. */
-export const sidebarTab = writable<'sessions' | 'pile'>('sessions');
+/**
+ * Which tab the session sidebar shows. Lives here for historical reasons (the
+ * pile introduced the tab strip); the 'scheduled' tab is owned by
+ * `stores/schedules.ts`.
+ */
+export const sidebarTab = writable<'sessions' | 'pile' | 'scheduled'>('sessions');
 
 export const pileCount = derived(pile, ($pile) => $pile.length);
 

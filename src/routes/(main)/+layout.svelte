@@ -10,6 +10,7 @@
   import { repos } from '$lib/stores/repos';
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { startSmartQueue } from '$lib/stores/smartQueue';
+  import { schedules, startSchedules } from '$lib/stores/schedules';
   import { spareTokens, startSpareTokens } from '$lib/stores/spareTokens';
   import { updater } from '$lib/stores/updater';
   import { isRecording } from '$lib/stores/recording';
@@ -88,6 +89,7 @@
   let cleanupAutoSave: (() => void) | null = null;
   let cleanupPeriodicSave: (() => void) | null = null;
   let cleanupSmartQueue: (() => void) | null = null;
+  let cleanupSchedules: (() => void) | null = null;
   let cleanupSpareTokens: (() => void) | null = null;
   let cleanupUpdateChecks: (() => void) | null = null;
 
@@ -408,6 +410,11 @@
     // any queued/rate-limited sessions whose window already reset dispatch promptly).
     cleanupSmartQueue = startSmartQueue();
 
+    // Native scheduling: load the persisted schedules, then start the fire driver
+    // (it catches up on anything missed while the app was closed on first pass).
+    await schedules.load();
+    cleanupSchedules = startSchedules();
+
     // Spare Tokens: load persisted auto state, then start the auto driver
     // (enabled gating happens inside each evaluation).
     await spareTokens.load();
@@ -497,6 +504,7 @@
     if (cleanupAutoSave) cleanupAutoSave();
     if (cleanupPeriodicSave) cleanupPeriodicSave();
     if (cleanupSmartQueue) cleanupSmartQueue();
+    if (cleanupSchedules) cleanupSchedules();
     if (cleanupSpareTokens) cleanupSpareTokens();
     if (cleanupUpdateChecks) cleanupUpdateChecks();
     cleanupSequenceExecutionListeners();

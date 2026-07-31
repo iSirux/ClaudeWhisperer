@@ -167,13 +167,16 @@ export interface SdkMessage {
   turnUuid?: string;
   /**
    * Set on a deliberately-parked user turn that has NOT been sent yet (Smart Queue
-   * "send when idle" / "send at next reset"). The value is the send-timing that
-   * created it (a subset of `SendTiming`: 'session_idle' | 'repo_idle' | 'reset_5h').
+   * "send when idle" / "send at next reset" / "send at a time"). The value is the
+   * send-timing that created it — the `SendTiming` subset
+   * ('session_idle' | 'repo_idle' | 'reset_5h') plus 'at_time' for a native-scheduling
+   * custom wall-clock target (which has no `SendTiming` equivalent: no modifier combo
+   * produces it, it comes from the schedule picker).
    * While set, the message is pulled out of the scrolling transcript and rendered as
    * a pinned "ghost" bubble; it's cleared when the turn actually sends
    * (`continueRateLimited`) or removed entirely on cancel (`clearRateLimited`).
    */
-  queued?: 'session_idle' | 'repo_idle' | 'reset_5h';
+  queued?: 'session_idle' | 'repo_idle' | 'reset_5h' | 'at_time';
   timestamp: number;
 }
 
@@ -609,6 +612,8 @@ export interface SdkSession {
   githubIssue?: { number: number; title: string; url: string };
   /** Spare Tokens library prompt this session was launched from (auto = fired by auto-mode) */
   spareTokens?: { promptId: string; auto: boolean };
+  /** Schedule (native scheduling) that spawned this session — recurring rule or managed one-shot */
+  scheduleTag?: { id: string; label: string };
   /** Sequence prompt node this session was materialized from (via "Open session"). */
   sequenceNode?: { executionId: string; nodeId: string; sequenceName?: string; nodeName?: string };
   /** True when the session has received a terminal "Prompt is too long" error — cannot be resumed; user must fork or start fresh. */
@@ -3006,7 +3011,7 @@ function createSdkSessionsStore() {
       return id;
     },
 
-    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; schedule?: QueueWindow | 'after_sessions' }): Promise<void> {
+    async startSetupSession(id: string, config: { prompt: string; images?: SdkImageContent[]; cwd: string; repoId?: string; model: string; effortLevel: EffortLevel; systemPrompt?: string; provider?: SdkProvider; accountId?: string; createdBranch?: string; worktreePostSetup?: { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }; schedule?: QueueWindow | 'after_sessions' | { at: number } }): Promise<void> {
       const session = get({ subscribe }).find(s => s.id === id);
       if (!session || session.status !== 'setup') return;
 
@@ -3015,28 +3020,36 @@ function createSdkSessionsStore() {
       const hasPrompt = config.prompt.trim().length > 0;
 
       // Smart Queue (first-launch gate): park this session as `queued` instead of launching when
-      // either the user explicitly scheduled it for a later window (`config.schedule`, fire-and-forget
-      // from the New Session view) or the provider's usage window is currently exhausted. Its prompt
-      // is baked onto the prepared fields; the driver later dispatches it via launchPrepared.
+      // either the user explicitly scheduled it for later (`config.schedule` — a usage-window
+      // boundary, a custom wall-clock time, or "when the repo is idle"; fire-and-forget from the
+      // New Session view) or the provider's usage window is currently exhausted. Its prompt is
+      // baked onto the prepared fields; the driver later dispatches it via launchPrepared.
       if (hasPrompt && (config.schedule || shouldQueue(gatedProvider, config.accountId))) {
         const finalSystemPrompt = config.systemPrompt;
         const exhaustion = providerExhaustion(gatedProvider, config.accountId);
         const queuedAt = Date.now();
-        // Scheduled launches target the user-chosen window boundary; rate-limit queueing targets
-        // the current exhausted window's reset time. 'after_sessions' has no time target — it
-        // fires when the repo+worktree scope goes idle.
+        // Window-scheduled launches target the user-chosen window boundary; rate-limit queueing
+        // targets the current exhausted window's reset time. 'after_sessions' has no time target —
+        // it fires when the repo+worktree scope goes idle.
         const isAfterSessions = config.schedule === 'after_sessions';
+        // Native scheduling ({ at }): an arbitrary wall-clock instant, NOT a usage window. It
+        // carries only `targetStartAt` — never a `window`, and never a window-derived target.
+        const scheduledAt = typeof config.schedule === 'object' ? config.schedule.at : undefined;
         const queueReason = isAfterSessions
           ? ('after_sessions' as const)
           : config.schedule
             ? ('scheduled' as const)
             : ('rate_limit' as const);
-        const queueWindow = isAfterSessions ? undefined : (config.schedule as QueueWindow | undefined) ?? exhaustion.window;
+        const queueWindow = isAfterSessions || scheduledAt != null
+          ? undefined
+          : (config.schedule as QueueWindow | undefined) ?? exhaustion.window;
         const targetStartAt = isAfterSessions
           ? undefined
-          : config.schedule
-            ? nextWindowResetAt(gatedProvider, config.schedule as QueueWindow, config.accountId)
-            : exhaustion.resetsAt;
+          : scheduledAt != null
+            ? scheduledAt
+            : config.schedule
+              ? nextWindowResetAt(gatedProvider, config.schedule as QueueWindow, config.accountId)
+              : exhaustion.resetsAt;
         update(sessions =>
           sessions.map(s =>
             s.id === id
@@ -3540,6 +3553,50 @@ function createSdkSessionsStore() {
                   window,
                   targetStartAt,
                   resetsAt: targetStartAt,
+                  prompt,
+                  images,
+                  action,
+                  queuedAt: now,
+                },
+              }
+            : s
+        )
+      );
+      debouncedSave();
+    },
+
+    /**
+     * Native scheduling ("Send at a time…"): from a live/active session, park a follow-up turn
+     * until an arbitrary wall-clock instant instead of a usage-window boundary. Identical
+     * bookkeeping to queueTurnForWindow — the turn is parked in `rateLimited` with reason
+     * 'scheduled' and the ghost user message is pushed to the transcript — except that the
+     * target is the caller's `at` with NO `resetsAt` and NO `window` (there is no usage window
+     * involved). The Smart Queue's `scheduled` branch fires it via `continueRateLimited` once
+     * `now` passes `targetStartAt`.
+     */
+    async queueTurnAtTime(id: string, prompt: string, images: SdkImageContent[] | undefined, at: number, action?: 'compact'): Promise<void> {
+      let session: SdkSession | undefined;
+      subscribe(sessions => { session = sessions.find(s => s.id === id); })();
+      if (!session) return;
+
+      const provider = session.provider ?? getProviderForModel(session.model);
+      const now = Date.now();
+
+      update(sessions =>
+        sessions.map(s =>
+          s.id === id
+            ? {
+                ...s,
+                // Keep the session out of an active/error state — the turn is deferred, not running.
+                status: s.status === 'querying' ? ('idle' as const) : s.status,
+                lastActivityAt: now,
+                messages: [...s.messages, { type: 'user' as const, content: prompt, images, queued: 'at_time' as const, timestamp: now }],
+                draftPrompt: undefined,
+                draftImages: undefined,
+                rateLimited: {
+                  reason: 'scheduled' as const,
+                  provider,
+                  targetStartAt: at,
                   prompt,
                   images,
                   action,

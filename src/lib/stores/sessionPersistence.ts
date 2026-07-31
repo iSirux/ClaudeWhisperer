@@ -491,36 +491,57 @@ export async function saveSessionsToDisk(): Promise<void> {
 
     // Archive overflow sessions instead of losing them
     if (result.overflowSdkSessions?.length > 0) {
-      console.log(`[sessionPersistence] Archiving ${result.overflowSdkSessions.length} overflow SDK sessions`);
+      // Exempt queued sessions from the overflow sweep. A scheduled launch can sit in
+      // `queued` for days or weeks without any activity, so it sorts to the bottom of the
+      // overflow list and would be archived away before it ever runs. The backend already
+      // dropped their data files, so re-upsert them to put those files back.
+      const rescuedSdkSessions = result.overflowSdkSessions.filter((s) => s.status === 'queued');
+      const overflowToArchive = result.overflowSdkSessions.filter((s) => s.status !== 'queued');
 
-      const overflowSdkIds = new Set(result.overflowSdkSessions.map((session) => session.id));
-
-      for (const session of result.overflowSdkSessions) {
+      if (rescuedSdkSessions.length > 0) {
+        console.log(`[sessionPersistence] Keeping ${rescuedSdkSessions.length} queued session(s) out of the overflow sweep`);
         try {
-          await invoke('archive_sdk_session', { session });
+          await invoke('upsert_persisted_sdk_sessions', {
+            sessions: rescuedSdkSessions,
+            activeSdkSessionId: persistedData.active_sdk_session_id,
+          });
         } catch (err) {
-          console.error('[sessionPersistence] Failed to archive overflow SDK session:', err);
+          console.error('[sessionPersistence] Failed to re-persist rescued queued sessions:', err);
         }
       }
 
-      // Trim archive after batch archiving
-      await invoke('trim_archive', {
-        maxEntries: currentSettings.session_persistence.max_archived_sessions ?? 500,
-      });
+      if (overflowToArchive.length > 0) {
+        console.log(`[sessionPersistence] Archiving ${overflowToArchive.length} overflow SDK sessions`);
 
-      // Keep the live session list aligned with persistence once overflow sessions are archived.
-      sdkSessions.set(
-        get(sdkSessions).filter((session) => !overflowSdkIds.has(session.id))
-      );
+        const overflowSdkIds = new Set(overflowToArchive.map((session) => session.id));
 
-      const currentActiveSdkSessionId = get(activeSdkSessionId);
-      if (currentActiveSdkSessionId && overflowSdkIds.has(currentActiveSdkSessionId)) {
-        activeSdkSessionId.set(null);
+        for (const session of overflowToArchive) {
+          try {
+            await invoke('archive_sdk_session', { session });
+          } catch (err) {
+            console.error('[sessionPersistence] Failed to archive overflow SDK session:', err);
+          }
+        }
+
+        // Trim archive after batch archiving
+        await invoke('trim_archive', {
+          maxEntries: currentSettings.session_persistence.max_archived_sessions ?? 500,
+        });
+
+        // Keep the live session list aligned with persistence once overflow sessions are archived.
+        sdkSessions.set(
+          get(sdkSessions).filter((session) => !overflowSdkIds.has(session.id))
+        );
+
+        const currentActiveSdkSessionId = get(activeSdkSessionId);
+        if (currentActiveSdkSessionId && overflowSdkIds.has(currentActiveSdkSessionId)) {
+          activeSdkSessionId.set(null);
+        }
+
+        // Refresh archive metadata and list
+        const { archive } = await import('./archive');
+        await archive.refresh();
       }
-
-      // Refresh archive metadata and list
-      const { archive } = await import('./archive');
-      await archive.refresh();
     }
 
     console.log('[sessionPersistence] Sessions saved to disk');

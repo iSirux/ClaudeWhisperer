@@ -36,6 +36,9 @@ export interface SessionTag {
   pileItem?: { id: string; title: string };
   githubIssue?: { number: number; title: string; url: string };
   spareTokens?: { promptId: string; auto: boolean };
+  /** Schedule that spawned this session (native scheduling). Stored as `scheduleTag`
+   *  on the session — `schedule` is already taken by the launch-deferral option. */
+  schedule?: { id: string; label: string };
 }
 
 /**
@@ -78,9 +81,14 @@ export interface LaunchSessionOptions {
   systemPrompt?: string;
   tag?: SessionTag;
   /** When set, defer the launch (fire-and-forget) instead of starting now: to the next
-   *  usage-window reset ('5h'/'7d'), or — 'after_sessions' — until the repo/worktree is idle.
+   *  usage-window reset ('5h'/'7d'), until the repo/worktree is idle ('after_sessions'),
+   *  or to a custom wall-clock time ({ at }).
    *  Parks the session as `queued`; the Smart Queue dispatches it via launchPrepared. */
-  schedule?: import('$lib/stores/sdkSessions').QueueWindow | 'after_sessions';
+  schedule?: import('$lib/stores/sdkSessions').QueueWindow | 'after_sessions' | { at: number };
+  /** What to do when worktree creation fails. 'fallback' (default) silently launches in the
+   *  main repo path; 'fail' throws instead — for unattended launches (scheduled runs) that
+   *  must never silently end up editing the main checkout. */
+  onWorktreeError?: 'fallback' | 'fail';
 }
 
 /**
@@ -93,9 +101,15 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
   const sessionId = sdkSessions.createSetupSession(model, effortLevel, provider, repo.path);
 
   if (opts.tag) {
-    const tag = opts.tag;
+    // Every tag but `schedule` maps 1:1 onto its session field; `schedule` lands on
+    // `scheduleTag` (the session's `schedule*` prefix is otherwise deferral state).
+    const { schedule, ...inlineTags } = opts.tag;
     sdkSessions.set(
-      get(sdkSessions).map((s) => (s.id === sessionId ? { ...s, ...tag } : s))
+      get(sdkSessions).map((s) =>
+        s.id === sessionId
+          ? { ...s, ...inlineTags, ...(schedule ? { scheduleTag: schedule } : {}) }
+          : s
+      )
     );
   }
 
@@ -128,6 +142,14 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
         worktreePostSetup = { repoPath: repo.path, copyFiles, postCreateCommands };
       }
     } catch (err) {
+      if (opts.onWorktreeError === 'fail') {
+        // Unattended launch (e.g. a scheduled run): abort instead of quietly pointing the
+        // agent at the main checkout. Drop the setup session we just created so a failed
+        // launch doesn't leave an empty "New Session" behind.
+        console.error('[launch] Failed to create worktree, aborting launch:', err);
+        void sdkSessions.closeSession(sessionId);
+        throw err;
+      }
       console.error('[launch] Failed to create worktree, using repo path:', err);
     }
   }

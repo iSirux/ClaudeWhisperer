@@ -274,6 +274,10 @@ pub struct PersistedSdkSession {
     /// Rate-limited / scheduled pending-turn state for a live session (opaque JSON)
     #[serde(default)]
     pub rate_limited: Option<serde_json::Value>,
+    /// Source-schedule tag for sessions launched by a native schedule — drives the
+    /// restart-surviving schedule badge (opaque JSON, frontend-owned schema)
+    #[serde(default)]
+    pub schedule_tag: Option<serde_json::Value>,
     /// PR summary detected for the session's branch — drives the restart-surviving
     /// PR badge (opaque JSON, frontend-owned schema)
     #[serde(default)]

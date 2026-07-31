@@ -2,11 +2,15 @@
   import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
-  import { normalizeEffortLevel, sdkSessions, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
+  import { normalizeEffortLevel, sdkSessions, activeSdkSessionId, type EffortLevel, type SdkImageContent } from '$lib/stores/sdkSessions';
   import type { QueueWindow } from '$lib/stores/queueDetection';
   import { settings } from '$lib/stores/settings';
   import { repos } from '$lib/stores/repos';
   import RepoSelector from '$lib/components/RepoSelector.svelte';
+  import ScheduleTimePicker from '$lib/components/schedule/ScheduleTimePicker.svelte';
+  import RecurrenceDialog from '$lib/components/schedule/RecurrenceDialog.svelte';
+  import { schedules, selectedScheduleId, type RecurrenceRule } from '$lib/stores/schedules';
+  import { sidebarTab } from '$lib/stores/pile';
   import PromptChips from '$lib/components/PromptChips.svelte';
   import { appendChips } from '$lib/utils/promptChips';
   import SdkQuickActions from '$lib/components/sdk/SdkQuickActions.svelte';
@@ -89,7 +93,11 @@
     onStart: (config: SetupLaunchConfig) => void;
     /** Schedule the launch for a later usage window (fire-and-forget) instead of starting now. */
     /** 'after_sessions' = start once every other session in the target repo/worktree is done. */
-    onSchedule?: (config: SetupLaunchConfig, window: QueueWindow | 'after_sessions') => void;
+    /** `{ at }` = start at a custom wall-clock time picked from the schedule menu. */
+    onSchedule?: (
+      config: SetupLaunchConfig,
+      window: QueueWindow | 'after_sessions' | { at: number },
+    ) => void;
     /** Save this draft to the pile to handle later instead of starting a session. */
     onToPile?: (config: SetupLaunchConfig) => void;
     onDraftChange?: (
@@ -456,8 +464,9 @@
     }
   }
 
-  async function handleSchedule(window: QueueWindow | 'after_sessions') {
+  async function handleSchedule(window: QueueWindow | 'after_sessions' | { at: number }) {
     scheduleMenuOpen = false;
+    timePickerOpen = false;
     if (!canStart || isStarting || !onSchedule) return;
     isStarting = true;
     try {
@@ -466,6 +475,70 @@
     } finally {
       isStarting = false;
     }
+  }
+
+  // --- Custom time / recurring schedule ---
+
+  /** Whether the inline time picker is expanded inside the schedule menu. */
+  let timePickerOpen = $state(false);
+  let recurringDialogOpen = $state(false);
+
+  // The picker lives inside the menu, so it can't outlive it.
+  $effect(() => {
+    if (!scheduleMenuOpen) timePickerOpen = false;
+  });
+
+  function openRecurringDialog() {
+    scheduleMenuOpen = false;
+    timePickerOpen = false;
+    recurringDialogOpen = true;
+  }
+
+  /**
+   * Turn this draft into a durable Schedule that launches a fresh session on a
+   * recurring rule.
+   *
+   * Deliberately reads the form state directly instead of `resolveStartConfig()`:
+   * that helper CREATES the git worktree up front, which would leave an orphan
+   * worktree sitting around until the first fire (and reuse the same one for every
+   * later run). The schedule stores `useWorktree` and the launch makes a fresh
+   * worktree at fire time instead.
+   */
+  function handleRecurringSave(rule: RecurrenceRule, label: string) {
+    recurringDialogOpen = false;
+    const repo = currentRepo;
+    // A schedule needs a concrete repo id — there's no user around at fire time
+    // to resolve auto-repo selection.
+    if (!repo?.id) return;
+    // ...and a prompt: an armed schedule with an empty prompt would launch a
+    // useless session in this repo on every occurrence, unattended.
+    const promptText = appendChips(prompt.trim(), selectedChips);
+    if (!promptText.trim()) return;
+    const created = schedules.add({
+      label,
+      prompt: promptText,
+      when: { kind: 'recurring', rule },
+      target: {
+        kind: 'session',
+        repoId: repo.id,
+        model,
+        effortLevel,
+        provider,
+        accountId:
+          selectedAccountId && !isDefaultAccountId(selectedAccountId)
+            ? selectedAccountId
+            : undefined,
+        useWorktree: worktreeMode !== 'main',
+      },
+    });
+    // Drop the draft FIRST — the prompt now lives on the schedule, not on a pending
+    // setup session. `onCancel` re-activates the previously-focused session, and the
+    // main page clears the schedule selection whenever a session becomes active, so
+    // the selection has to be claimed after it (with no active session).
+    onCancel?.();
+    activeSdkSessionId.set(null);
+    selectedScheduleId.set(created.id);
+    sidebarTab.set('scheduled');
   }
 
   /**
@@ -661,6 +734,13 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
+    // Escape closes the schedule popover first, matching the app's other menus.
+    if (e.key === 'Escape' && scheduleMenuOpen) {
+      e.preventDefault();
+      if (timePickerOpen) timePickerOpen = false;
+      else scheduleMenuOpen = false;
+      return;
+    }
     if (e.code !== 'Space' || !holdSpaceEnabled) return;
     if (e.isComposing) return;
     // Alt without the full Ctrl+Shift+Alt combo is OS/window territory — leave it.
@@ -1169,6 +1249,35 @@
               <button class="schedule-menu-item" role="menuitem" onclick={() => handleSchedule('7d')}>
                 Next 7d reset
               </button>
+              <button
+                class="schedule-menu-item"
+                role="menuitem"
+                aria-expanded={timePickerOpen}
+                onclick={() => (timePickerOpen = !timePickerOpen)}
+              >
+                At a time… {timePickerOpen ? '▾' : '▸'}
+              </button>
+              {#if timePickerOpen}
+                <div class="schedule-menu-picker">
+                  <ScheduleTimePicker
+                    confirmLabel="Start then"
+                    onPick={(at) => handleSchedule({ at })}
+                  />
+                </div>
+              {/if}
+              <button
+                class="schedule-menu-item"
+                role="menuitem"
+                disabled={!currentRepo || !prompt.trim()}
+                title={!currentRepo
+                  ? 'Pick a specific repository first — schedules can’t use auto repo selection'
+                  : !prompt.trim()
+                    ? 'Write the prompt first — it becomes the schedule’s prompt'
+                    : 'Repeat this launch on a recurring rule'}
+                onclick={openRecurringDialog}
+              >
+                Recurring…
+              </button>
             </div>
           {/if}
         </div>
@@ -1198,6 +1307,15 @@
     {/if}
   </div>
 </div>
+
+<RecurrenceDialog
+  show={recurringDialogOpen}
+  title="Repeat this session"
+  description={`Creates a schedule that launches a new session in ${currentRepo?.name ?? 'this repository'} on a recurring rule. The New Session draft is discarded once saved.`}
+  promptPreview={prompt}
+  onSave={handleRecurringSave}
+  onCancel={() => (recurringDialogOpen = false)}
+/>
 
 <style>
   .setup-view {
@@ -1779,8 +1897,20 @@
     transition: background 0.15s ease;
   }
 
-  .schedule-menu-item:hover {
+  .schedule-menu-item:hover:not(:disabled) {
     background: var(--color-border);
+  }
+
+  .schedule-menu-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* Inline time picker expanded inside the schedule menu */
+  .schedule-menu-picker {
+    padding: 0.4rem 0.625rem 0.5rem;
+    margin-top: 0.25rem;
+    border-top: 1px solid var(--color-border);
   }
 
   .start-spinner {

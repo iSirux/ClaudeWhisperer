@@ -15,6 +15,7 @@ pub mod notion_cmds;
 pub mod pile_cmds;
 
 pub mod realtime_cmds;
+pub mod schedule_cmds;
 pub mod screenshot_cmds;
 pub mod sdk_cmds;
 pub mod sequence_cmds;

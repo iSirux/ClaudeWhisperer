@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import { sdkSessions, type SdkSession } from '$lib/stores/sdkSessions';
   import { settings } from '$lib/stores/settings';
+  import { formatScheduleTarget } from '$lib/utils/duration';
 
   interface Props {
     session: SdkSession;
@@ -41,6 +42,15 @@
   };
   let windowLabel = $derived(rl?.window ? WINDOW_LABELS[rl.window] ?? rl.window : '');
 
+  // Native scheduling: a scheduled turn with a target time but no usage window fires at a
+  // custom wall-clock moment ("tomorrow 09:00") rather than at a window boundary.
+  let scheduledAt = $derived(
+    reason === 'scheduled' && !rl?.window ? rl?.targetStartAt : undefined,
+  );
+  let scheduledAtLabel = $derived(
+    scheduledAt != null ? formatScheduleTarget(scheduledAt, now) : '',
+  );
+
   /** Format epoch-ms remaining as a compact countdown, e.g. "2h 15m" / "45s". */
   function formatMsRemaining(ms: number | undefined): string {
     if (ms == null) return '';
@@ -59,7 +69,9 @@
   let countdown = $derived(formatMsRemaining(targetMs));
 
   let title = $derived(
-    reason === 'scheduled'
+    scheduledAt != null
+      ? 'Scheduled message'
+      : reason === 'scheduled'
       ? `Scheduled to send${countdown ? ` in ${countdown}` : ''}`
       : reason === 'after_sessions'
         ? afterSessionsScope === 'session'
@@ -111,7 +123,9 @@
     <div class="banner-body">
       <div class="banner-title">{title}</div>
       <div class="banner-text">
-        {#if reason === 'scheduled'}
+        {#if scheduledAt != null}
+          Sends {scheduledAtLabel}{countdown ? ` (in ${countdown})` : ''}.
+        {:else if reason === 'scheduled'}
           This turn is parked and will send automatically at the next{windowLabel ? ` ${windowLabel}` : ''} window reset.
         {:else if reason === 'after_sessions'}
           {#if afterSessionsScope === 'session'}

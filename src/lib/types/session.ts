@@ -86,6 +86,9 @@ export interface DisplaySession {
   // Spare Tokens library prompt this session was launched from
   spareTokens?: { promptId: string; auto: boolean };
 
+  // Native schedule that spawned this session
+  scheduleTag?: { id: string; label: string };
+
   // Smart Queue: a never-launched session parked until its provider's usage
   // window resets or a scheduled window boundary (status === 'queued').
   queueInfo?: QueueInfo | null;
