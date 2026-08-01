@@ -4,7 +4,7 @@ import { setCtrlHintsSuppressed } from '$lib/stores/ctrlHint';
 import { spaceSendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming';
 
 /** Default minimum total hold (ms) below which a hold is treated as a plain space. */
-export const DEFAULT_MIN_HOLD_MS = 500;
+export const DEFAULT_MIN_HOLD_MS = 1000;
 
 /**
  * Hold-Space-to-record for text inputs.
@@ -78,7 +78,7 @@ export interface HoldSpaceRecordParams {
   thresholdMs?: number;
   /**
    * Minimum TOTAL hold in ms (press → release) for the recording to be kept.
-   * A shorter hold is discarded and typed as a plain space (default 500).
+   * A shorter hold is discarded and typed as a plain space (default 1000).
    */
   minHoldMs?: number;
   /**
@@ -262,6 +262,18 @@ export function holdSpaceRecord(
    */
   async function discardShortHold() {
     if (phase !== 'recording') return;
+    // Leave 'recording' before awaiting anything. Otherwise a rapid re-press
+    // during the (real, awaited) cancel is read as part of THIS gesture, and its
+    // keyup re-enters here — cancelling twice and putting the retracted space
+    // back twice — or falls into finish() once the elapsed time crosses
+    // minHoldMs, transcribing a recording that was just cancelled. `busy` stays
+    // set until reset(), so no new gesture can start meanwhile; the re-press
+    // types a plain space like it would mid-transcription.
+    setState('idle');
+    // Put the space back before the await so anything typed during the cancel
+    // lands after it, not around it.
+    reinsertRetractedSpace();
+    retractedSpacePos = null;
     // Ensure the recorder actually started before we stop it (fast release).
     await startSettled;
     try {
@@ -269,7 +281,6 @@ export function holdSpaceRecord(
     } catch (err) {
       console.error('[holdSpaceRecord] Failed to discard short hold:', err);
     }
-    reinsertRetractedSpace();
     reset();
   }
 

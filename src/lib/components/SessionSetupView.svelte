@@ -669,6 +669,14 @@
   let globalHoldTimer: ReturnType<typeof setTimeout> | null = null;
   let globalHoldStartSettled: Promise<void> = Promise.resolve();
   let globalHoldPressAt = 0;
+  /**
+   * True while a finished hold is still stopping/discarding. That teardown owns
+   * the recorder across real awaits, so a rapid re-press must not arm a new
+   * gesture in the meantime — the old one would otherwise cancel the new
+   * recording, or reset the phase out from under it and leave it running with no
+   * keyup path to stop it.
+   */
+  let globalHoldSettling = false;
 
   function isEditableElement(el: Element | null): boolean {
     if (!el) return false;
@@ -709,28 +717,28 @@
     if (globalHoldPhase !== 'recording') return;
     const timing = globalHoldTiming;
     const tooShort = Date.now() - globalHoldPressAt < DEFAULT_MIN_HOLD_MS;
+    // Leave 'recording' and claim the settling flag before any await, so a rapid
+    // re-press can neither re-enter this teardown nor arm a gesture that it would
+    // then tear down instead.
     globalHoldPhase = 'idle';
-    // Ensure the recorder actually started before we stop it (fast release).
-    await globalHoldStartSettled;
-    // A hold that's over the warmup threshold but short in total time is a
-    // fumbled tap: discard the recording (never transcribe or send it). Nothing
-    // was typed (Space is suppressed while nothing editable is focused).
-    if (tooShort) {
-      try {
-        await recording.cancelRecording();
-      } catch (err) {
-        console.error('[SessionSetupView] Failed to discard short hold-Space:', err);
-      }
-      globalHoldReset();
-      return;
-    }
+    globalHoldSettling = true;
     try {
+      // Ensure the recorder actually started before we stop it (fast release).
+      await globalHoldStartSettled;
+      // A hold that's over the warmup threshold but short in total time is a
+      // fumbled tap: discard the recording (never transcribe or send it). Nothing
+      // was typed (Space is suppressed while nothing editable is focused).
+      if (tooShort) {
+        await recording.cancelRecording();
+        return;
+      }
       if (timing !== null) await recordAndFinish(timing);
       else await handleStopRecording();
     } catch (err) {
       console.error('[SessionSetupView] hold-Space finish failed:', err);
+    } finally {
+      globalHoldSettling = false;
     }
-    globalHoldReset();
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
@@ -761,7 +769,7 @@
     // Nothing editable is focused, so Space would otherwise scroll — suppress it
     // and arm the hold. A quick release (tap) resets without recording.
     e.preventDefault();
-    if ($isRecording || $isTranscribing || isAwaitingTranscript) return;
+    if (globalHoldSettling || $isRecording || $isTranscribing || isAwaitingTranscript) return;
     globalHoldTiming = timing;
     globalHoldPhase = 'warmup';
     globalHoldPressAt = Date.now();

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { isRecording } from '$lib/stores/recording';
+  import { isRecording, isTranscribing, recording } from '$lib/stores/recording';
+  import { DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
   import SessionPanes from '$lib/components/SessionPanes.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import Start from '$lib/components/Start.svelte';
@@ -103,7 +104,25 @@
         } | null;
       }
     | undefined;
-  let isHoldingSpaceForInlineRecording = $state(false);
+  /**
+   * Page-level hold-Space gesture state, mirroring the focused-textarea action
+   * (actions/holdSpaceRecord.ts): a warmup window before a held Space becomes a
+   * recording, plus a minimum TOTAL hold below which the recording is discarded.
+   * Without both, a stray tap — or a burst of rapid taps — starts a recording and
+   * transcribes (or, with a send modifier, sends) it on release.
+   */
+  const HOLD_SPACE_WARMUP_MS = 280;
+  let holdSpacePhase: 'idle' | 'warmup' | 'recording' = 'idle';
+  let holdSpaceWarmupTimer: ReturnType<typeof setTimeout> | null = null;
+  let holdSpacePressedAt = 0;
+  /** Resolves once start() settled, so a fast release can't stop before start. */
+  let holdSpaceStartSettled: Promise<void> = Promise.resolve();
+  /**
+   * True while a finished hold is still stopping/discarding. A settling gesture
+   * owns the recorder until it resolves, so a rapid re-press must not arm a new
+   * hold that this one would then stop or cancel out from under.
+   */
+  let holdSpaceSettling = false;
   /**
    * The send timing of the current page-level hold, or null when it's the plain
    * (dictate) variant. Set from the held modifier combo on the initial press so
@@ -199,52 +218,109 @@
     return timing === null ? 'dictate' : timing;
   }
 
-  async function handleInlineRecordingSpaceDown(event: KeyboardEvent) {
-    // Swallow key-repeats while a hold is live so Space doesn't also scroll.
-    if (isHoldingSpaceForInlineRecording && event.code === 'Space') {
-      event.preventDefault();
+  function holdSpaceClearWarmup() {
+    if (holdSpaceWarmupTimer !== null) {
+      clearTimeout(holdSpaceWarmupTimer);
+      holdSpaceWarmupTimer = null;
+    }
+  }
+
+  /** The warmup elapsed (or the OS key-repeat confirmed the hold) — start recording. */
+  async function holdSpaceActivate() {
+    if (holdSpacePhase !== 'warmup') return;
+    holdSpaceClearWarmup();
+    // Never stack a second recording on top of a live one.
+    if ($isRecording) {
+      holdSpacePhase = 'idle';
       return;
     }
-    if (event.repeat) return;
-    const gesture = holdSpaceGestureFor(event);
-    if (gesture === null) return;
-    if ($isRecording) return;
 
-    event.preventDefault();
-    isHoldingSpaceForInlineRecording = true;
-    holdSpaceSendTiming = gesture === 'dictate' ? null : gesture;
-
-    try {
-      const view = sessionPanesRef?.getFocusedSdkViewRef();
-      if (holdSpaceSendTiming !== null) await view?.startSendRecording();
-      else await view?.startInlineRecording();
-      if (!isHoldingSpaceForInlineRecording && $isRecording) {
-        // Released before start settled — stop through the same variant.
-        if (holdSpaceSendTiming !== null) await view?.stopSendRecording(holdSpaceSendTiming);
-        else await view?.stopInlineRecording();
-      }
-    } catch (error) {
-      isHoldingSpaceForInlineRecording = false;
-      console.error('[sessions-page] Failed to start inline hold-to-record:', error);
-    }
+    holdSpacePhase = 'recording';
+    const timing = holdSpaceSendTiming;
+    const view = sessionPanesRef?.getFocusedSdkViewRef();
+    holdSpaceStartSettled = Promise.resolve()
+      .then(() => (timing !== null ? view?.startSendRecording() : view?.startInlineRecording()))
+      .then(() => undefined)
+      .catch((error) => {
+        console.error('[sessions-page] Failed to start inline hold-to-record:', error);
+        holdSpacePhase = 'idle';
+      });
+    await holdSpaceStartSettled;
   }
 
   async function stopInlineRecordingFromSpaceHold() {
-    if (!isHoldingSpaceForInlineRecording) return;
-    isHoldingSpaceForInlineRecording = false;
+    if (holdSpacePhase === 'warmup') {
+      // Released before the warmup elapsed — a tap. Nothing was ever started.
+      holdSpaceClearWarmup();
+      holdSpacePhase = 'idle';
+      return;
+    }
+    if (holdSpacePhase !== 'recording') return;
+
+    const timing = holdSpaceSendTiming;
+    const tooShort = Date.now() - holdSpacePressedAt < DEFAULT_MIN_HOLD_MS;
+    // Leave 'recording' and claim the settling flag *before* awaiting, so a rapid
+    // re-press can neither re-enter this stop nor arm a new gesture that this one
+    // would stop/cancel out from under.
+    holdSpacePhase = 'idle';
+    holdSpaceSettling = true;
 
     try {
+      // Ensure the recorder actually started before we stop it (fast release).
+      await holdSpaceStartSettled;
+      if (tooShort) {
+        // Over the warmup but short in total time: a fumbled tap, not a prompt.
+        // Discard it — never transcribed, never sent.
+        await recording.cancelRecording();
+        return;
+      }
       const view = sessionPanesRef?.getFocusedSdkViewRef();
-      if (holdSpaceSendTiming !== null) await view?.stopSendRecording(holdSpaceSendTiming);
+      if (timing !== null) await view?.stopSendRecording(timing);
       else await view?.stopInlineRecording();
     } catch (error) {
       console.error('[sessions-page] Failed to stop inline hold-to-record:', error);
+    } finally {
+      holdSpaceSettling = false;
     }
   }
 
-  async function handleInlineRecordingSpaceUp(event: KeyboardEvent) {
-    if (!isHoldingSpaceForInlineRecording) return;
+  function handleInlineRecordingSpaceDown(event: KeyboardEvent) {
     if (event.code !== 'Space') return;
+
+    // While a gesture is live, swallow the OS key-repeat so Space doesn't scroll.
+    if (holdSpacePhase !== 'idle') {
+      event.preventDefault();
+      // The first key-repeat is a reliable "held" signal — activate immediately
+      // rather than waiting out the remaining warmup.
+      if (holdSpacePhase === 'warmup' && event.repeat) void holdSpaceActivate();
+      return;
+    }
+    const gesture = holdSpaceGestureFor(event);
+    if (gesture === null) return;
+    // Only the initial press arms a gesture; swallow the repeats so a hold that
+    // never engaged doesn't scroll the page instead.
+    if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
+    // Don't stack onto a live recording, an in-flight transcription, or a stop
+    // that's still settling — rapid presses would otherwise overlap recordings.
+    if (holdSpaceSettling || $isRecording || $isTranscribing) {
+      event.preventDefault();
+      return;
+    }
+
+    event.preventDefault();
+    holdSpaceSendTiming = gesture === 'dictate' ? null : gesture;
+    holdSpacePressedAt = Date.now();
+    holdSpacePhase = 'warmup';
+    holdSpaceClearWarmup();
+    holdSpaceWarmupTimer = setTimeout(() => void holdSpaceActivate(), HOLD_SPACE_WARMUP_MS);
+  }
+
+  async function handleInlineRecordingSpaceUp(event: KeyboardEvent) {
+    if (event.code !== 'Space') return;
+    if (holdSpacePhase === 'idle') return;
 
     event.preventDefault();
     await stopInlineRecordingFromSpaceHold();
