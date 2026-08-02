@@ -6,6 +6,9 @@ import { spaceSendTimingFromEvent, type SendTiming } from '$lib/utils/sendTiming
 /** Default minimum total hold (ms) below which a hold is treated as a plain space. */
 export const DEFAULT_MIN_HOLD_MS = 1000;
 
+/** Default warmup (ms) a Space must be held before it turns into a recording. */
+export const DEFAULT_HOLD_THRESHOLD_MS = 560;
+
 /**
  * Hold-Space-to-record for text inputs.
  *
@@ -15,9 +18,8 @@ export const DEFAULT_MIN_HOLD_MS = 1000;
  * type*, then retract it once the key turns out to be held:
  *
  *   1. Tap Space  -> a single space is typed (normal typing, untouched).
- *   2. Hold Space -> after a short threshold (or the first OS key-repeat,
- *      whichever comes first) we retract the one leaked space, suppress any
- *      further repeat-spaces, and start recording.
+ *   2. Hold Space -> after a short threshold we retract the one leaked space,
+ *      suppress any further repeat-spaces, and start recording.
  *   3. Release    -> stop, transcribe, and insert the transcript at the caret.
  *
  * A hold that's over the warmup threshold but still short in TOTAL time
@@ -74,7 +76,7 @@ export interface HoldSpaceRecordParams {
   stop: () => Promise<string | null>;
   /** Optional lifecycle hook, for component-specific UI. */
   onState?: (state: HoldRecordState) => void;
-  /** Hold threshold in ms before a held Space becomes a recording (default 280). */
+  /** Hold threshold in ms before a held Space becomes a recording (default 560). */
   thresholdMs?: number;
   /**
    * Minimum TOTAL hold in ms (press → release) for the recording to be kept.
@@ -288,11 +290,11 @@ export function holdSpaceRecord(
     if (e.code !== 'Space') return;
 
     // While a gesture is live, swallow the OS key-repeat so no extra spaces leak.
+    // The repeat is deliberately NOT treated as a "held" signal: the OS repeat
+    // delay is user-configurable and often shorter than our threshold, which
+    // would let a short hold start a recording early.
     if (phase === 'warmup' || phase === 'recording') {
       e.preventDefault();
-      // The first key-repeat is a reliable "held" signal — activate immediately
-      // rather than waiting out the remaining threshold.
-      if (phase === 'warmup' && e.repeat) void activate();
       return;
     }
 
@@ -320,7 +322,7 @@ export function holdSpaceRecord(
     pressStartedAt = Date.now();
     setState('warmup');
     clearWarmup();
-    warmupTimer = setTimeout(() => void activate(), opts.thresholdMs ?? 280);
+    warmupTimer = setTimeout(() => void activate(), opts.thresholdMs ?? DEFAULT_HOLD_THRESHOLD_MS);
   }
 
   /** Released/blurred too soon after recording began — discard it as a plain space. */

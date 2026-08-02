@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { isRecording, isTranscribing, recording } from '$lib/stores/recording';
-  import { DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
+  import { DEFAULT_HOLD_THRESHOLD_MS, DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
   import SessionPanes from '$lib/components/SessionPanes.svelte';
   import SessionList from '$lib/components/SessionList.svelte';
   import Start from '$lib/components/Start.svelte';
@@ -111,7 +111,7 @@
    * Without both, a stray tap — or a burst of rapid taps — starts a recording and
    * transcribes (or, with a send modifier, sends) it on release.
    */
-  const HOLD_SPACE_WARMUP_MS = 280;
+  const HOLD_SPACE_WARMUP_MS = DEFAULT_HOLD_THRESHOLD_MS;
   let holdSpacePhase: 'idle' | 'warmup' | 'recording' = 'idle';
   let holdSpaceWarmupTimer: ReturnType<typeof setTimeout> | null = null;
   let holdSpacePressedAt = 0;
@@ -288,11 +288,11 @@
     if (event.code !== 'Space') return;
 
     // While a gesture is live, swallow the OS key-repeat so Space doesn't scroll.
+    // The repeat is deliberately NOT treated as a "held" signal: the OS repeat
+    // delay is user-configurable and often shorter than the warmup, which would
+    // let a short hold start a recording early.
     if (holdSpacePhase !== 'idle') {
       event.preventDefault();
-      // The first key-repeat is a reliable "held" signal — activate immediately
-      // rather than waiting out the remaining warmup.
-      if (holdSpacePhase === 'warmup' && event.repeat) void holdSpaceActivate();
       return;
     }
     const gesture = holdSpaceGestureFor(event);

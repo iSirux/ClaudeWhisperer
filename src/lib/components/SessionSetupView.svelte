@@ -16,7 +16,7 @@
   import SdkQuickActions from '$lib/components/sdk/SdkQuickActions.svelte';
   import { isRecording, isTranscribing, recording } from '$lib/stores/recording';
   import { isRecordingForSetup as isRecordingForSetupStore } from '$lib/stores/recordingFlow';
-  import { DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
+  import { DEFAULT_HOLD_THRESHOLD_MS, DEFAULT_MIN_HOLD_MS } from '$lib/actions/holdSpaceRecord';
   import PromptTextarea from '$lib/components/PromptTextarea.svelte';
   import {
     sendTimingFromEvent,
@@ -759,10 +759,11 @@
     if (isEditableElement(document.activeElement)) return;
 
     // While a gesture is live, swallow the OS key-repeat so Space can't scroll.
+    // The repeat is deliberately NOT treated as a "held" signal: the OS repeat
+    // delay is user-configurable and often shorter than the warmup, which would
+    // let a short hold start a recording early.
     if (globalHoldPhase === 'warmup' || globalHoldPhase === 'recording') {
       e.preventDefault();
-      // The first key-repeat is a reliable "held" signal — activate immediately.
-      if (globalHoldPhase === 'warmup' && e.repeat) void globalHoldActivate();
       return;
     }
 
@@ -774,7 +775,7 @@
     globalHoldPhase = 'warmup';
     globalHoldPressAt = Date.now();
     if (globalHoldTimer !== null) clearTimeout(globalHoldTimer);
-    globalHoldTimer = setTimeout(() => void globalHoldActivate(), 280);
+    globalHoldTimer = setTimeout(() => void globalHoldActivate(), DEFAULT_HOLD_THRESHOLD_MS);
   }
 
   function handleGlobalKeyup(e: KeyboardEvent) {
