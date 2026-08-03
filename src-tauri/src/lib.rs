@@ -553,6 +553,7 @@ pub fn run() {
             launch_cmds::get_launch_status,
             // --- Validation pipeline ---
             validation_cmds::validation_start_run,
+            validation_cmds::validation_resume_run,
             validation_cmds::validation_get_run,
             validation_cmds::validation_respond,
             validation_cmds::validation_execute_ship,

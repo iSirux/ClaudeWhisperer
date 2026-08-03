@@ -100,16 +100,6 @@ impl ValidationManager {
         intent: String,
         options: RunOptions,
     ) -> Result<String, String> {
-        {
-            let runs = self.runs.lock();
-            if runs.contains_key(&run_id) {
-                return Err(format!("A validation run '{}' already exists", run_id));
-            }
-            if runs.values().any(|h| h.session_id == session_id) {
-                return Err("A validation run is already active for this session".to_string());
-            }
-        }
-
         // Build the initial run snapshot (only the user-selected steps, fixed order).
         let steps: Vec<ValidationStep> = StepName::ORDER
             .iter()
@@ -117,14 +107,10 @@ impl ValidationManager {
             .map(|s| ValidationStep::new(*s))
             .collect();
 
-        if steps.is_empty() {
-            return Err("No validation steps selected".to_string());
-        }
-
         let run = ValidationRun {
-            id: run_id.clone(),
-            session_id: session_id.clone(),
-            cwd: cwd.clone(),
+            id: run_id,
+            session_id,
+            cwd,
             status: RunStatus::Running,
             steps,
             gate: None,
@@ -136,6 +122,65 @@ impl ValidationManager {
             started_at: now_ms(),
             finished_at: None,
         };
+
+        self.spawn_run(app, run, repo_id, None)
+    }
+
+    /// Re-adopt a run the backend no longer knows about.
+    ///
+    /// A validation run lives entirely in a tokio task, so a full app restart
+    /// destroys it while the frontend still holds the persisted snapshot (the
+    /// panel restores read-only). Handing that snapshot back re-enters the
+    /// pipeline where it was parked: already-terminal steps are skipped, and a
+    /// persisted gate is re-parked verbatim so the user's pending decision is
+    /// actionable again without re-running the (expensive) reviewer. A step that
+    /// was mid-flight when the process died has no recoverable state, so it is
+    /// re-run from the top.
+    pub fn resume_run(
+        self: &Arc<Self>,
+        app: AppHandle,
+        mut run: ValidationRun,
+        repo_id: Option<String>,
+    ) -> Result<String, String> {
+        if run.is_finished() {
+            return Err("This validation run has already finished".to_string());
+        }
+        // Transient flags belonged to the process that died: the fix turn it was
+        // waiting on is gone, and the step it parked on will re-park or re-run.
+        run.pending_fix = false;
+        // The gate stays on the snapshot we hand back so the panel keeps
+        // rendering it until the executor re-parks it (a step that instead
+        // re-runs clears it — see `execute`).
+        let resume_gate = run.gate.clone();
+        self.spawn_run(app, run, repo_id, resume_gate)
+    }
+
+    /// Register a run and spawn its executor task. `resume_gate`, when present,
+    /// is the gate the run was parked on before a restart.
+    fn spawn_run(
+        self: &Arc<Self>,
+        app: AppHandle,
+        run: ValidationRun,
+        repo_id: Option<String>,
+        resume_gate: Option<GateState>,
+    ) -> Result<String, String> {
+        let run_id = run.id.clone();
+        let session_id = run.session_id.clone();
+        let cwd = run.cwd.clone();
+
+        {
+            let runs = self.runs.lock();
+            if runs.contains_key(&run_id) {
+                return Err(format!("A validation run '{}' already exists", run_id));
+            }
+            if runs.values().any(|h| h.session_id == session_id) {
+                return Err("A validation run is already active for this session".to_string());
+            }
+        }
+
+        if run.steps.is_empty() {
+            return Err("No validation steps selected".to_string());
+        }
 
         let shared = Arc::new(Mutex::new(run.clone()));
         let (signal_tx, signal_rx) = mpsc::unbounded_channel::<RunSignal>();
@@ -174,6 +219,7 @@ impl ValidationManager {
             repo_cfg,
             gh_user,
             default_model,
+            resume_gate,
         };
 
         let manager = Arc::clone(self);
@@ -321,6 +367,9 @@ struct RunCtx {
     repo_cfg: Option<RepoConfig>,
     gh_user: Option<String>,
     default_model: String,
+    /// Set only on a resumed run: the gate the run was parked on before the
+    /// restart. Consumed by the first non-terminal step (see `execute`).
+    resume_gate: Option<GateState>,
 }
 
 /// Outcome of a fix wait.
@@ -376,11 +425,29 @@ impl RunCtx {
         );
     }
 
-    /// Main entry: run each selected step in fixed order.
+    /// Main entry: run each selected step in fixed order. A resumed run skips
+    /// the steps that already reached a terminal status and hands its parked
+    /// gate to the first step that has not.
     async fn execute(&mut self) {
         let step_names: Vec<StepName> = self.run.steps.iter().map(|s| s.name).collect();
         for name in step_names {
-            let end = self.run_step(name).await;
+            if self
+                .run
+                .steps
+                .iter()
+                .any(|s| s.name == name && s.status.is_terminal())
+            {
+                continue;
+            }
+            // `take` here (not a match on the step) so a stale gate naming a step
+            // we never reach can't leak into a later one.
+            let resume = self.resume_gate.take().filter(|g| g.step == name);
+            if resume.is_none() {
+                // Nothing to re-park — drop any restored gate so the step's first
+                // update doesn't emit a decision the user can no longer make.
+                self.run.gate = None;
+            }
+            let end = self.run_step(name, resume).await;
             match end {
                 StepEnd::Passed | StepEnd::Skipped => continue,
                 StepEnd::Cancelled => {
@@ -672,16 +739,18 @@ impl RunCtx {
 
     // ── Step dispatch ───────────────────────────────────────────────────────
 
-    async fn run_step(&mut self, name: StepName) -> StepEnd {
+    /// `resume` is the gate this step was parked on before a restart, if any.
+    /// Steps that can't be re-entered from a gate (simplify) ignore it and re-run.
+    async fn run_step(&mut self, name: StepName, resume: Option<GateState>) -> StepEnd {
         self.log(format!("Starting step: {}", name.key()));
         let end = match name {
             StepName::Simplify => self.run_simplify().await,
-            StepName::Review => self.run_findings_step(name).await,
-            StepName::Docs => self.run_findings_step(name).await,
-            StepName::Lint => self.run_findings_step(name).await,
-            StepName::Test => self.run_findings_step(name).await,
-            StepName::Ship => self.run_ship().await,
-            StepName::Ci => self.run_ci().await,
+            StepName::Review => self.run_findings_step(name, resume).await,
+            StepName::Docs => self.run_findings_step(name, resume).await,
+            StepName::Lint => self.run_findings_step(name, resume).await,
+            StepName::Test => self.run_findings_step(name, resume).await,
+            StepName::Ship => self.run_ship(resume).await,
+            StepName::Ci => self.run_ci(resume).await,
         };
         // Stamp terminal step status + finished timestamp.
         let status = match &end {
@@ -714,28 +783,52 @@ impl RunCtx {
 
     /// The shared findings-step engine: initial run, auto-fix loop, gate cycle,
     /// user-fix + fix_review gate.
-    async fn run_findings_step(&mut self, name: StepName) -> StepEnd {
-        self.set_step_status(name, StepStatus::Running);
-
-        // A step can early-skip (e.g. test with no command + evidence disabled).
-        let mut findings = match self.produce_findings(name).await {
-            Ok(f) => f,
-            Err(e) => return StepEnd::Failed(format!("{}: {}", name.key(), e)),
-        };
-        if matches!(
-            self.run.step_mut(name).map(|s| s.status),
-            Some(StepStatus::Skipped)
-        ) {
-            return StepEnd::Skipped;
-        }
-
-        self.record_round(name, "initial", &findings, &[]);
-        self.set_step_findings(name, findings.clone());
-
+    async fn run_findings_step(&mut self, name: StepName, resume: Option<GateState>) -> StepEnd {
         let limit = self.validation_cfg.auto_fix_limit(name.key());
         let mut auto_used = 0u32;
         let mut round: u32 = 1;
         let mut fix_review_diff: Option<String> = None;
+        let mut findings;
+
+        let resume = resume.filter(|g| g.kind == "findings" || g.kind == "fix_review");
+        if let Some(gate) = resume {
+            // Resumed at a parked gate: re-park it verbatim rather than paying for
+            // the producer again — the findings the user is looking at are the
+            // ones they decide on. Auto-fix is spent by definition (a gate means
+            // the pipeline already handed control to the user).
+            self.log(format!(
+                "{}: resuming at a restored {} gate",
+                name.key(),
+                gate.kind
+            ));
+            findings = gate.findings;
+            fix_review_diff = gate.diff;
+            auto_used = limit;
+            round = self
+                .run
+                .steps
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.rounds.len() as u32 + 1)
+                .unwrap_or(1);
+        } else {
+            self.set_step_status(name, StepStatus::Running);
+
+            // A step can early-skip (e.g. test with no command + evidence disabled).
+            findings = match self.produce_findings(name).await {
+                Ok(f) => f,
+                Err(e) => return StepEnd::Failed(format!("{}: {}", name.key(), e)),
+            };
+            if matches!(
+                self.run.step_mut(name).map(|s| s.status),
+                Some(StepStatus::Skipped)
+            ) {
+                return StepEnd::Skipped;
+            }
+
+            self.record_round(name, "initial", &findings, &[]);
+            self.set_step_findings(name, findings.clone());
+        }
 
         loop {
             let blocking: Vec<ValidationFinding> =
@@ -1108,22 +1201,30 @@ impl RunCtx {
 
     // ── Ship step ───────────────────────────────────────────────────────────
 
-    async fn run_ship(&mut self) -> StepEnd {
-        self.set_step_status(StepName::Ship, StepStatus::Running);
-        let summary = self.validation_summary();
-        let base_override = self.run.options.base_branch.clone();
-        let proposal = match ship::compute_ship_proposal(
-            &self.app,
-            &self.cwd(),
-            self.gh_user(),
-            &self.run.intent,
-            base_override.as_deref(),
-            &summary,
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return StepEnd::Failed(format!("ship: {}", e)),
+    async fn run_ship(&mut self, resume: Option<GateState>) -> StepEnd {
+        // Resumed at the ship gate: keep the proposal the user was reviewing
+        // (re-drafting it would silently replace their pending commit/PR text).
+        let restored = resume.filter(|g| g.kind == "ship").and_then(|g| g.ship);
+        let proposal = if let Some(p) = restored {
+            self.log("ship: resuming at a restored ship gate");
+            p
+        } else {
+            self.set_step_status(StepName::Ship, StepStatus::Running);
+            let summary = self.validation_summary();
+            let base_override = self.run.options.base_branch.clone();
+            match ship::compute_ship_proposal(
+                &self.app,
+                &self.cwd(),
+                self.gh_user(),
+                &self.run.intent,
+                base_override.as_deref(),
+                &summary,
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => return StepEnd::Failed(format!("ship: {}", e)),
+            }
         };
 
         // Always gate with the editable proposal.
@@ -1195,7 +1296,14 @@ impl RunCtx {
 
     // ── CI step ─────────────────────────────────────────────────────────────
 
-    async fn run_ci(&mut self) -> StepEnd {
+    async fn run_ci(&mut self, resume: Option<GateState>) -> StepEnd {
+        // Resumed at a CI-failure gate: re-park it instead of restarting the poll
+        // loop, so the failures the user was deciding on stay on screen.
+        if let Some(gate) = resume.filter(|g| g.kind == "ci_failure") {
+            self.log("ci: resuming at a restored CI gate");
+            return self.ci_failure_gate(StepName::Ci, gate.findings).await;
+        }
+
         self.set_step_status(StepName::Ci, StepStatus::Running);
         let branch = match GitManager::get_current_branch(&self.cwd()) {
             Ok(b) => b,
@@ -1420,7 +1528,7 @@ impl RunCtx {
                                 }
                                 // Resume polling by re-entering the CI loop.
                                 self.set_step_status(name, StepStatus::Running);
-                                Box::pin(self.run_ci()).await
+                                Box::pin(self.run_ci(None)).await
                             }
                             FixResult::Failed(_) | FixResult::Cancelled => StepEnd::Skipped,
                         }

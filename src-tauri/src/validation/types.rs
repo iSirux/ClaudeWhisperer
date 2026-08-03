@@ -235,6 +235,17 @@ pub enum StepStatus {
     Failed,
 }
 
+impl StepStatus {
+    /// Whether the step is done for good. A resumed run skips these and re-enters
+    /// the pipeline at the first step that is not terminal.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            StepStatus::Passed | StepStatus::Skipped | StepStatus::Failed
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RunStatus {
@@ -490,6 +501,24 @@ mod tests {
         assign_agent_finding_ids(StepName::Review, &mut findings);
         assert_eq!(findings[0].id, "review-1");
         assert_eq!(findings[1].id, "review-2");
+    }
+
+    #[test]
+    fn only_finished_step_statuses_are_terminal() {
+        // Resume skips terminal steps — an in-flight one must be re-entered, not
+        // silently treated as done.
+        for s in [StepStatus::Passed, StepStatus::Skipped, StepStatus::Failed] {
+            assert!(s.is_terminal(), "{:?} should be terminal", s);
+        }
+        for s in [
+            StepStatus::Pending,
+            StepStatus::Running,
+            StepStatus::Fixing,
+            StepStatus::Gate,
+            StepStatus::FixReview,
+        ] {
+            assert!(!s.is_terminal(), "{:?} should not be terminal", s);
+        }
     }
 
     #[test]

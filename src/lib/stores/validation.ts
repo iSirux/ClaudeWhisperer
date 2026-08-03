@@ -631,14 +631,75 @@ function viewFromPersisted(p: PersistedValidationRun): ValidationRunView {
   };
 }
 
+/** The backend-owned slice of a run view (what `ValidationRun` deserializes). */
+function toBackendRun(view: ValidationRunView): ValidationRun {
+  return {
+    id: view.id,
+    sessionId: view.sessionId,
+    cwd: view.cwd,
+    status: view.status,
+    steps: view.steps,
+    gate: view.gate,
+    intent: view.intent,
+    options: view.options,
+    prUrl: view.prUrl,
+    error: view.error,
+    pendingFix: view.pendingFix,
+    startedAt: view.startedAt,
+    finishedAt: view.finishedAt,
+  };
+}
+
+/**
+ * Hand a detached run's snapshot back to the backend so it re-adopts it, and go
+ * live again. The backend re-enters the pipeline where the run was parked: a
+ * gate is re-parked verbatim (free — no agent work until the user decides),
+ * while a step that was mid-flight when the app died is re-run from the top.
+ */
+async function resume(runId: string): Promise<void> {
+  const view = get(validationRuns).get(runId);
+  if (!view || !view.detached || !isActiveStatus(view.status)) return;
+
+  patchView(runId, { responding: true });
+  try {
+    const repoId = get(sdkSessions).find((s) => s.id === view.sessionId)?.repoId;
+    await invoke<string>('validation_resume_run', {
+      run: toBackendRun(view),
+      repoId: repoId ?? null,
+    });
+  } catch (err) {
+    patchView(runId, (r) => ({
+      responding: false,
+      log: appendLog(r.log, `resume failed: ${errMsg(err)}`),
+    }));
+    throw err;
+  }
+
+  // Adopted — attach listeners, then resync in case the run advanced in the gap.
+  detachListeners(runId);
+  const current = get(validationRuns).get(runId) ?? view;
+  await attachRun(runId, { ...current, detached: false, responding: false });
+  try {
+    const snapshot = await invoke<ValidationUpdatePayload>('validation_get_run', { runId });
+    applySnapshot(runId, snapshot);
+  } catch {
+    // Best-effort; the next update event carries the full state anyway.
+  }
+}
+
 /**
  * Restore validation runs persisted on sessions (`SdkSession.validationRun`)
  * after sessions load from disk, so the full panel — not just the badge —
  * survives an app restart. Each restored run is seeded read-only (`detached`),
  * then we probe the backend: if it still has the run (e.g. a webview reload
- * without a full process restart), we reattach its live listeners and go live;
- * otherwise the run stays detached history the user can view but not resume.
- * Idempotent — skips sessions whose run is already in the store.
+ * without a full process restart), we reattach its live listeners and go live.
+ *
+ * Otherwise the run's backend task died with the previous process, and we hand
+ * the snapshot back via `resume` so it becomes actionable again. Runs parked at
+ * a gate resume automatically — re-parking costs nothing and the user's pending
+ * decision is the whole point of restoring the panel. A run that was mid-step
+ * stays detached until the user asks for it, since resuming re-runs that step's
+ * agent. Idempotent — skips sessions whose run is already in the store.
  */
 async function rehydrateFromSessions(): Promise<void> {
   const sessions = get(sdkSessions);
@@ -661,8 +722,17 @@ async function rehydrateFromSessions(): Promise<void> {
       // Backend still owns this run — reattach listeners and refresh from live state.
       await attachRun(view.id, { ...view, detached: false });
       applySnapshot(view.id, snapshot);
+      continue;
     } catch {
-      // Backend no longer has it (a real restart) — leave the detached view.
+      // Backend no longer has it (a real restart) — the view stays detached.
+    }
+
+    if (view.status === 'gate') {
+      try {
+        await resume(view.id);
+      } catch {
+        // Left detached with a Resume button; the failure is in the run's log.
+      }
     }
   }
 }
@@ -1312,6 +1382,7 @@ export const validation = {
   scheduleRun,
   cancelScheduledRun,
   rehydrateFromSessions,
+  resume,
   respond,
   executeShip,
   cancel,

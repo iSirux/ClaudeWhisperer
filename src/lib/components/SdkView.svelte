@@ -1705,7 +1705,15 @@
   let validationStripStatus = $derived.by(() => {
     const r = validationRun;
     if (!r) return "";
-    if (r.detached) return "Restored (read-only)";
+    // Detached = the backend forgot the run on restart. Unfinished ones can be
+    // handed back to it from the panel; finished ones are just history.
+    if (r.detached) {
+      return r.status === "passed" ||
+        r.status === "failed" ||
+        r.status === "cancelled"
+        ? "Restored (read-only)"
+        : "Restored — resume to continue";
+    }
     switch (r.status) {
       case "running":
         return r.pendingFix ? "Agent is fixing…" : "Running…";

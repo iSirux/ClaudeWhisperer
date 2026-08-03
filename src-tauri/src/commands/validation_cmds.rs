@@ -32,6 +32,19 @@ pub async fn validation_start_run(
         .start_run(app, run_id, session_id, cwd, repo_id, intent, options)
 }
 
+/// Re-adopt a run whose backend task died with the app process, handing back the
+/// snapshot the frontend persisted on the session. The pipeline re-enters at the
+/// point it was parked, so a restored run's gate becomes actionable again.
+#[tauri::command]
+pub async fn validation_resume_run(
+    app: AppHandle,
+    manager: State<'_, Arc<ValidationManager>>,
+    run: ValidationRun,
+    repo_id: Option<String>,
+) -> Result<String, String> {
+    manager.inner().resume_run(app, run, repo_id)
+}
+
 /// Return the current full snapshot of a run — the same shape the
 /// `validation-update-{run_id}` event carries — so the frontend can resync any
 /// initial state emitted before its listeners were attached.

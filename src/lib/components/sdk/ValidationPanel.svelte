@@ -43,7 +43,22 @@
   let isRunningLike = $derived((run.status === 'running' || run.status === 'gate') && !isDetached);
   // A gate is only actionable while the backend still owns the run.
   let isLiveGate = $derived(run.status === 'gate' && !isDetached);
+  // An unfinished detached run can be handed back to the backend, which re-enters
+  // the pipeline where it was parked. (Gate-parked runs resume automatically on
+  // launch; this covers a failed auto-resume and runs interrupted mid-step.)
+  let canResume = $derived(isDetached && !isFinished);
   let hasReportedSteps = $derived(run.steps.length > 0);
+
+  let resumeError = $state<string | null>(null);
+  async function resumeRun() {
+    if (run.responding) return;
+    resumeError = null;
+    try {
+      await validation.resume(run.id);
+    } catch (err) {
+      resumeError = err instanceof Error ? err.message : String(err);
+    }
+  }
 
   // Elapsed clock — ticks while active, freezes on finish or when detached.
   let clockFrozen = $derived(isFinished || isDetached);
@@ -348,7 +363,12 @@
         <span class="v-elapsed">{formatElapsed(displayElapsed)}</span>
       {/if}
       {#if isDetached}
-        <span class="v-detached-tag" title="Restored after an app restart — this run can't be resumed">restored</span>
+        <span
+          class="v-detached-tag"
+          title={canResume
+            ? 'Restored after an app restart — resume it to continue'
+            : 'Restored after an app restart — read-only history'}>restored</span
+        >
       {/if}
     </div>
     <div class="v-header-right">
@@ -430,12 +450,29 @@
     </div>
   {/if}
 
-  <!-- Restored (detached) banner: read-only history after an app restart -->
+  <!-- Restored (detached) banner: the backend forgot this run when the app
+       restarted. Unfinished runs can be handed back to it; finished ones are
+       history. -->
   {#if isDetached}
     <div class="v-detached">
-      This run was restored after a restart — it's read-only and can't be resumed.
-      {#if run.status === 'gate'}Start a new validation run to continue.{/if}
+      <span class="v-detached-text">
+        {#if canResume}
+          This run was restored after a restart — resume it to make its
+          {run.status === 'gate' ? 'decision' : 'remaining steps'} actionable again.
+          {#if run.status !== 'gate'}The interrupted step re-runs from the start.{/if}
+        {:else}
+          This run was restored after a restart — it's read-only history.
+        {/if}
+      </span>
+      {#if canResume}
+        <button class="v-btn v-btn-primary" onclick={resumeRun} disabled={run.responding}>
+          {run.responding ? 'Resuming…' : 'Resume run'}
+        </button>
+      {/if}
     </div>
+    {#if resumeError}
+      <div class="v-detached-error">Couldn't resume: {resumeError}</div>
+    {/if}
   {/if}
 
   <!-- Pending fix banner -->
@@ -852,12 +889,28 @@
     border: 1px solid var(--color-border);
   }
   .v-detached {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
     padding: 0.4rem 0.55rem;
     border-radius: 7px;
     background: var(--color-surface-elevated);
     border: 1px dashed var(--color-border);
     color: var(--color-text-secondary);
     font-size: 0.74rem;
+    line-height: 1.4;
+  }
+  .v-detached-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .v-detached .v-btn {
+    flex-shrink: 0;
+  }
+  .v-detached-error {
+    padding: 0.3rem 0.55rem;
+    color: var(--color-error, #f87171);
+    font-size: 0.72rem;
     line-height: 1.4;
   }
   .v-header-right {
