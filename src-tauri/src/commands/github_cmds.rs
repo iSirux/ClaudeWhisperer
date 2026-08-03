@@ -656,6 +656,51 @@ pub async fn fetch_branch_pr(
     fetch_branch_pr_status(&repo_path, gh_user.as_deref(), &branch).await
 }
 
+/// A PR's unified diff, plus whether it was cut short (see [`MAX_PR_DIFF_BYTES`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrDiff {
+    pub patch: String,
+    pub truncated: bool,
+}
+
+/// Cap on the diff handed to the UI. A PR touching generated files or vendored
+/// deps can run to tens of MB, which would stall the IPC bridge and the webview
+/// rendering it — past this the user is better served by GitHub's own view.
+const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+/// Cut a diff to [`MAX_PR_DIFF_BYTES`] on a line (and char) boundary, so the
+/// tail is a partial file rather than a partial line the parser would mangle.
+fn truncate_patch(patch: String) -> PrDiff {
+    if patch.len() <= MAX_PR_DIFF_BYTES {
+        return PrDiff { patch, truncated: false };
+    }
+    let mut cut = MAX_PR_DIFF_BYTES;
+    while cut > 0 && !patch.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let end = patch[..cut].rfind('\n').map(|i| i + 1).unwrap_or(cut);
+    PrDiff { patch: patch[..end].to_string(), truncated: true }
+}
+
+/// Fetch a PR's unified diff via `gh pr diff` (plain diff format — `--patch`
+/// would wrap it in per-commit mail headers the file parser doesn't want).
+#[tauri::command]
+pub async fn fetch_pr_diff(
+    repo_path: String,
+    gh_user: Option<String>,
+    number: u64,
+) -> Result<PrDiff, String> {
+    let args: Vec<String> = vec![
+        "pr".into(),
+        "diff".into(),
+        number.to_string(),
+        "--color".into(),
+        "never".into(),
+    ];
+    let stdout = run_gh(&repo_path, gh_user.as_deref(), &args).await?;
+    Ok(truncate_patch(stdout))
+}
+
 /// Merge a PR via `gh pr merge`. Strategy: "squash" | "merge" | "rebase".
 /// Deliberately no `--delete-branch`: cleanup (branch/worktree) is a separate,
 /// user-driven step — and gh would try to delete a branch that may be checked

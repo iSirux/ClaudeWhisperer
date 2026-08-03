@@ -2765,6 +2765,45 @@ function createSdkSessionsStore() {
       }
     },
 
+    /**
+     * Shut down the session's agent process (the provider CLI / codex
+     * app-server the sidecar spawned) without archiving the session.
+     *
+     * The agent runs with the session's cwd as its working directory, and on
+     * Windows a directory cannot be deleted while any process sits in it — so
+     * deleting a merged session's worktree has to release the agent first.
+     * The session itself stays in the list; the next prompt re-registers it
+     * through `ensureSessionLive` (resuming via `sdkSessionId`).
+     *
+     * Resolves once the sidecar confirms the close — the process is gone by
+     * then — or after a short timeout if that confirmation never arrives.
+     */
+    async releaseAgentProcess(id: string): Promise<void> {
+      if (!liveSessions.has(id)) return;
+      let unlistenClosed: UnlistenFn | undefined;
+      try {
+        let resolveClosed!: () => void;
+        const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
+        // Subscribe before invoking so the confirmation can't be missed.
+        unlistenClosed = await listen(`sdk-closed-${id}`, () => resolveClosed());
+        await invoke('close_sdk_session', { id });
+        // The sidecar interrupts, then hard-aborts, before confirming — so the
+        // timeout is generous enough to cover both bounded waits.
+        await Promise.race([closed, new Promise<void>(r => setTimeout(r, 8000))]);
+      } catch (error) {
+        console.error('[sdkSessions] Failed to release agent process:', error);
+      } finally {
+        unlistenClosed?.();
+      }
+
+      const unlisteners = listeners.get(id);
+      if (unlisteners) {
+        for (const unlisten of unlisteners) unlisten();
+        listeners.delete(id);
+      }
+      liveSessions.delete(id);
+    },
+
     async closeSession(id: string): Promise<void> {
       // Capture session data for archiving before removing
       let sessionToArchive: SdkSession | undefined;

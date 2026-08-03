@@ -6,6 +6,7 @@
     type MergeStrategy,
   } from '$lib/stores/sessionPrs';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import PrDiffView from './PrDiffView.svelte';
   import {
     sdkSessions,
     hasBusySessionsInScope,
@@ -32,6 +33,22 @@
   );
 
   let descriptionOpen = $state(true);
+
+  type PrTab = 'overview' | 'diff';
+  let tab = $state<PrTab>('overview');
+
+  // The diff is fetched lazily — only once the user asks for it, and again when
+  // a push changes the PR's diffstat while the tab is open (the panel polls the
+  // PR every 15s, so `loadDiff`'s signature check picks that up on the next run).
+  $effect(() => {
+    if (tab !== 'diff' || !pr) return;
+    void sessionPrs.loadDiff(session);
+  });
+
+  // A PR that disappears (fetch cleared it) leaves no diff to show.
+  $effect(() => {
+    if (!pr && tab === 'diff') tab = 'overview';
+  });
 
   /** Session runs in a linked worktree (vs directly in the main repo checkout). */
   let isWorktree = $derived(
@@ -239,6 +256,32 @@
     </div>
   </div>
 
+  {#if pr}
+    <div class="pr-tabs" role="tablist">
+      <button
+        class="pr-tab"
+        class:active={tab === 'overview'}
+        role="tab"
+        aria-selected={tab === 'overview'}
+        onclick={() => (tab = 'overview')}
+      >
+        Overview
+      </button>
+      <button
+        class="pr-tab"
+        class:active={tab === 'diff'}
+        role="tab"
+        aria-selected={tab === 'diff'}
+        onclick={() => (tab = 'diff')}
+      >
+        Diff<span class="pr-tab-count">{pr.changed_files}</span>
+      </button>
+    </div>
+  {/if}
+
+  {#if pr && tab === 'diff'}
+    <PrDiffView {session} {entry} />
+  {:else}
   <div class="pr-body">
   {#if entry.error}
     <div class="pr-error">{entry.error}</div>
@@ -339,6 +382,7 @@
     {/if}
   {/if}
   </div>
+  {/if}
 
   <!-- Action footer — pinned below the scroll area so merge/cleanup stay reachable -->
   {#if pr && pr.state === 'open'}
@@ -442,6 +486,50 @@
     min-width: 0;
     padding: 0.6rem 0.85rem 0.5rem;
     flex-shrink: 0;
+  }
+
+  /* Overview ↔ Diff, between the fixed header and the body/footer. */
+  .pr-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0 0.85rem;
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+
+  .pr-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.5rem;
+    margin-bottom: -1px;
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+
+  .pr-tab:hover {
+    color: var(--color-text-secondary);
+  }
+
+  .pr-tab.active {
+    color: var(--color-text-primary);
+    border-bottom-color: var(--color-accent);
+  }
+
+  .pr-tab-count {
+    font-size: 0.65rem;
+    padding: 0.02rem 0.28rem;
+    border-radius: 999px;
+    background: var(--color-border);
+    color: var(--color-text-muted);
+  }
+
+  .pr-tab.active .pr-tab-count {
+    color: var(--color-text-secondary);
   }
 
   .pr-body {

@@ -2074,13 +2074,52 @@ async function ensureCodexAppServer(
   return state;
 }
 
+/**
+ * Kill a spawned process *and its children*. On Windows the app-server runs
+ * under a `cmd.exe` shim, so a plain kill() reaps the shim and orphans the real
+ * `codex` process — which keeps the session cwd as its working directory and,
+ * on Windows, makes that directory undeletable. `taskkill /T` takes the tree.
+ */
+async function killProcessTree(
+  child: ChildProcessWithoutNullStreams
+): Promise<void> {
+  const pid = child.pid;
+  if (globalThis.process.platform !== "win32" || !pid) {
+    child.kill();
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    // Backstop: never let a wedged taskkill hold up the close.
+    setTimeout(done, 3000);
+    try {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+      killer.on("exit", done);
+      killer.on("error", () => {
+        child.kill();
+        done();
+      });
+    } catch {
+      child.kill();
+      done();
+    }
+  });
+}
+
 async function stopCodexAppServer(session: Session): Promise<void> {
   const state = session.appServer;
   if (!state) return;
   session.appServer = undefined;
   session.appServerTurnId = undefined;
   state.rl.close();
-  state.process.kill();
+  await killProcessTree(state.process);
 }
 
 function buildCodexAppServerInputItems(
@@ -5892,16 +5931,37 @@ async function handleClose(msg: CloseMessage): Promise<void> {
           message: `[claude queue] cleared pending=${pendingCount} due to close`,
         });
       }
-      // Use interrupt() if we have an active query
-      if (session.queryIterator) {
-        try {
-          await session.queryIterator.interrupt();
-        } catch {
-          // Ignore errors during close
-        }
-      } else if (session.abortController) {
-        session.abortController.abort();
+      // Ending the input stream is what actually lets the CLI exit: in
+      // streaming-input mode it sits on stdin between turns, so interrupt()
+      // alone ends the turn and leaves the process running (see the note in
+      // handleStop). A survivor keeps the session cwd as its working
+      // directory, which on Windows makes that directory permanently
+      // undeletable — post-merge worktree cleanup then always fails.
+      if (session.inputQueue) {
+        session.inputQueue.done();
+        session.inputQueue = undefined;
       }
+      session.claudePendingTurns = 0;
+      cancelPendingDone(session);
+
+      const iterator = session.queryIterator;
+      const abortController = session.abortController;
+      session.queryIterator = undefined;
+      session.abortController = undefined;
+
+      if (iterator) {
+        // Bounded — a hung interrupt() must not stall the close, and the
+        // abort below kills the process either way.
+        await Promise.race([
+          iterator.interrupt().catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+        ]);
+      }
+      // Unlike stop there is nothing left to wind down gracefully here, so the
+      // abort is immediate: callers (worktree cleanup) rely on the process
+      // being gone once `closed` comes back.
+      abortController?.abort();
+      session.claudeProcessing = false;
     }
   }
   for (const key of reasoningByItemId.keys()) {

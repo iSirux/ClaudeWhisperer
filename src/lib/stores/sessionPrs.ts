@@ -58,6 +58,12 @@ export interface BranchCleanupResult {
   warnings: string[];
 }
 
+/** Backend `PrDiff`: the PR's unified diff, cut short past a size cap. */
+export interface PrDiff {
+  patch: string;
+  truncated: boolean;
+}
+
 export interface SessionPrEntry {
   pr: GitHubPrStatus | null;
   loading: boolean;
@@ -71,6 +77,13 @@ export interface SessionPrEntry {
   cleanupError: string | null;
   /** Set once cleanup succeeded — the branch/worktree are gone. */
   cleanupResult: BranchCleanupResult | null;
+  /** Unified diff of the PR — lazily fetched when the Diff tab is opened. */
+  diff: string | null;
+  diffTruncated: boolean;
+  diffLoading: boolean;
+  diffError: string | null;
+  /** Diffstat the cached diff belongs to; a new push invalidates it. */
+  diffSignature: string | null;
 }
 
 const EMPTY_ENTRY: SessionPrEntry = {
@@ -84,7 +97,21 @@ const EMPTY_ENTRY: SessionPrEntry = {
   cleaning: false,
   cleanupError: null,
   cleanupResult: null,
+  diff: null,
+  diffTruncated: false,
+  diffLoading: false,
+  diffError: null,
+  diffSignature: null,
 };
+
+/**
+ * Identity of the diff a PR currently has. The panel polls the PR every 15s
+ * while open, so a push that changes the diffstat is what tells us the cached
+ * patch is stale — cheaper and more reliable than re-fetching on a timer.
+ */
+export function diffSignature(pr: GitHubPrStatus): string {
+  return `${pr.number}:${pr.additions}:${pr.deletions}:${pr.changed_files}:${pr.state}`;
+}
 
 /** Uncommitted/unpushed state of a working tree (backend `WorkingTreeState`). */
 export interface WorkingTreeState {
@@ -158,6 +185,26 @@ function scopeSiblings(session: SdkSession): SdkSession[] {
   const key = scopeKeyFor(session);
   if (!key) return [session];
   return get(sdkSessions).filter((s) => scopeKeyFor(s) === key);
+}
+
+/**
+ * Release the agent process of every session working *in* this directory.
+ *
+ * Each session's agent (Claude CLI / codex app-server) is spawned with the
+ * session cwd as its working directory, and on Windows a directory cannot be
+ * deleted while any process sits in it — git's `--force` and the backend's
+ * read-only/retry fallback can't beat a cwd lock, so the worktree delete fails
+ * every time until the agents let go. Matched by cwd rather than PR scope: a
+ * session with a stale branch label is still holding the same directory.
+ *
+ * The sessions themselves are untouched — archiving stays the user's own step.
+ */
+async function releaseAgentsInDirectory(dirPath: string): Promise<void> {
+  const target = normalizeScopePath(dirPath);
+  const occupants = get(sdkSessions).filter(
+    (s) => s.cwd && normalizeScopePath(s.cwd) === target
+  );
+  await Promise.all(occupants.map((s) => sdkSessions.releaseAgentProcess(s.id)));
 }
 
 /** Scopes for which we've already auto-opened the PR panel this app session, so
@@ -299,6 +346,39 @@ function createSessionPrsStore() {
       await refresh(session);
     },
 
+    /**
+     * Load the PR's unified diff (Diff tab). No-op when a cached patch already
+     * matches the PR's current diffstat; `force` refetches regardless.
+     */
+    async loadDiff(session: SdkSession, force = false): Promise<void> {
+      const entry = entryFor(session.id);
+      const pr = entry.pr;
+      if (!pr || entry.diffLoading) return;
+      const signature = diffSignature(pr);
+      if (!force && entry.diff !== null && entry.diffSignature === signature) return;
+      const repo = resolveRepo(session);
+      // After cleanup the worktree is gone — gh can still read the merged PR
+      // from the main checkout, which is where the user ends up anyway.
+      const repoPath = entry.cleanupResult ? (repo?.path ?? session.cwd) : session.cwd;
+      if (!repoPath || repoPath === '.') return;
+      patch(session.id, { diffLoading: true, diffError: null });
+      try {
+        const result = await invoke<PrDiff>('fetch_pr_diff', {
+          repoPath,
+          ghUser: repo?.gh_user || null,
+          number: pr.number,
+        });
+        patch(session.id, {
+          diff: result.patch,
+          diffTruncated: result.truncated,
+          diffSignature: signature,
+          diffLoading: false,
+        });
+      } catch (e) {
+        patch(session.id, { diffLoading: false, diffError: String(e) });
+      }
+    },
+
     /** Merge the session's PR. Remembers the strategy on the repo config. */
     async merge(session: SdkSession, strategy: MergeStrategy): Promise<void> {
       const entry = entryFor(session.id);
@@ -343,6 +423,11 @@ function createSessionPrsStore() {
         !!session.cwd && normalizeScopePath(session.cwd) !== normalizeScopePath(repo.path);
       patch(session.id, { cleaning: true, cleanupError: null });
       try {
+        // Nothing can delete the worktree while an agent process is still
+        // sitting in it (see releaseAgentsInDirectory).
+        if (isWorktree && session.cwd) {
+          await releaseAgentsInDirectory(session.cwd);
+        }
         const result = await invoke<BranchCleanupResult>('cleanup_merged_branch', {
           repoPath: repo.path,
           branch,
