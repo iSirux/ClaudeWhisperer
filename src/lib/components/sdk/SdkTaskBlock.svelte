@@ -38,20 +38,34 @@
   const isNestedSubagent = (m: SdkMessage): boolean =>
     !!m.toolUseId && !!nestedSummaries?.has(m.toolUseId);
 
-  // Auto-scroll task body to bottom when new children arrive
+  // Follow live output while the user is at the bottom. Scrolling up pauses
+  // follow-tail behavior until they return to the bottom themselves.
   let taskBodyEl = $state<HTMLDivElement | null>(null);
   let prevChildCount = $state(0);
+  let wasExpanded = $state(false);
+  let prevTaskCompleted = $state<SdkMessage | undefined>(undefined);
+  let shouldFollowTail = $state(true);
+
+  function handleTaskBodyScroll() {
+    if (!taskBodyEl) return;
+    const distanceFromBottom = taskBodyEl.scrollHeight - taskBodyEl.scrollTop - taskBodyEl.clientHeight;
+    shouldFollowTail = distanceFromBottom <= 8;
+  }
 
   $effect(() => {
     const currentCount = children.length;
-    if (currentCount > prevChildCount && taskBodyEl) {
+    const contentChanged = currentCount > prevChildCount || taskCompleted !== prevTaskCompleted;
+    const justExpanded = expanded && !wasExpanded;
+    if ((contentChanged || justExpanded) && expanded && taskBodyEl && shouldFollowTail) {
       tick().then(() => {
-        if (taskBodyEl) {
+        if (taskBodyEl && shouldFollowTail) {
           taskBodyEl.scrollTop = taskBodyEl.scrollHeight;
         }
       });
     }
     prevChildCount = currentCount;
+    wasExpanded = expanded;
+    prevTaskCompleted = taskCompleted;
   });
 
   let isRunning = $derived(!taskCompleted);
@@ -274,7 +288,7 @@
       </span>
     </summary>
 
-    <div class="task-body" bind:this={taskBodyEl}>
+    <div class="task-body" bind:this={taskBodyEl} onscroll={handleTaskBodyScroll}>
       {#if expanded && childRenderItems().length > 0}
         <div class="task-children">
           {#each childRenderItems() as item, index (item.type === 'tool_group' ? `tool-group-${index}` : item.type === 'nested_task' ? `nested-${item.summary.toolUseId}` : item.message.timestamp)}
@@ -493,9 +507,7 @@
   }
 
   .task-tool-grid-wrapper {
-    max-height: 6.75rem; /* ~2 rows of tool cards */
-    overflow-y: auto;
-    overflow-x: hidden;
+    min-width: 0;
   }
 
   .task-children {
