@@ -43,6 +43,28 @@ function storeForProvider(
   return provider === 'openai' ? get(codexRateLimitData) : get(rateLimitData);
 }
 
+/**
+ * Whether the account can keep running after its included usage windows fill.
+ * Providers may omit the derived utilization/amount fields, so an enabled
+ * extra-usage switch is usable unless a reported limit proves otherwise.
+ */
+export function hasUsableExtraUsage(
+  provider: SdkProvider,
+  accountId?: string
+): boolean {
+  const extra = storeForProvider(provider, accountId)?.extra_usage;
+  if (!extra?.is_enabled) return false;
+
+  if (extra.monthly_limit != null && extra.used_credits != null) {
+    return extra.used_credits < extra.monthly_limit;
+  }
+  if (extra.utilization != null) {
+    return extra.utilization < EXHAUSTION_THRESHOLD;
+  }
+
+  return true;
+}
+
 /** Parse an ISO reset timestamp to epoch ms, or undefined if missing/invalid. */
 function parseResetMs(iso: string | undefined | null): number | undefined {
   if (!iso) return undefined;
@@ -64,6 +86,11 @@ export function providerExhaustion(
 ): { exhausted: boolean; window?: QueueWindow; resetsAt?: number } {
   const data = storeForProvider(provider, accountId);
   if (!data) return { exhausted: false };
+
+  // A full subscription window is not a hard stop when paid/credit-backed
+  // usage is available. Let the provider accept the turn normally and only
+  // queue once that allowance is exhausted too.
+  if (hasUsableExtraUsage(provider, accountId)) return { exhausted: false };
 
   const fiveHourExhausted = data.five_hour.utilization >= EXHAUSTION_THRESHOLD;
   const sevenDayExhausted = data.seven_day.utilization >= EXHAUSTION_THRESHOLD;

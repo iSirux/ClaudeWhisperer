@@ -12,7 +12,7 @@ import { analyzeSessionCompletion, generateSessionNameFromPrompt, isLlmEnabled, 
 import { clampEffortForModel, DEFAULT_MODEL_ID, getMaxContextTokens, getProviderForModel, isAutoModel, modelSupportsEffort, resolveModelAlias, resolveModelForApi, type SdkProvider } from '$lib/utils/models';
 import { SCREENSHOT_PROMPT_NOTICE, hasScreenshotImage } from '$lib/utils/screenshot';
 import type { McpServerConfig } from '$lib/types/mcp';
-import { shouldQueue, providerExhaustion, nextWindowResetAt } from './queueDetection';
+import { shouldQueue, providerExhaustion, hasUsableExtraUsage, nextWindowResetAt } from './queueDetection';
 import { panes, focusedPaneSessionId, onScreenSessionIds } from './panes';
 import { defaultAccountIdForRepo } from '$lib/utils/accounts';
 // Type-only import (erased at build; no runtime cycle with the validation store,
@@ -1590,6 +1590,11 @@ function createSdkSessionsStore() {
           sessions.map(s => {
             if (s.id !== id) return s;
             const provider = s.provider ?? getProviderForModel(s.model);
+            // The SDK can report the included-window rejection while continuing
+            // the same turn against paid/credit-backed usage. In that case this
+            // is telemetry, not a terminal rejection, so leave the live session
+            // and its in-flight turn untouched.
+            if (hasUsableExtraUsage(provider, s.accountId)) return s;
             const exhaustion = providerExhaustion(provider, s.accountId);
             // Prefer the explicit event reset time (normalized to ms); fall back to the store-derived one.
             const eventReset = normalizeEpochMs(e.payload.resetsAt);
@@ -2520,6 +2525,7 @@ function createSdkSessionsStore() {
       let sessionCwd: string | undefined;
       let sessionProvider: SdkProvider = 'claude';
       let sessionAccountId: string | undefined;
+      let sessionWasQuerying = false;
       let needsNameGeneration = false;
       let recordingScreenshots: SdkImageContent[] | undefined;
       subscribe(sessions => {
@@ -2527,6 +2533,7 @@ function createSdkSessionsStore() {
         sessionCwd = session?.cwd;
         sessionProvider = session?.provider ?? getProviderForModel(session?.model ?? '');
         sessionAccountId = session?.accountId;
+        sessionWasQuerying = session?.status === 'querying';
         const isFirstUserMessage = session?.messages.filter(m => m.type === 'user').length === 0;
         needsNameGeneration = !session?.aiMetadata?.name && isFirstUserMessage;
         // Recording screenshots ride on the pending session until the first prompt goes out
@@ -2614,7 +2621,9 @@ function createSdkSessionsStore() {
       // Smart Queue (follow-up gate): if the provider's usage window is exhausted, don't dispatch.
       // The user message stays in the transcript so the queued turn is visible; the turn itself is
       // parked in `rateLimited` and re-sent later by the driver (or manually via "Continue now").
-      if (shouldQueue(sessionProvider, sessionAccountId)) {
+      // A prompt sent while the agent is already querying is stream-injected into that accepted
+      // turn. Never replace the live status with a rate-limit banner based only on a usage snapshot.
+      if (!sessionWasQuerying && shouldQueue(sessionProvider, sessionAccountId)) {
         const { window: rlWindow, resetsAt } = providerExhaustion(sessionProvider, sessionAccountId);
         update(sessions =>
           sessions.map(s =>
