@@ -148,6 +148,12 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
   const taskStartMap = new Map<string, SdkMessage>();
   // Maps toolUseId -> task_completed system message
   const taskCompletedMap = new Map<string, SdkMessage>();
+  // Fallback pairing index: taskId -> task_completed. `tool_use_id` is OPTIONAL on the SDK's
+  // task_started/task_notification messages, so a completion can land without one — matching
+  // on toolUseId alone then leaves the task block spinning "Running" forever even though the
+  // subagent finished (its task_completed is the ONLY authoritative terminal signal; see the
+  // effectiveTaskCompleted comment below). task_id is always present on both, so index it too.
+  const taskCompletedByTaskId = new Map<string, SdkMessage>();
   // Maps toolUseId -> child messages (those with matching parentToolUseId)
   const taskChildrenMap = new Map<string, SdkMessage[]>();
   // Set of toolUseIds that are task containers (for quick lookup)
@@ -183,10 +189,16 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
         taskChildrenMap.set(msg.toolUseId, []);
       }
     }
-    if (msg.type === 'task_completed' && msg.toolUseId) {
-      taskCompletedMap.set(msg.toolUseId, msg);
+    if (msg.type === 'task_completed') {
+      if (msg.toolUseId) taskCompletedMap.set(msg.toolUseId, msg);
+      if (msg.taskId) taskCompletedByTaskId.set(msg.taskId, msg);
     }
   }
+
+  /** Resolve a task block's completion: by toolUseId, else by the started message's taskId. */
+  const findTaskCompleted = (toolUseId: string, startMsg?: SdkMessage): SdkMessage | undefined =>
+    taskCompletedMap.get(toolUseId) ??
+    (startMsg?.taskId ? taskCompletedByTaskId.get(startMsg.taskId) : undefined);
 
   // Step 2.5: Detect task containers from parentToolUseId references.
   // If any message references a parentToolUseId, that parent is a task container
@@ -271,7 +283,7 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
     const parentId = taskParentId.get(taskId);
     if (!parentId) continue; // top-level subagent — rendered as a full block
     const startMsg = taskStartMap.get(taskId);
-    const completedMsg = taskCompletedMap.get(taskId);
+    const completedMsg = findTaskCompleted(taskId, startMsg);
     const input = taskToolInput.get(taskId);
     const label =
       (input?.subagent_type as string | undefined) ||
@@ -341,7 +353,7 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
 
       const toolUseId = msg.toolUseId!;
       const taskStartMsg = taskStartMap.get(toolUseId);
-      const taskCompletedMsg = taskCompletedMap.get(toolUseId);
+      const taskCompletedMsg = findTaskCompleted(toolUseId, taskStartMsg);
       const taskInput = msg.input as Record<string, unknown> | undefined;
 
       // Build taskStarted: merge real task_started with tool input data.

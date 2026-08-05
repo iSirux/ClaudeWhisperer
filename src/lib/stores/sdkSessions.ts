@@ -1031,7 +1031,26 @@ function createSdkSessionsStore() {
   const DEFERRED_COMPLETION_GRACE_MS = 120_000;
   const deferredFinalizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  function cancelDeferredFinalize(id: string): void {
+  /**
+   * Hard ceiling on a deferred completion, keyed by session id.
+   *
+   * The deferral above is escaped ONLY by a lifecycle event landing (subagent_stop /
+   * task_notification). That makes a single lost or asymmetric event terminal: the SDK's
+   * SubagentStart/SubagentStop hooks are not guaranteed to pair (real logs show stops with no
+   * matching start, so the reverse happens too), and `tool_use_id`/`task_type` are optional on
+   * the task messages. One dropped event parks the session at "querying" forever — no Done, no
+   * completion sound, no AI analysis, and `hasBusySessionsInScope` keeps reading the
+   * repo/worktree as busy so `after_sessions` queue items never dispatch.
+   *
+   * So a deferral also arms this watchdog. ANY inbound agent activity (text, tool call,
+   * thinking, a new subagent/task) re-arms it — a background subagent that is genuinely working
+   * streams its own tool events continuously, so real work keeps pushing it out. Total silence
+   * for this long means the live sets are stale: finalize and drop them.
+   */
+  const DEFERRED_COMPLETION_MAX_IDLE_MS = 15 * 60_000;
+  const deferralWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function clearGraceTimer(id: string): void {
     const timer = deferredFinalizeTimers.get(id);
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -1039,8 +1058,52 @@ function createSdkSessionsStore() {
     }
   }
 
-  function scheduleDeferredFinalize(id: string): void {
+  /** Settle point: the turn is over (or superseded) — drop both the grace finalize and the
+   *  stale-state watchdog. */
+  function cancelDeferredFinalize(id: string): void {
+    clearGraceTimer(id);
+    const watchdog = deferralWatchdogTimers.get(id);
+    if (watchdog !== undefined) {
+      clearTimeout(watchdog);
+      deferralWatchdogTimers.delete(id);
+    }
+  }
+
+  /**
+   * Fresh agent activity: supersede a pending grace finalize, and — while a completion is
+   * deferred — push the stale-state watchdog back out. The watchdog timer's existence IS the
+   * "currently deferred" flag, so this stays O(1) on the hot streaming path.
+   */
+  function noteAgentActivity(id: string): void {
+    const wasDeferred = deferralWatchdogTimers.has(id);
     cancelDeferredFinalize(id);
+    if (wasDeferred) armDeferralWatchdog(id);
+  }
+
+  function armDeferralWatchdog(id: string): void {
+    const existing = deferralWatchdogTimers.get(id);
+    if (existing !== undefined) clearTimeout(existing);
+    deferralWatchdogTimers.set(id, setTimeout(() => {
+      deferralWatchdogTimers.delete(id);
+      let s: SdkSession | undefined;
+      subscribe(ss => { s = ss.find(x => x.id === id); })();
+      // Anything that settled the turn meanwhile cleared completionDeferred.
+      if (!s || !s.completionDeferred || s.stopRequestedAt) return;
+      const stuckSubagents = (s.liveSubagentIds ?? []).length;
+      const stuckTasks = (s.liveBackgroundTasks ?? []).filter(t => t.kind !== 'server').length;
+      console.warn(
+        `[sdkSessions] deferred completion idle for ${Math.round(DEFERRED_COMPLETION_MAX_IDLE_MS / 60_000)}min ` +
+        `— background lifecycle events were lost (${stuckSubagents} subagent(s), ${stuckTasks} task(s) never settled); ` +
+        `finalizing (session: ${id})`
+      );
+      finalizeCompletion(id, false);
+    }, DEFERRED_COMPLETION_MAX_IDLE_MS));
+  }
+
+  function scheduleDeferredFinalize(id: string): void {
+    // Only the grace timer is replaced — the watchdog stays armed as the backstop for the case
+    // where this timer's re-check bails (fresh live work) and no further drain ever arrives.
+    clearGraceTimer(id);
     deferredFinalizeTimers.set(id, setTimeout(() => {
       deferredFinalizeTimers.delete(id);
       // Re-check at fire time: anything that settled the turn meanwhile (real sdk-done,
@@ -1088,7 +1151,46 @@ function createSdkSessionsStore() {
         const workPeriod = calculateWorkPeriod(s);
         const closedThinkingMessages = closeOpenThinkingMessages(s.messages, now);
         const terminalType = wasStoppedByUser ? 'stopped' as const : 'done' as const;
-        const updatedMessages = [...closedThinkingMessages, { type: terminalType, timestamp: now }];
+
+        // Close out background work that never reported back. The turn is genuinely over here
+        // (the deferral above already waited for every blocking task, and a user stop is a real
+        // end), so a task_started with no task_completed means its task_notification was lost —
+        // and task_completed is the ONLY authoritative terminal signal for an async subagent, so
+        // that block would otherwise read "Running" forever. Synthesize a 'stopped' marker.
+        // Matches the renderer's pairing (toolUseId first, taskId fallback), so it's idempotent:
+        // once closed, later turns never re-close it, and a real completion landing afterwards
+        // still wins (it's appended later and overwrites in the renderer's index).
+        const closedTaskKeys = new Set<string>();
+        for (const m of closedThinkingMessages) {
+          if (m.type !== 'task_completed') continue;
+          if (m.toolUseId) closedTaskKeys.add(m.toolUseId);
+          if (m.taskId) closedTaskKeys.add(m.taskId);
+        }
+        const syntheticCompletions: SdkMessage[] = closedThinkingMessages
+          .filter(m =>
+            m.type === 'task_started' &&
+            !(m.toolUseId && closedTaskKeys.has(m.toolUseId)) &&
+            !(m.taskId && closedTaskKeys.has(m.taskId))
+          )
+          .map(m => ({
+            type: 'task_completed' as const,
+            taskId: m.taskId,
+            toolUseId: m.toolUseId,
+            taskStatus: 'stopped',
+            summary: '',
+            timestamp: now,
+          }));
+
+        // Long-lived servers legitimately outlive a turn; anything else still tracked in the live
+        // set at a real completion is stale. Left in place it would silently re-defer every LATER
+        // turn, since background tasks deliberately carry across turns.
+        const liveTasks = s.liveBackgroundTasks ?? [];
+
+        const updatedMessages = [
+          ...closedThinkingMessages,
+          ...syntheticCompletions,
+          { type: terminalType, timestamp: now },
+        ];
         sessionMessages = updatedMessages;
         needsAiAnalysis = !wasStoppedByUser && isLlmEnabled() && (!s.aiMetadata?.outcome || s.aiMetadata?.needsInteraction === undefined);
 
@@ -1102,6 +1204,7 @@ function createSdkSessionsStore() {
           // Clear semi-stop tracking: this turn is now truly finished.
           completionDeferred: false,
           liveSubagentIds: [],
+          liveBackgroundTasks: liveTasks.filter(t => t.kind === 'server'),
           ...workPeriod,
           usage: clearProgressiveUsage(s.usage),
           messages: updatedMessages,
@@ -1176,7 +1279,7 @@ function createSdkSessionsStore() {
         const { content, parentToolUseId, turnUuid } = e.payload;
         // Fresh agent activity: the main agent resumed after the background work settled —
         // a pending grace finalize would be a false stop, so cancel it.
-        cancelDeferredFinalize(id);
+        noteAgentActivity(id);
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
@@ -1229,7 +1332,7 @@ function createSdkSessionsStore() {
             : undefined;
 
           // Fresh agent activity cancels a pending deferred-completion grace finalize.
-          cancelDeferredFinalize(id);
+          noteAgentActivity(id);
           // Track whether this event newly raises a question, so we alert once.
           let raisedQuestion = false;
           update(sessions =>
@@ -1295,7 +1398,7 @@ function createSdkSessionsStore() {
           base64Data: img.base64Data,
         }));
         // Fresh agent activity cancels a pending deferred-completion grace finalize.
-        cancelDeferredFinalize(id);
+        noteAgentActivity(id);
         update(sessions =>
           sessions.map(s =>
             s.id !== id ? s : (() => {
@@ -1328,7 +1431,7 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ content: string; timestamp: number; parentToolUseId?: string | null; turnUuid?: string | null }>(`sdk-thinking-start-${id}`, (e) => {
         // Fresh agent activity cancels a pending deferred-completion grace finalize.
-        cancelDeferredFinalize(id);
+        noteAgentActivity(id);
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
@@ -1456,6 +1559,9 @@ function createSdkSessionsStore() {
             })
           );
           debouncedSave(id);
+          // Bound the deferral: a lost subagent_stop / task_notification must not park the
+          // session at "querying" forever (see armDeferralWatchdog).
+          armDeferralWatchdog(id);
           console.log(`[sdkSessions] sdk-done deferred: ${liveSubagents.length} subagent(s), ${liveBlockingTasks.length} background task(s) still running (session: ${id})`);
           return;
         }
@@ -1662,7 +1768,7 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ agentId: string; agentType: string }>(`sdk-subagent-start-${id}`, (e) => {
         // New live work supersedes a pending deferred-completion grace finalize.
-        cancelDeferredFinalize(id);
+        noteAgentActivity(id);
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
@@ -1688,6 +1794,9 @@ function createSdkSessionsStore() {
     // activity cancels it, a silent window finalizes (see scheduleDeferredFinalize).
     unlisteners.push(
       await listen<{ agentId: string; transcriptPath: string }>(`sdk-subagent-stop-${id}`, (e) => {
+        // Partial progress through the live set is still progress — push the stale-state
+        // watchdog out (the grace timer is re-armed below only on a full drain).
+        noteAgentActivity(id);
         let shouldScheduleFinalize = false;
         update(sessions =>
           sessions.map(s => {
@@ -1736,7 +1845,7 @@ function createSdkSessionsStore() {
     unlisteners.push(
       await listen<{ taskId: string; toolUseId?: string; description: string; taskType?: string }>(`sdk-task-started-${id}`, (e) => {
         // New live work supersedes a pending deferred-completion grace finalize.
-        cancelDeferredFinalize(id);
+        noteAgentActivity(id);
         update(sessions =>
           sessions.map(s => {
             if (s.id !== id) return s;
@@ -1797,6 +1906,9 @@ function createSdkSessionsStore() {
     // so finalizing at the drain would be a false stop (see scheduleDeferredFinalize).
     unlisteners.push(
       await listen<{ taskId: string; toolUseId?: string; status: string; summary: string; taskType?: string; usage?: { total_tokens: number; tool_uses: number; duration_ms: number } }>(`sdk-task-completed-${id}`, (e) => {
+        // Partial progress through the live set is still progress — push the stale-state
+        // watchdog out (the grace timer is re-armed below only on a full drain).
+        noteAgentActivity(id);
         let shouldScheduleFinalize = false;
         update(sessions =>
           sessions.map(s => {
