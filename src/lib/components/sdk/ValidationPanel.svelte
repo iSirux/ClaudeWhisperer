@@ -568,11 +568,6 @@
               {/if}
             </div>
 
-            {#if gate.kind === 'fix_review' && gate.diff}
-              <pre class="v-diff">{#each gate.diff.split('\n') as line}<span class={diffLineClass(line)}>{line}
-</span>{/each}</pre>
-            {/if}
-
             {#if gateFindings.length > 0}
               <div class="v-findings">
                 {#each gateFindings as finding (finding.id)}
