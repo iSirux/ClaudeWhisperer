@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, type Snippet } from "svelte";
+  import { onDestroy, tick, type Snippet } from "svelte";
   import type { SdkImageContent } from "$lib/stores/sdkSessions";
   import {
     getImagesFromDrop,
@@ -272,9 +272,34 @@
   // Expose method to append transcribed text to the current prompt
   export function appendToPrompt(text: string) {
     if (!text.trim()) return;
-    prompt = prompt.trim() ? `${prompt.trim()} ${text.trim()}` : text.trim();
+    const addition = text.trim();
+    if (!prompt.trim()) {
+      prompt = addition;
+    } else if (/\n[ \t]*$/.test(prompt)) {
+      // The draft deliberately ends on a fresh row (e.g. right after a quoted
+      // selection) — continue on that row instead of folding the text back onto
+      // the previous one, which would swallow it into the quote.
+      prompt = `${prompt.replace(/[ \t]+$/, "")}${addition}`;
+    } else {
+      prompt = `${prompt.trim()} ${addition}`;
+    }
     notifyDraftChange();
     textareaRef?.focus();
+  }
+
+  /**
+   * Insert a quoted-selection line as its own new row, leaving the caret on the
+   * empty row below it so the follow-up (typed or dictated) continues there.
+   * Distinct from `appendToPrompt`, which joins with a space.
+   */
+  export function insertQuote(line: string) {
+    if (!line.trim()) return;
+    const base = prompt.replace(/\s+$/, "");
+    prompt = base ? `${base}\n${line}\n` : `${line}\n`;
+    notifyDraftChange();
+    // The caret can only be parked at the end once the binding has flushed the
+    // new value into the textarea.
+    void tick().then(() => textareaRef?.focusEnd());
   }
 
   async function handleSendPrompt(mode: SendTiming = "now") {

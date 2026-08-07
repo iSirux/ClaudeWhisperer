@@ -107,7 +107,9 @@
           </div>
         {/if}
         {#if message.content}
-          <pre class="user-content">{message.content}</pre>
+          <!-- data-quote-source: provenance label picked up when the user
+               selects text here and quotes it into the prompt. -->
+          <pre class="user-content" data-quote-source="your earlier message">{message.content}</pre>
         {/if}
       </div>
       <div class="message-actions">
@@ -213,7 +215,10 @@
         {/if}
       </summary>
       {#if !isPlanApprovalTool && message.input && Object.keys(message.input).length > 0}
-        <pre class="tool-params">{formatInput(message.input, message.tool)}</pre>
+        <pre
+          class="tool-params"
+          data-quote-source={message.tool ? `${message.tool} input` : "tool input"}
+        >{formatInput(message.input, message.tool)}</pre>
       {/if}
     </details>
   {:else if message.type === "tool_result"}
@@ -245,7 +250,10 @@
         </span>
       </summary>
       {#if !isPlanApprovalTool && message.output}
-        <pre class="tool-output-content">{message.output}</pre>
+        <pre
+          class="tool-output-content"
+          data-quote-source={message.tool ? `${message.tool} output` : "tool output"}
+        >{message.output}</pre>
       {/if}
     </details>
     {#if message.images && message.images.length > 0}

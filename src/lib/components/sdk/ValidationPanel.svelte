@@ -571,7 +571,9 @@
             {#if gateFindings.length > 0}
               <div class="v-findings">
                 {#each gateFindings as finding (finding.id)}
-                  <div class="v-finding">
+                  <!-- data-quote-source: label used when finding text is
+                       selected and quoted into the session prompt. -->
+                  <div class="v-finding" data-quote-source="validation finding">
                     <div class="v-finding-top">
                       <label class="v-finding-check">
                         <input

@@ -116,7 +116,13 @@
           {:else if file.lines.length === 0}
             <div class="diff-note">No textual changes (mode or metadata only)</div>
           {:else}
-            <div class="diff-lines">
+            <!-- data-quote-source: label used when a hunk is selected and
+                 quoted into the session prompt. -->
+            <div
+              class="diff-lines"
+              data-quote-source="PR diff · {file.path}"
+              data-quote-code
+            >
               {#each file.lines.slice(0, MAX_LINES_PER_FILE) as line, i (i)}
                 <div class="diff-line kind-{line.kind}">
                   <span class="diff-ln">{line.oldNo ?? ''}</span>

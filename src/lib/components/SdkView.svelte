@@ -39,6 +39,12 @@
   import { type QueueWindow } from "$lib/stores/queueDetection";
   import { schedules, type RecurrenceRule } from "$lib/stores/schedules";
   import { type SendTiming } from "$lib/utils/sendTiming";
+  import {
+    selectionQuote,
+    type QuoteSelection,
+  } from "$lib/actions/selectionQuote";
+  import SelectionReplyPopover from "./sdk/SelectionReplyPopover.svelte";
+  import { formatQuote } from "$lib/utils/quote";
   import { formatScheduleTarget } from "$lib/utils/duration";
   import SdkToolGrid from "./sdk/SdkToolGrid.svelte";
   import LaunchBar from "./sdk/LaunchBar.svelte";
@@ -311,6 +317,7 @@
         clearInput: () => void;
         getCurrentDraft: () => { prompt: string; images: SdkImageContent[] };
         appendToPrompt: (text: string) => void;
+        insertQuote: (line: string) => void;
       }
     | undefined;
 
@@ -877,8 +884,14 @@
       return;
     }
     const current = sdkSessions.getSession(targetSessionId);
-    const existing = (current?.draftPrompt ?? "").trim();
-    const combined = existing ? `${existing} ${text.trim()}` : text.trim();
+    const existing = current?.draftPrompt ?? "";
+    // Mirrors SdkPromptInput.appendToPrompt: a draft ending on a fresh row (e.g.
+    // after a quoted selection) keeps the transcript on that row.
+    const combined = !existing.trim()
+      ? text.trim()
+      : /\n[ \t]*$/.test(existing)
+        ? `${existing.replace(/[ \t]+$/, "")}${text.trim()}`
+        : `${existing.trim()} ${text.trim()}`;
     sdkSessions.updateDraft(targetSessionId, combined, current?.draftImages);
   }
 
@@ -892,6 +905,84 @@
       prompt: draft.text ? `${draft.text}\n\n${action}` : action,
       images: draft.images,
     };
+  }
+
+  // --- Reply to a selection ---------------------------------------------------
+  // Selecting text anywhere in this view (transcript, PR diff, validation
+  // findings — the action is attached to the whole root) offers a one-row bar
+  // that quotes it into the prompt draft. The quote is plain draft text, so it
+  // rides every existing send path, persists with the draft, and can simply be
+  // edited or deleted by the user.
+  let quoteSelection = $state<QuoteSelection | null>(null);
+  let quoteCopied = $state(false);
+  /** Send timing for a record-and-send started from the reply bar's mic. */
+  let pendingReplyTiming: SendTiming | null = null;
+
+  let voiceDisabled = $derived($settings.system.voice_mode_disabled);
+
+  function clearQuoteSelection() {
+    // Collapsing the DOM selection makes the action report null on its own; the
+    // local reset keeps the bar from lingering for a frame.
+    window.getSelection()?.removeAllRanges();
+    quoteSelection = null;
+    quoteCopied = false;
+  }
+
+  /** Insert the quote as ONE new row in the draft, caret on the row below. */
+  function insertQuoteIntoDraft(sel: QuoteSelection) {
+    const line = formatQuote(sel.text, {
+      isCode: sel.isCode,
+      sourceLabel: sel.sourceLabel,
+    });
+    if (!line) return;
+    if (promptInputRef) {
+      promptInputRef.insertQuote(line);
+      return;
+    }
+    // No mounted input (pending/setup states) — write straight to the store so
+    // the quote isn't lost.
+    const current = sdkSessions.getSession(sessionId);
+    const existing = (current?.draftPrompt ?? "").replace(/\s+$/, "");
+    sdkSessions.updateDraft(
+      sessionId,
+      existing ? `${existing}\n${line}\n` : `${line}\n`,
+      current?.draftImages,
+    );
+  }
+
+  function handleQuoteReply() {
+    const sel = quoteSelection;
+    if (!sel) return;
+    insertQuoteIntoDraft(sel);
+    clearQuoteSelection();
+  }
+
+  /**
+   * Quote, then start a voice follow-up. `null` timing dictates into the draft
+   * (the quote leads, the transcript follows); a timing records-and-sends with
+   * the app-wide modifier semantics, combining the quote via `takeDraftForSend`.
+   */
+  async function handleQuoteReplyVoice(timing: SendTiming | null) {
+    const sel = quoteSelection;
+    if (!sel) return;
+    if ($isRecording || $isTranscribing || isInlineTranscribing) return;
+    insertQuoteIntoDraft(sel);
+    clearQuoteSelection();
+    if (timing === null) {
+      await handleStartInlineRecording();
+    } else {
+      await handleStartRecording(timing);
+    }
+  }
+
+  async function handleQuoteCopy() {
+    const sel = quoteSelection;
+    if (!sel) return;
+    await navigator.clipboard.writeText(sel.text);
+    quoteCopied = true;
+    setTimeout(() => {
+      quoteCopied = false;
+    }, 1500);
   }
 
   // Quick actions: plain click appends to the draft; modifier clicks send the
@@ -1081,8 +1172,14 @@
   // Tracks post-transcription processing (LLM cleanup, sending prompt)
   let isProcessingRecording = $state(false);
 
-  async function handleStartRecording() {
+  /**
+   * `replyTiming` is set only when the reply bar's mic started this recording
+   * with a send modifier held; it overrides the timing the stop path is called
+   * with (the prompt input's mic button always stops with "now").
+   */
+  async function handleStartRecording(replyTiming: SendTiming | null = null) {
     if ($isRecording) return;
+    pendingReplyTiming = replyTiming;
     isRecordingForCurrentSession = true;
 
     // No recording overlay for in-session recording — the session view itself
@@ -1093,6 +1190,11 @@
   /** `timing` comes from the hold-Space modifier combo (mic button = "now"). */
   async function handleStopRecording(timing: SendTiming = "now") {
     if (!$isRecording) return;
+
+    // A recording started from the reply bar carries its own send timing; read
+    // and reset it here so every exit path below leaves it clean.
+    const effectiveTiming = pendingReplyTiming ?? timing;
+    pendingReplyTiming = null;
 
     // Snapshot the target session (and its repo cwd) BEFORE any await. The user can
     // switch sessions while transcription is in flight; without this snapshot the
@@ -1221,11 +1323,11 @@
       const combined = draft.text
         ? `${draft.text}\n\n${finalTranscript}`
         : finalTranscript;
-      if (timing === "session_idle") {
+      if (effectiveTiming === "session_idle") {
         await sdkSessions.queueTurnAfterSessions(targetSessionId, combined, draft.images, "session");
-      } else if (timing === "repo_idle") {
+      } else if (effectiveTiming === "repo_idle") {
         await sdkSessions.queueTurnAfterSessions(targetSessionId, combined, draft.images, "worktree");
-      } else if (timing === "reset_5h") {
+      } else if (effectiveTiming === "reset_5h") {
         await sdkSessions.queueTurnForWindow(targetSessionId, combined, draft.images, "5h");
       } else {
         await sdkSessions.sendPrompt(targetSessionId, combined, draft.images);
@@ -1749,15 +1851,56 @@
 
 <svelte:window onkeydown={(e) => {
   // Only the focused pane's instance reacts, so Escape doesn't stop every visible session.
-  if (e.key === 'Escape' && isQuerying && sessionId === $focusedPaneSessionId) {
+  const focused = sessionId === $focusedPaneSessionId;
+
+  // Keyboard path for the reply bar (which is otherwise mouse-only). Alt+R is
+  // free: every configurable global hotkey is Ctrl/Cmd-based. `e.code` so it
+  // survives non-US layouts.
+  if (quoteSelection && focused && e.code === 'KeyR' && e.altKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault();
-    handleStopQuery();
+    if (e.shiftKey) void handleQuoteReplyVoice(null);
+    else handleQuoteReply();
+    return;
+  }
+
+  if (e.key === 'Escape' && focused) {
+    // Escape dismisses the reply bar, but never at the cost of the stop-query
+    // shortcut: while a turn is running, stopping wins and the bar closes too.
+    if (isQuerying) {
+      e.preventDefault();
+      if (quoteSelection) clearQuoteSelection();
+      handleStopQuery();
+    } else if (quoteSelection) {
+      e.preventDefault();
+      clearQuoteSelection();
+    }
   }
 }} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="sdk-view" onclick={markAsReadOnInteraction}>
+<div
+  class="sdk-view"
+  onclick={markAsReadOnInteraction}
+  use:selectionQuote={{
+    exclude: ".input-area, .selection-reply",
+    onChange: (sel) => {
+      quoteSelection = sel;
+      if (!sel) quoteCopied = false;
+    },
+  }}
+>
+  {#if quoteSelection}
+    <SelectionReplyPopover
+      selection={quoteSelection}
+      showVoice={!voiceDisabled}
+      voiceBusy={$isRecording || $isTranscribing || isInlineTranscribing}
+      copied={quoteCopied}
+      onReply={handleQuoteReply}
+      onReplyVoice={handleQuoteReplyVoice}
+      onCopy={handleQuoteCopy}
+    />
+  {/if}
   {#if session?.contextOverflow}
     <ContextOverflowBanner session={session} />
   {/if}

@@ -42,6 +42,14 @@
     textareaEl?.focus();
   }
 
+  /** Focus with the caret parked at the very end (after a programmatic insert). */
+  export function focusEnd() {
+    if (!textareaEl) return;
+    textareaEl.focus();
+    const end = textareaEl.value.length;
+    textareaEl.setSelectionRange(end, end);
+  }
+
   function autoResize() {
     if (!textareaEl) return;
     textareaEl.style.height = "auto";
