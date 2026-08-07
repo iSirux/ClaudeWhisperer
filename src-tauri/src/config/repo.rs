@@ -25,6 +25,11 @@ pub struct RepoConfig {
     /// Icon key from the curated icon set (e.g., "globe", "terminal", "database")
     #[serde(default)]
     pub icon: Option<String>,
+    /// Optional real logo/favicon for this repo, stored as a small square PNG
+    /// data URL (`data:image/png;base64,...`). Rendered instead of the curated
+    /// `icon` when present; `icon` stays as the fallback.
+    #[serde(default)]
+    pub icon_image: Option<String>,
     /// Primary/brand color as hex string (e.g., "#6366f1")
     #[serde(default)]
     pub color: Option<String>,

@@ -27,6 +27,9 @@ export interface RepoConfig {
   vocabulary?: string[];
   /** Icon key from the curated icon set (e.g., "globe", "terminal", "database") */
   icon?: string;
+  /** Optional real logo/favicon as a small square PNG data URL. Rendered instead
+   * of `icon` when present; `icon` remains the fallback. */
+  icon_image?: string;
   /** Primary/brand color as hex string (e.g., "#6366f1") */
   color?: string;
   /** List of MCP server IDs to use for this repository (overrides global servers) */

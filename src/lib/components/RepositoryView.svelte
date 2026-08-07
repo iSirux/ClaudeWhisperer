@@ -682,11 +682,30 @@
       <div class="settings-grid">
         <div class="field">
           <label for="repo-icon">Icon</label>
-          <select id="repo-icon" value={selectedRepo.icon || 'code'} onchange={(event) => updateRepo({ icon: (event.currentTarget as HTMLSelectElement).value })}>
-            {#each REPO_ICON_NAMES as iconName}
-              <option value={iconName}>{iconName}</option>
-            {/each}
-          </select>
+          <div class="inline-field">
+            {#if selectedRepo.icon_image}
+              <img
+                class="icon-image-preview"
+                src={selectedRepo.icon_image}
+                alt=""
+                style="background-color: {selectedRepo.color || getDefaultRepoColor(selectedRepo.path)};"
+              />
+            {/if}
+            <select id="repo-icon" value={selectedRepo.icon || 'code'} onchange={(event) => updateRepo({ icon: (event.currentTarget as HTMLSelectElement).value })}>
+              {#each REPO_ICON_NAMES as iconName}
+                <option value={iconName}>{iconName}</option>
+              {/each}
+            </select>
+            {#if selectedRepo.icon_image}
+              <button
+                class="btn btn-secondary"
+                title="Stop using the project's own logo and fall back to the icon from the set"
+                onclick={() => updateRepo({ icon_image: undefined })}
+              >
+                Drop logo
+              </button>
+            {/if}
+          </div>
         </div>
 
         <div class="field">
@@ -1368,6 +1387,14 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
+  }
+
+  .icon-image-preview {
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+    border-radius: 0.5rem;
+    object-fit: contain;
   }
 
   .github-row {

@@ -500,6 +500,7 @@ pub fn run() {
             debug_recordings_cmds::delete_debug_audio,
             screenshot_cmds::capture_screenshot,
             image_cmds::fetch_remote_image,
+            image_cmds::read_repo_image,
             // --- Archive ---
             archive_cmds::get_archive_entries,
             archive_cmds::get_archive_entry_data,

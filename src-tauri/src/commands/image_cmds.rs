@@ -68,6 +68,75 @@ pub async fn fetch_remote_image(url: String) -> Result<FetchedImage, String> {
     Ok(FetchedImage { base64, media_type })
 }
 
+/// Safety cap on a repo icon file read off disk (favicons are tiny; a huge file
+/// is a sign we resolved the wrong thing).
+const MAX_REPO_ICON_BYTES: usize = 4 * 1024 * 1024;
+
+/// Read an image file from inside a repository and return it as base64.
+///
+/// Used by the repo Explore flow to pick up a project's own favicon/logo as its
+/// repo icon. `relative_path` is resolved against `repo_path` and the result
+/// must stay inside the repo — an absolute or `..`-escaping path is rejected,
+/// so a hallucinated path from the model can't read arbitrary files.
+#[tauri::command]
+pub async fn read_repo_image(
+    repo_path: String,
+    relative_path: String,
+) -> Result<FetchedImage, String> {
+    let root = std::fs::canonicalize(&repo_path)
+        .map_err(|e| format!("Repository path is not readable: {}", e))?;
+
+    let candidate = std::path::Path::new(&relative_path);
+    if candidate.is_absolute() {
+        return Err("Icon path must be relative to the repository".to_string());
+    }
+    let resolved = std::fs::canonicalize(root.join(candidate))
+        .map_err(|e| format!("Icon file not found: {}", e))?;
+    if !resolved.starts_with(&root) {
+        return Err("Icon path escapes the repository".to_string());
+    }
+
+    let metadata =
+        std::fs::metadata(&resolved).map_err(|e| format!("Failed to stat icon file: {}", e))?;
+    if !metadata.is_file() {
+        return Err("Icon path is not a file".to_string());
+    }
+    if metadata.len() as usize > MAX_REPO_ICON_BYTES {
+        return Err(format!("Icon file too large: {} bytes", metadata.len()));
+    }
+
+    let bytes = std::fs::read(&resolved).map_err(|e| format!("Failed to read icon file: {}", e))?;
+    if bytes.is_empty() {
+        return Err("Icon file is empty".to_string());
+    }
+
+    let extension = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    let media_type = sniff_image_type(&bytes)
+        .map(|s| s.to_string())
+        .or_else(|| icon_type_from_extension(extension.as_deref()).map(|s| s.to_string()))
+        .ok_or_else(|| "File is not a supported image".to_string())?;
+
+    let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(FetchedImage { base64, media_type })
+}
+
+/// Icon-only formats that magic-byte sniffing doesn't cover (SVG is text, ICO
+/// isn't a Claude-supported type so it's absent from `sniff_image_type`).
+fn icon_type_from_extension(extension: Option<&str>) -> Option<&'static str> {
+    match extension? {
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
 fn is_supported_image(media_type: &str) -> bool {
     matches!(
         media_type,

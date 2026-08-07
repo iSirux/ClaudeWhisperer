@@ -204,6 +204,7 @@ pub fn add_repo(config: State<ConfigState>, path: String, name: String) -> Resul
         keywords: None,
         vocabulary: None,
         icon: None,
+        icon_image: None,
         color: None,
         mcp_servers: None,
         tags: Vec::new(),

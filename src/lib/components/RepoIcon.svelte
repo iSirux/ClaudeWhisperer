@@ -26,21 +26,29 @@
   const fgColor = $derived(getContrastColor(bgColor));
   const iconPaths = $derived(getRepoIconPaths(repo?.icon));
   const s = $derived(sizeMap[size]);
+
+  // A repo's own logo/favicon (found by Explore) wins over the curated icon.
+  // Rendered on the repo color so transparent marks still read at small sizes.
+  const iconImage = $derived(repo?.icon_image || null);
 </script>
 
 <div
-  class="{s.container} flex items-center justify-center flex-shrink-0"
+  class="{s.container} flex items-center justify-center flex-shrink-0 overflow-hidden"
   style="background-color: {bgColor};"
 >
-  <svg
-    class={s.icon}
-    fill="none"
-    stroke={fgColor}
-    viewBox="0 0 24 24"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  >
-    <path d={iconPaths} />
-  </svg>
+  {#if iconImage}
+    <img class="w-full h-full object-contain" src={iconImage} alt="" draggable="false" />
+  {:else}
+    <svg
+      class={s.icon}
+      fill="none"
+      stroke={fgColor}
+      viewBox="0 0 24 24"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d={iconPaths} />
+    </svg>
+  {/if}
 </div>

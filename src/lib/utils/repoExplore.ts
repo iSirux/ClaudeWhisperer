@@ -5,6 +5,7 @@ import { repos, type RepoConfig } from '$lib/stores/repos';
 import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
 import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
 import { REPO_ICON_NAMES } from '$lib/utils/repoIcons';
+import { loadRepoIconImage } from '$lib/utils/repoIconImage';
 
 /**
  * "Explore with Claude/Codex" as a real SDK session.
@@ -36,6 +37,8 @@ interface RepoExploreResult {
   keywords: string[];
   vocabulary: string[];
   icon?: string | null;
+  /** Repo-relative path to the project's own favicon/logo, if it has one. */
+  iconImagePath?: string | null;
   color?: string | null;
   commands: RepoExploreCommand[];
   profiles: RepoExploreProfile[];
@@ -67,6 +70,7 @@ Path: ${repoPath}
      - Abbreviations and acronyms used (e.g., "SDK", "LLM", "MCP")
      - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
    - **icon**: Choose the best icon from this set: ${REPO_ICON_NAMES.join(', ')}
+   - **icon_image**: Repo-relative path to the project's OWN square logo/favicon image file, if it has one — this is used as the repo's avatar instead of the generic icon above. Look in the usual places (\`favicon.ico\`/\`favicon.png\`, \`static/\`, \`public/\`, \`assets/\`, \`src/assets/\`, \`app/icon.png\`, \`src-tauri/icons/\`, \`android/app/src/main/res/mipmap-*/\`, \`docs/\`, or an image referenced at the top of README.md). Rules: it must be a local file in this repo (not a URL), a real raster/vector image (\`.png\`, \`.svg\`, \`.ico\`, \`.jpg\`, \`.webp\`), roughly square, and actually the project's own brand mark — NOT a screenshot, a photo, a wide wordmark/banner, a CI/shields.io badge, a dependency's logo, or a stock framework logo (e.g. the default Vite/React/SvelteKit favicon that ships with a starter template). Prefer the largest clean version (e.g. a 512px PNG over a 16px ICO), and prefer \`.png\`/\`.svg\` over \`.ico\`. Verify the file exists before reporting it. If there is no such file, set it to null — that is a perfectly normal answer.
    - **color**: If you find a primary brand color (in README badges, CSS files, config files), provide it as a hex string like "#6366f1". Otherwise set to null.
    - **commands**: The runnable services/scripts a developer starts while working on this project (dev servers, watchers, databases, workers — not one-shot builds or CI-only tasks). Each entry has:
      - \`name\`: Short display name (e.g., "Frontend Dev", "API Server", "Database")
@@ -82,7 +86,7 @@ If the repo has nothing runnable, use empty arrays for commands and profiles.
 
 **IMPORTANT**: Your final output MUST contain a JSON block wrapped in \`\`\`json ... \`\`\` fences with EXACTLY these fields:
 \`\`\`json
-{"description": "...", "keywords": ["..."], "vocabulary": ["..."], "icon": "...", "color": "#..." or null, "commands": [{"name": "...", "command": "...", "working_dir": "..."}], "profiles": [{"name": "...", "command_names": ["..."]}]}
+{"description": "...", "keywords": ["..."], "vocabulary": ["..."], "icon": "...", "icon_image": "static/favicon.png" or null, "color": "#..." or null, "commands": [{"name": "...", "command": "...", "working_dir": "..."}], "profiles": [{"name": "...", "command_names": ["..."]}]}
 \`\`\``;
 }
 
@@ -100,7 +104,7 @@ export function parseRepoExploreResult(text: string): RepoExploreResult | null {
   if (!jsonStr) return null;
 
   try {
-    const parsed = JSON.parse(jsonStr) as Partial<RepoExploreResult>;
+    const parsed = JSON.parse(jsonStr) as Partial<RepoExploreResult> & { icon_image?: unknown };
     if (
       typeof parsed.description !== 'string' ||
       !Array.isArray(parsed.keywords) ||
@@ -113,6 +117,7 @@ export function parseRepoExploreResult(text: string): RepoExploreResult | null {
       keywords: parsed.keywords.filter((k): k is string => typeof k === 'string'),
       vocabulary: parsed.vocabulary.filter((v): v is string => typeof v === 'string'),
       icon: typeof parsed.icon === 'string' ? parsed.icon : null,
+      iconImagePath: typeof parsed.icon_image === 'string' ? parsed.icon_image : null,
       color: typeof parsed.color === 'string' ? parsed.color : null,
       // Launch fields are best-effort: a result that nails the description but
       // skips the commands is still worth applying.
@@ -178,18 +183,25 @@ function mergeLaunchSetup(
 }
 
 /** Apply a parsed explore result to the repo, preserving icon/color when absent or invalid. */
-function applyResultToRepo(repoId: string, result: RepoExploreResult): void {
+async function applyResultToRepo(repoId: string, result: RepoExploreResult): Promise<void> {
   const list = get(repos).list;
   const index = list.findIndex((repo) => repo.id === repoId);
   if (index < 0) return;
   const repo = list[index];
 
   const icon = result.icon && REPO_ICON_NAMES.includes(result.icon) ? result.icon : repo.icon;
+  // The real logo is a bonus: a missing/unusable file just leaves the curated
+  // icon in place, and a previously found one is kept rather than cleared.
+  const iconImage = result.iconImagePath
+    ? await loadRepoIconImage(repo.path, result.iconImagePath)
+    : null;
+
   void repos.updateRepo(index, {
     description: result.description,
     keywords: result.keywords,
     vocabulary: result.vocabulary,
     icon,
+    icon_image: iconImage || repo.icon_image,
     color: result.color || repo.color,
     ...(result.commands.length > 0 ? mergeLaunchSetup(repo, result) : {}),
   });
@@ -245,8 +257,15 @@ export async function startRepoExploreSession(
     cleanup();
     const result = parseRepoExploreResult(collectFinalAnswerText(sessionId));
     if (result) {
-      applyResultToRepo(repoId, result);
-      resolveSettled(true);
+      // Applying is async (the icon image is read off disk); settle only once
+      // the repo has actually been updated.
+      void applyResultToRepo(repoId, result).then(
+        () => resolveSettled(true),
+        (err) => {
+          console.warn('[repoExplore] Failed to apply explore result', err);
+          resolveSettled(false);
+        }
+      );
     } else {
       console.warn('[repoExplore] Explore session finished without a parseable JSON metadata block');
       resolveSettled(false);
