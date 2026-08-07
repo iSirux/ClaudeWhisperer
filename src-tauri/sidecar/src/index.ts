@@ -3910,11 +3910,17 @@ async function runValidationCodexThread(msg: ValidationAgentMessage): Promise<vo
       model: msg.model,
       // Evidence/lint may need build caches or formatter output just as their
       // Claude rail may run unrestricted shell commands. Review/docs/verify
-      // remain read-only; simplify is intentionally allowed to edit.
-      sandboxMode: role.readOnly ? "read-only" : "workspace-write",
-      // workspace-write blocks network by default, which would fail the
-      // simplify agent's `git push` when it is told to commit its own fixes.
-      ...(msg.role === "simplify" ? { networkAccessEnabled: true } : {}),
+      // remain read-only. Simplify edits AND commits+pushes its own work, so it
+      // gets the same treatment as an interactive Auto-approve Codex session
+      // (see CodexPermissionMode in config/provider.rs): workspace-write leaves
+      // `.git` unwritable (`git add` dies on "Unable to create .git/index.lock")
+      // and blocks git's schannel TLS, and with approvalPolicy "never" there is
+      // no approval path out of either.
+      sandboxMode: role.readOnly
+        ? "read-only"
+        : msg.role === "simplify"
+          ? "danger-full-access"
+          : "workspace-write",
       approvalPolicy: "never",
       ...(effort
         ? { modelReasoningEffort: effort as ThreadOptions["modelReasoningEffort"] }
