@@ -459,8 +459,6 @@ pub fn run() {
             sdk_cmds::answer_codex_approval,
             sdk_cmds::generate_repo_description_with_claude,
             sdk_cmds::generate_repo_description_with_codex,
-            sdk_cmds::generate_launch_profile_with_claude,
-            sdk_cmds::generate_launch_profile_with_codex,
             sdk_cmds::check_openai_codex_auth,
             sdk_cmds::run_codex_login,
             sdk_cmds::save_openai_api_key,
@@ -547,7 +545,6 @@ pub fn run() {
             realtime_cmds::send_realtime_audio,
             realtime_cmds::stop_realtime_session,
             // --- Launch commands/profiles ---
-            launch_cmds::scan_repo_launch_commands,
             launch_cmds::launch_profile,
             launch_cmds::launch_commands,
             launch_cmds::stop_launch_profile,

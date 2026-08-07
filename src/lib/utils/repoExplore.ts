@@ -2,6 +2,7 @@ import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
 import { activeSdkSessionId, sdkSessions } from '$lib/stores/sdkSessions';
 import { repos, type RepoConfig } from '$lib/stores/repos';
+import type { LaunchCommand, LaunchProfile } from '$lib/types/launch';
 import { DEFAULT_OPENAI_MODEL_ID, type SdkProvider } from '$lib/utils/models';
 import { REPO_ICON_NAMES } from '$lib/utils/repoIcons';
 
@@ -10,10 +11,25 @@ import { REPO_ICON_NAMES } from '$lib/utils/repoIcons';
  *
  * Instead of the old headless sidecar generation, this creates a visible session
  * in the repo (it shows up in the session list and streams like any other),
- * prompts the agent to explore the codebase and emit a fenced JSON metadata
- * block, then parses that block when the turn completes and applies it to the
- * repo config (description, keywords, vocabulary, icon, color).
+ * prompts the agent to explore the codebase and emit a fenced JSON block, then
+ * parses that block when the turn completes and applies it to the repo config.
+ * One pass covers both halves of the repo's metadata: the identity fields
+ * (description, keywords, vocabulary, icon, color) and the launch setup
+ * (runnable commands + the profiles that group them) — the agent is already
+ * reading package.json/Cargo.toml/compose files for the description, so asking
+ * for the commands in the same turn is nearly free.
  */
+
+interface RepoExploreCommand {
+  name: string;
+  command: string;
+  working_dir?: string;
+}
+
+interface RepoExploreProfile {
+  name: string;
+  command_names: string[];
+}
 
 interface RepoExploreResult {
   description: string;
@@ -21,6 +37,8 @@ interface RepoExploreResult {
   vocabulary: string[];
   icon?: string | null;
   color?: string | null;
+  commands: RepoExploreCommand[];
+  profiles: RepoExploreProfile[];
 }
 
 const EXPLORE_MODEL_CLAUDE = 'claude-haiku-4-5-20251001';
@@ -33,7 +51,7 @@ Path: ${repoPath}
 
 ## Your Task
 
-1. **Explore the codebase** - Read key files like CLAUDE.md, README.md, package.json, Cargo.toml, etc. to understand the project. Do not modify any files.
+1. **Explore the codebase** - Read key files like CLAUDE.md, README.md, package.json, Cargo.toml, docker-compose.yml, Makefile, pyproject.toml, Procfile, turbo.json, etc. to understand the project and how it is run. Check subdirectories too — monorepos often have separate frontend/, backend/, api/, packages/* folders with their own scripts. Do not modify any files.
 
 2. **End your response with a JSON block** containing:
    - **description**: A concise 1-2 sentence description of what the project does and its main technologies
@@ -50,13 +68,21 @@ Path: ${repoPath}
      - Library/framework specific terms (e.g., "Tauri", "Svelte", "xterm")
    - **icon**: Choose the best icon from this set: ${REPO_ICON_NAMES.join(', ')}
    - **color**: If you find a primary brand color (in README badges, CSS files, config files), provide it as a hex string like "#6366f1". Otherwise set to null.
+   - **commands**: The runnable services/scripts a developer starts while working on this project (dev servers, watchers, databases, workers — not one-shot builds or CI-only tasks). Each entry has:
+     - \`name\`: Short display name (e.g., "Frontend Dev", "API Server", "Database")
+     - \`command\`: Shell command to run, using the project's package manager (e.g., "npm run dev", "docker compose up db")
+     - \`working_dir\`: Relative path from the repo root for subdirectory commands (e.g., "frontend", "packages/api"). Omit for repo root.
+   - **profiles**: Logical groups of those commands a user would launch together, each with:
+     - \`name\`: Profile name (e.g., "Full Stack", "Frontend Only", "API + DB")
+     - \`command_names\`: Names of commands to include, matching the \`name\` field above exactly
 
 The keywords help match user prompts like "I want to add authentication" to the right repo.
 The vocabulary helps speech-to-text correctly transcribe project-specific terms.
+If the repo has nothing runnable, use empty arrays for commands and profiles.
 
 **IMPORTANT**: Your final output MUST contain a JSON block wrapped in \`\`\`json ... \`\`\` fences with EXACTLY these fields:
 \`\`\`json
-{"description": "...", "keywords": ["..."], "vocabulary": ["..."], "icon": "...", "color": "#..." or null}
+{"description": "...", "keywords": ["..."], "vocabulary": ["..."], "icon": "...", "color": "#..." or null, "commands": [{"name": "...", "command": "...", "working_dir": "..."}], "profiles": [{"name": "...", "command_names": ["..."]}]}
 \`\`\``;
 }
 
@@ -88,10 +114,67 @@ export function parseRepoExploreResult(text: string): RepoExploreResult | null {
       vocabulary: parsed.vocabulary.filter((v): v is string => typeof v === 'string'),
       icon: typeof parsed.icon === 'string' ? parsed.icon : null,
       color: typeof parsed.color === 'string' ? parsed.color : null,
+      // Launch fields are best-effort: a result that nails the description but
+      // skips the commands is still worth applying.
+      commands: Array.isArray(parsed.commands)
+        ? parsed.commands.filter(
+            (c): c is RepoExploreCommand =>
+              !!c && typeof c.name === 'string' && typeof c.command === 'string'
+          )
+        : [],
+      profiles: Array.isArray(parsed.profiles)
+        ? parsed.profiles.filter(
+            (p): p is RepoExploreProfile =>
+              !!p && typeof p.name === 'string' && Array.isArray(p.command_names)
+          )
+        : [],
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Merge generated launch commands/profiles into the repo's existing ones.
+ *
+ * Hand-written commands are kept (only auto-detected ones are replaced), and a
+ * generated profile may reference a manual command by name. Profiles that still
+ * resolve entirely against the surviving command set are kept too.
+ */
+function mergeLaunchSetup(
+  repo: RepoConfig,
+  result: RepoExploreResult
+): Pick<RepoConfig, 'launch_commands' | 'launch_profiles'> {
+  const manual = (repo.launch_commands ?? []).filter((command) => !command.auto_detected);
+  const generated: LaunchCommand[] = result.commands.map((command) => ({
+    id: crypto.randomUUID(),
+    name: command.name,
+    command: command.command,
+    working_dir: command.working_dir || undefined,
+    auto_detected: true,
+  }));
+  const commands = [...manual, ...generated];
+
+  const idsByName = new Map(commands.map((command) => [command.name, command.id]));
+  const validIds = new Set(commands.map((command) => command.id));
+  const keptProfiles = (repo.launch_profiles ?? []).filter(
+    (profile) =>
+      profile.command_ids.length > 0 && profile.command_ids.every((id) => validIds.has(id))
+  );
+  const generatedProfiles: LaunchProfile[] = result.profiles
+    .map((profile) => ({
+      id: crypto.randomUUID(),
+      name: profile.name,
+      command_ids: profile.command_names
+        .map((name) => idsByName.get(name))
+        .filter((id): id is string => !!id),
+    }))
+    .filter((profile) => profile.command_ids.length > 0);
+
+  return {
+    launch_commands: commands,
+    launch_profiles: [...keptProfiles, ...generatedProfiles],
+  };
 }
 
 /** Apply a parsed explore result to the repo, preserving icon/color when absent or invalid. */
@@ -108,6 +191,7 @@ function applyResultToRepo(repoId: string, result: RepoExploreResult): void {
     vocabulary: result.vocabulary,
     icon,
     color: result.color || repo.color,
+    ...(result.commands.length > 0 ? mergeLaunchSetup(repo, result) : {}),
   });
 }
 

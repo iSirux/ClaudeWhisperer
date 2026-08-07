@@ -26,9 +26,6 @@
 
   // Track which repos have their launch profiles section expanded
   let launchExpandedIndices = $state(new Set<number>());
-  let scanningIndices = $state(new Set<number>());
-  let generatingLaunchClaudeIndices = $state(new Set<number>());
-  let generatingLaunchCodexIndices = $state(new Set<number>());
   // New command form state per repo
   let newCmdName = $state<Record<number, string>>({});
   let newCmdCommand = $state<Record<number, string>>({});
@@ -178,137 +175,6 @@
   }
 
   // ---- Launch Profile handlers ----
-
-  async function scanRepoCommands(index: number) {
-    const repo = $repos.list[index];
-    if (!repo || scanningIndices.has(index)) return;
-    scanningIndices = new Set([...scanningIndices, index]);
-    try {
-      const detected = await invoke<LaunchCommand[]>("scan_repo_launch_commands", { repoPath: repo.path });
-      if (detected.length > 0) {
-        const existing = repo.launch_commands ?? [];
-        // Merge: keep existing non-auto-detected, add new auto-detected
-        const manualCmds = existing.filter(c => !c.auto_detected);
-        const merged = [...manualCmds, ...detected];
-        await repos.updateRepo(index, { launch_commands: merged });
-      }
-    } catch (error) {
-      console.error("[scanRepoCommands] Failed:", error);
-      alert(`Scan failed: ${error}`);
-    } finally {
-      scanningIndices = new Set([...scanningIndices].filter(i => i !== index));
-    }
-  }
-
-  async function generateLaunchWithClaude(index: number) {
-    const repo = $repos.list[index];
-    if (!repo || generatingLaunchClaudeIndices.has(index)) return;
-    generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices, index]);
-
-    const requestId = `claude-launch-${index}-${Date.now()}`;
-
-    const resultListener = await listen<{ commands: Array<{ name: string; command: string; working_dir?: string }>; profiles: Array<{ name: string; command_names: string[] }> }>(
-      `launch-profile-result-${requestId}`,
-      (event) => {
-        applyLaunchProfileResult(index, event.payload);
-        generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices].filter(i => i !== index));
-        resultListener();
-        errorListener();
-      }
-    );
-
-    const errorListener = await listen<string>(
-      `launch-profile-error-${requestId}`,
-      (event) => {
-        console.error("Claude launch profile failed:", event.payload);
-        alert(`Failed to generate launch profiles with Claude: ${event.payload}`);
-        generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices].filter(i => i !== index));
-        resultListener();
-        errorListener();
-      }
-    );
-
-    try {
-      await invoke("generate_launch_profile_with_claude", {
-        id: requestId,
-        repoPath: repo.path,
-        repoName: repo.name,
-      });
-    } catch (error) {
-      console.error("Failed to invoke Claude launch profile:", error);
-      alert(`Failed to start Claude generation: ${error}`);
-      generatingLaunchClaudeIndices = new Set([...generatingLaunchClaudeIndices].filter(i => i !== index));
-      resultListener();
-      errorListener();
-    }
-  }
-
-  async function generateLaunchWithCodex(index: number) {
-    const repo = $repos.list[index];
-    if (!repo || generatingLaunchCodexIndices.has(index)) return;
-    generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices, index]);
-
-    const requestId = `codex-launch-${index}-${Date.now()}`;
-
-    const resultListener = await listen<{ commands: Array<{ name: string; command: string; working_dir?: string }>; profiles: Array<{ name: string; command_names: string[] }> }>(
-      `launch-profile-result-${requestId}`,
-      (event) => {
-        applyLaunchProfileResult(index, event.payload);
-        generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices].filter(i => i !== index));
-        resultListener();
-        errorListener();
-      }
-    );
-
-    const errorListener = await listen<string>(
-      `launch-profile-error-${requestId}`,
-      (event) => {
-        console.error("Codex launch profile failed:", event.payload);
-        alert(`Failed to generate launch profiles with Codex: ${event.payload}`);
-        generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices].filter(i => i !== index));
-        resultListener();
-        errorListener();
-      }
-    );
-
-    try {
-      await invoke("generate_launch_profile_with_codex", {
-        id: requestId,
-        repoPath: repo.path,
-        repoName: repo.name,
-      });
-    } catch (error) {
-      console.error("Failed to invoke Codex launch profile:", error);
-      alert(`Failed to start Codex generation: ${error}`);
-      generatingLaunchCodexIndices = new Set([...generatingLaunchCodexIndices].filter(i => i !== index));
-      resultListener();
-      errorListener();
-    }
-  }
-
-  function applyLaunchProfileResult(index: number, payload: { commands: Array<{ name: string; command: string; working_dir?: string }>; profiles: Array<{ name: string; command_names: string[] }> }) {
-    const cmds: LaunchCommand[] = payload.commands.map(c => ({
-      id: crypto.randomUUID(),
-      name: c.name,
-      command: c.command,
-      working_dir: c.working_dir,
-      auto_detected: true,
-    }));
-
-    // Build profiles: resolve command_names to command IDs
-    const profiles: LaunchProfile[] = payload.profiles.map(p => ({
-      id: crypto.randomUUID(),
-      name: p.name,
-      command_ids: p.command_names
-        .map(name => cmds.find(c => c.name === name)?.id)
-        .filter((id): id is string => !!id),
-    }));
-
-    repos.updateRepo(index, {
-      launch_commands: cmds,
-      launch_profiles: profiles,
-    });
-  }
 
   function addLaunchCommand(index: number) {
     const name = newCmdName[index]?.trim();
@@ -724,47 +590,6 @@
 
           {#if launchExpandedIndices.has(index)}
             <div class="mt-2 space-y-3 pl-4">
-              <!-- Action buttons -->
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  class="px-2 py-0.5 bg-surface-elevated hover:bg-border rounded text-[10px] transition-colors flex items-center gap-1"
-                  onclick={() => scanRepoCommands(index)}
-                  disabled={scanningIndices.has(index)}
-                >
-                  {#if scanningIndices.has(index)}
-                    <span class="animate-spin">⏳</span> Scanning...
-                  {:else}
-                    🔍 Scan Repo
-                  {/if}
-                </button>
-                {#if claudeAvailable}
-                  <button
-                    class="px-2 py-0.5 bg-surface-elevated hover:bg-border rounded text-[10px] transition-colors flex items-center gap-1"
-                    onclick={() => generateLaunchWithClaude(index)}
-                    disabled={generatingLaunchClaudeIndices.has(index)}
-                  >
-                    {#if generatingLaunchClaudeIndices.has(index)}
-                      <span class="animate-spin">⏳</span> Claude...
-                    {:else}
-                      🤖 Claude
-                    {/if}
-                  </button>
-                {/if}
-                {#if codexAvailable}
-                  <button
-                    class="px-2 py-0.5 bg-surface-elevated hover:bg-border rounded text-[10px] transition-colors flex items-center gap-1"
-                    onclick={() => generateLaunchWithCodex(index)}
-                    disabled={generatingLaunchCodexIndices.has(index)}
-                  >
-                    {#if generatingLaunchCodexIndices.has(index)}
-                      <span class="animate-spin">⏳</span> Codex...
-                    {:else}
-                      🤖 Codex
-                    {/if}
-                  </button>
-                {/if}
-              </div>
-
               <!-- Commands list -->
               <div>
                 <div class="text-[10px] font-medium text-text-muted mb-1">Commands</div>

@@ -80,7 +80,7 @@ Core UI:
 
 - `AppHeader.svelte` - Application header with global controls
 - `RepositoryRail.svelte` - Narrow vertical icon rail listing repos with per-repo changed-file badges; drives repo/view selection
-- `RepositoryView.svelte` - Main-pane repository landing view: metadata, icon/color, launch profiles via `LaunchBar`
+- `RepositoryView.svelte` - Main-pane repository landing view: metadata, icon/color, launch profiles via `LaunchBar`. "Explore with Claude/Codex" (`utils/repoExplore.ts`) is the single auto-fill path: one visible SDK session explores the repo and returns one JSON block that populates description, keywords, vocabulary, icon, color **and** launch commands/profiles (hand-written commands are preserved; only auto-detected ones are replaced). The old headless `generate_launch_profile_with_*` sidecar rail and the native `scan_repo_launch_commands` scan were removed in favour of it
 - `SessionList.svelte` / `SessionListItem.svelte` - Unified sidebar list of SDK sessions and sequence executions with status indicators and unread markers
 - `SessionPanes.svelte` - Multi-pane split view (paneforge, up to 4 panes of `SdkView`)
 - `SdkView.svelte` - Main SDK session view (message stream, prompt input, panels)
@@ -254,7 +254,7 @@ Located in `src-tauri/sidecar/`:
 
 - `src/index.ts` - Node.js process communicating with Rust via JSON lines over stdin/stdout
 - **Two providers:** Claude (`@anthropic-ai/claude-agent-sdk`) and OpenAI Codex (app-server); `inferProvider()` picks `"claude" | "openai"` per session
-- **Codex execution:** always via `codex app-server` — a full JSON-RPC client implementation (turn tracking, item events, usage emission). The former `codex_mode: "Sdk" | "AppServer"` choice is gone; the sidecar hardcodes app-server for OpenAI sessions (the SDK-based session-query path `handleCodexQuery` and the `codex_mode` config field remain as unreachable vestiges). `@openai/codex-sdk` itself is still in active use — the generation helpers (`generate_repo_description_with_codex`, `generate_launch_profile_with_codex`) run one-off Codex threads through it
+- **Codex execution:** always via `codex app-server` — a full JSON-RPC client implementation (turn tracking, item events, usage emission). The former `codex_mode: "Sdk" | "AppServer"` choice is gone; the sidecar hardcodes app-server for OpenAI sessions (the SDK-based session-query path `handleCodexQuery` and the `codex_mode` config field remain as unreachable vestiges). `@openai/codex-sdk` itself is still in active use — the generation helper `generate_repo_description_with_codex` runs one-off Codex threads through it
 - Handles session creation, query execution, tool calls, and streaming responses
 - Supports multimodal prompts (text + images via base64 content blocks)
 - **Effort levels** via `update_effort` (`low|medium|high|xhigh|max` or off); Claude passes through natively, OpenAI clamps per model (GPT-5.6 family caps at `xhigh`, older Codex models at `high`); effort is plumbed to Codex via `effort` on `turn/start`
@@ -264,7 +264,7 @@ Located in `src-tauri/sidecar/`:
 - Progressive usage tracking during streaming (input/output/cache tokens)
 - Subagent lifecycle events via SDK hooks
 - Query interruption via `iterator.interrupt()` for proper cleanup
-- Codex-powered generation helpers (`generate_repo_description_with_codex`, `generate_launch_profile_with_codex`)
+- Codex-powered generation helper (`generate_repo_description_with_codex`)
 - Built via esbuild, bundles to single `dist/index.js`
 
 ## Effort Levels

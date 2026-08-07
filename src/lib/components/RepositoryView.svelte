@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
   import RepoIcon from '$lib/components/RepoIcon.svelte';
   import LaunchBar from '$lib/components/sdk/LaunchBar.svelte';
   import { getWorktreeLabel, type WorktreeInfo } from '$lib/components/session-setup/sessionSetupHelpers';
@@ -17,11 +16,6 @@
   interface Props {
     repoId?: string | null;
     showAddForm?: boolean;
-  }
-
-  interface LaunchGenerationResult {
-    commands: Array<{ name: string; command: string; working_dir?: string }>;
-    profiles: Array<{ name: string; command_names: string[] }>;
   }
 
   interface GhAccount {
@@ -43,9 +37,6 @@
   // Track generation per-repo-id so exploring one repo doesn't lock the others.
   let generatingClaudeRepos = $state<Set<string>>(new Set());
   let generatingCodexRepos = $state<Set<string>>(new Set());
-  let scanningLaunch = $state(false);
-  let generatingLaunchClaudeRepos = $state<Set<string>>(new Set());
-  let generatingLaunchCodexRepos = $state<Set<string>>(new Set());
   let newCmdName = $state('');
   let newCmdCommand = $state('');
   let newCmdWorkingDir = $state('');
@@ -66,8 +57,6 @@
   const selectedRepoIndex = $derived(selectedRepo ? $repos.list.findIndex((repo) => repo.id === selectedRepo.id) : -1);
   const generatingClaude = $derived(!!repoId && generatingClaudeRepos.has(repoId));
   const generatingCodex = $derived(!!repoId && generatingCodexRepos.has(repoId));
-  const generatingLaunchClaude = $derived(!!repoId && generatingLaunchClaudeRepos.has(repoId));
-  const generatingLaunchCodex = $derived(!!repoId && generatingLaunchCodexRepos.has(repoId));
   const launchCwd = $derived(
     selectedRepo
       ? worktreeMode === 'existing' && selectedWorktreePath
@@ -242,15 +231,6 @@
     else generatingCodexRepos = next;
   }
 
-  function setRepoGeneratingLaunch(provider: 'claude' | 'codex', id: string, active: boolean) {
-    const target = provider === 'claude' ? generatingLaunchClaudeRepos : generatingLaunchCodexRepos;
-    const next = new Set(target);
-    if (active) next.add(id);
-    else next.delete(id);
-    if (provider === 'claude') generatingLaunchClaudeRepos = next;
-    else generatingLaunchCodexRepos = next;
-  }
-
   function replaceRepo(mutator: (repo: RepoConfig) => RepoConfig) {
     if (!selectedRepo || selectedRepoIndex < 0) return;
     const updated = [...$repos.list];
@@ -312,6 +292,17 @@
     }
   }
 
+  // Same open-in-X actions as the session header, but for the repo root.
+  async function openRepoIn(command: 'open_in_vscode' | 'open_in_terminal' | 'open_in_explorer') {
+    const path = selectedRepo?.path;
+    if (!path) return;
+    try {
+      await invoke(command, { path });
+    } catch (error) {
+      console.error(`Failed to run ${command}:`, error);
+    }
+  }
+
   async function exploreRepo(provider: 'claude' | 'codex') {
     if (!selectedRepo?.id) return;
     const targetRepoId = selectedRepo.id;
@@ -325,71 +316,6 @@
       console.error('Failed to start explore session:', error);
     } finally {
       setRepoGenerating(provider, targetRepoId, false);
-    }
-  }
-
-  function applyLaunchProfileResult(payload: LaunchGenerationResult, targetRepoId: string) {
-    const commands: LaunchCommand[] = payload.commands.map((command) => ({
-      id: crypto.randomUUID(),
-      name: command.name,
-      command: command.command,
-      working_dir: command.working_dir,
-      auto_detected: true,
-    }));
-
-    const profiles: LaunchProfile[] = payload.profiles.map((profile) => ({
-      id: crypto.randomUUID(),
-      name: profile.name,
-      command_ids: profile.command_names
-        .map((name) => commands.find((command) => command.name === name)?.id)
-        .filter((id): id is string => !!id),
-    }));
-
-    updateRepoById(targetRepoId, { launch_commands: commands, launch_profiles: profiles });
-  }
-
-  async function generateLaunch(provider: 'claude' | 'codex') {
-    if (!selectedRepo?.id) return;
-    const targetRepoId = selectedRepo.id;
-    const requestId = `${provider}-launch-${targetRepoId}-${Date.now()}`;
-    setRepoGeneratingLaunch(provider, targetRepoId, true);
-
-    const resultListener = await listen<LaunchGenerationResult>(`launch-profile-result-${requestId}`, (event) => {
-      applyLaunchProfileResult(event.payload, targetRepoId);
-      setRepoGeneratingLaunch(provider, targetRepoId, false);
-      resultListener();
-      errorListener();
-    });
-
-    const errorListener = await listen<string>(`launch-profile-error-${requestId}`, () => {
-      setRepoGeneratingLaunch(provider, targetRepoId, false);
-      resultListener();
-      errorListener();
-    });
-
-    try {
-      await invoke(
-        provider === 'claude' ? 'generate_launch_profile_with_claude' : 'generate_launch_profile_with_codex',
-        {
-          id: requestId,
-          repoPath: selectedRepo.path,
-          repoName: selectedRepo.name,
-        }
-      );
-    } catch {
-      setRepoGeneratingLaunch(provider, targetRepoId, false);
-    }
-  }
-
-  async function scanRepoCommands() {
-    if (!selectedRepo) return;
-    scanningLaunch = true;
-    try {
-      const detected = await invoke<LaunchCommand[]>('scan_repo_launch_commands', { repoPath: selectedRepo.path });
-      const manual = (selectedRepo.launch_commands ?? []).filter((command) => !command.auto_detected);
-      updateRepo({ launch_commands: [...manual, ...detected] });
-    } finally {
-      scanningLaunch = false;
     }
   }
 
@@ -589,6 +515,25 @@
         </div>
 
         <div class="button-row">
+          <div class="open-btn-row">
+            <button class="open-btn" onclick={() => openRepoIn('open_in_vscode')} title="Open in VS Code" aria-label="Open in VS Code">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="16 18 22 12 16 6" />
+                <polyline points="8 6 2 12 8 18" />
+              </svg>
+            </button>
+            <button class="open-btn" onclick={() => openRepoIn('open_in_terminal')} title="Open in Terminal" aria-label="Open in Terminal">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+            </button>
+            <button class="open-btn" onclick={() => openRepoIn('open_in_explorer')} title="Open in Explorer" aria-label="Open in Explorer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
+          </div>
           <button class="btn btn-secondary" onclick={() => repos.setRepoActive(selectedRepoIndex, selectedRepo.active === false)}>
             {selectedRepo.active === false ? 'Mark Active' : 'Mark Inactive'}
           </button>
@@ -603,7 +548,7 @@
           class="description-input"
           rows="3"
           value={selectedRepo.description || ''}
-          placeholder="No repository summary yet. Write one here, or generate one to populate description, keywords, icon, and vocabulary."
+          placeholder="No repository summary yet. Write one here, or run Explore to populate description, keywords, icon, vocabulary, and launch profiles."
           onchange={(event) => updateRepo({ description: (event.currentTarget as HTMLTextAreaElement).value.trim() || undefined })}
         ></textarea>
       </div>
@@ -930,22 +875,7 @@
       <div class="section-header section-header-top">
         <div>
           <h3>Launch Profiles</h3>
-          <p>Manage commands and reusable launch groups for this repository.</p>
-        </div>
-        <div class="button-row">
-          <button class="btn btn-secondary" onclick={scanRepoCommands} disabled={scanningLaunch}>
-            {scanningLaunch ? 'Scanning...' : 'Scan Repo'}
-          </button>
-          {#if claudeAvailable}
-            <button class="btn btn-secondary" onclick={() => generateLaunch('claude')} disabled={generatingLaunchClaude || generatingLaunchCodex}>
-              {generatingLaunchClaude ? 'Claude...' : 'Generate with Claude'}
-            </button>
-          {/if}
-          {#if codexAvailable}
-            <button class="btn btn-secondary" onclick={() => generateLaunch('codex')} disabled={generatingLaunchClaude || generatingLaunchCodex}>
-              {generatingLaunchCodex ? 'Codex...' : 'Generate with Codex'}
-            </button>
-          {/if}
+          <p>Manage commands and reusable launch groups for this repository. Explore fills these in automatically.</p>
         </div>
       </div>
 
@@ -1705,6 +1635,40 @@
     background: transparent;
     color: var(--color-text-muted);
     transition: background 0.16s ease, color 0.16s ease;
+  }
+
+  .open-btn-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .open-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.375rem;
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+  }
+
+  .open-btn:hover {
+    color: var(--color-text-primary);
+    border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+  }
+
+  .open-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+
+  .open-btn svg {
+    width: 1rem;
+    height: 1rem;
   }
 
   .chip-remove:hover,

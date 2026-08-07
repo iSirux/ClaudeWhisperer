@@ -279,18 +279,6 @@ pub enum OutboundMessage {
         repo_path: String,
         repo_name: String,
     },
-    /// Generate launch profile (commands + profiles) using Claude SDK
-    GenerateLaunchProfile {
-        id: String,
-        repo_path: String,
-        repo_name: String,
-    },
-    /// Generate launch profile (commands + profiles) using Codex SDK
-    GenerateLaunchProfileWithCodex {
-        id: String,
-        repo_path: String,
-        repo_name: String,
-    },
     /// One-shot validation agent (simplify/review/verify/evidence/docs/lint).
     /// Runs a restricted `query()` in `cwd` with a schema-enforced submit tool
     /// (or, for simplify on a GPT/Codex model, a headless Codex thread) and
@@ -544,17 +532,6 @@ pub enum InboundMessage {
         id: String,
         error: String,
     },
-    /// Result from launch profile generation (commands + profiles)
-    LaunchProfileResult {
-        id: String,
-        commands: Vec<LaunchProfileCommandResult>,
-        profiles: Vec<LaunchProfileGroupResult>,
-    },
-    /// Error from launch profile generation
-    LaunchProfileError {
-        id: String,
-        error: String,
-    },
     /// Result of a one-shot validation agent (role-specific structured output).
     ValidationAgentResult {
         id: String,
@@ -595,22 +572,6 @@ pub enum InboundMessage {
         id: String,
         message: String,
     },
-}
-
-/// A command result from launch profile generation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaunchProfileCommandResult {
-    pub name: String,
-    pub command: String,
-    #[serde(default)]
-    pub working_dir: Option<String>,
-}
-
-/// A profile group result from launch profile generation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaunchProfileGroupResult {
-    pub name: String,
-    pub command_names: Vec<String>,
 }
 
 /// Planning question option
@@ -847,12 +808,6 @@ struct RepoDescriptionResultPayload {
 }
 
 #[derive(Serialize, Clone)]
-struct LaunchProfileResultPayload {
-    commands: Vec<LaunchProfileCommandResult>,
-    profiles: Vec<LaunchProfileGroupResult>,
-}
-
-#[derive(Serialize, Clone)]
 struct ValidationAgentResultPayload {
     structured: serde_json::Value,
     transcript: Option<String>,
@@ -905,8 +860,6 @@ impl InboundMessage {
             InboundMessage::CodexApprovalRequest { .. } => "sdk-codex-approval-request",
             InboundMessage::RepoDescriptionResult { .. } => "repo-description-result",
             InboundMessage::RepoDescriptionError { .. } => "repo-description-error",
-            InboundMessage::LaunchProfileResult { .. } => "launch-profile-result",
-            InboundMessage::LaunchProfileError { .. } => "launch-profile-error",
             InboundMessage::ValidationAgentResult { .. } => "validation-agent-result",
             InboundMessage::ValidationAgentError { .. } => "validation-agent-error",
             InboundMessage::ValidationAgentProgress { .. } => "validation-agent-progress",
@@ -1530,28 +1483,6 @@ impl SidecarManager {
             }
             InboundMessage::RepoDescriptionError { id, error } => {
                 log::error!("[sidecar] Repo description error for {}: {}", id, error);
-                Self::emit(app, suffix, &id, error);
-            }
-            InboundMessage::LaunchProfileResult {
-                id,
-                commands,
-                profiles,
-            } => {
-                log::info!(
-                    "[sidecar] Launch profile result for {}: {} commands, {} profiles",
-                    id,
-                    commands.len(),
-                    profiles.len()
-                );
-                Self::emit(
-                    app,
-                    suffix,
-                    &id,
-                    LaunchProfileResultPayload { commands, profiles },
-                );
-            }
-            InboundMessage::LaunchProfileError { id, error } => {
-                log::error!("[sidecar] Launch profile error for {}: {}", id, error);
                 Self::emit(app, suffix, &id, error);
             }
             InboundMessage::ValidationAgentResult {
