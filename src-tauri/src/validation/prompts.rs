@@ -44,30 +44,6 @@ fn guidelines_block(guidelines: Option<&str>) -> String {
     }
 }
 
-/// Round-history block: findings the user chose to ignore, so the reviewer does
-/// not re-report them unless materially new.
-fn ignored_block(ignored: &[ValidationFinding]) -> String {
-    if ignored.is_empty() {
-        return String::new();
-    }
-    let list = ignored
-        .iter()
-        .map(|f| {
-            format!(
-                "- [{}] {}: {}",
-                f.id,
-                f.file.as_deref().unwrap_or("(no file)"),
-                f.description
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "\n\n{}",
-        data_block("PREVIOUSLY-IGNORED FINDINGS", &list)
-    )
-}
-
 const SEVERITY_TAXONOMY: &str = "Severity taxonomy: error = must not merge; warning = worth \
 addressing, can be a follow-up; info = nice-to-have.";
 
@@ -106,30 +82,6 @@ risk_level (low|medium|high) with a short risk_rationale.",
         conformance = INTENT_CONFORMANCE,
         intent = intent_block(intent),
         guidelines = guidelines_block(guidelines),
-    )
-}
-
-/// Build the re-review prompt for later rounds (resumed reviewer session).
-pub fn re_review_prompt(
-    intent: &str,
-    base_branch: &str,
-    guidelines: Option<&str>,
-    ignored: &[ValidationFinding],
-) -> String {
-    format!(
-        "Re-review the full current diff against `{base}` (git diff, git log). The code has changed \
-since your last review. Do a complete fresh pass; don't stop at the first finding. Findings the \
-user already chose to ignore (approved/skipped over) must NOT be re-reported unless they are \
-materially new.\n\n{severity}\n\n{action}\n\n{donot}\n\n{conformance}\n\n{intent}{guidelines}{ignored}\n\n\
-Call submit_review with your findings, summary, and risk_level/risk_rationale.",
-        base = base_branch,
-        severity = SEVERITY_TAXONOMY,
-        action = ACTION_TAXONOMY,
-        donot = DO_NOT_FLAG,
-        conformance = INTENT_CONFORMANCE,
-        intent = intent_block(intent),
-        guidelines = guidelines_block(guidelines),
-        ignored = ignored_block(ignored),
     )
 }
 

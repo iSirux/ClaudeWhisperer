@@ -214,7 +214,6 @@ impl ValidationManager {
             run,
             shared: Arc::clone(&shared),
             signal_rx,
-            reviewer_session_id: None,
             validation_cfg,
             repo_cfg,
             gh_user,
@@ -362,7 +361,6 @@ struct RunCtx {
     run: ValidationRun,
     shared: Arc<Mutex<ValidationRun>>,
     signal_rx: mpsc::UnboundedReceiver<RunSignal>,
-    reviewer_session_id: Option<String>,
     validation_cfg: ValidationConfig,
     repo_cfg: Option<RepoConfig>,
     gh_user: Option<String>,
@@ -391,7 +389,6 @@ enum StepEnd {
 struct AgentOutcome {
     structured: serde_json::Value,
     transcript: Option<String>,
-    sdk_session_id: Option<String>,
 }
 
 impl RunCtx {
@@ -584,23 +581,18 @@ impl RunCtx {
     }
 
     /// Run a one-shot validation agent on the reviewer model.
-    async fn run_agent(
-        &self,
-        role: &str,
-        prompt: String,
-        resume: Option<String>,
-    ) -> Result<AgentOutcome, String> {
-        self.run_agent_with_model(role, prompt, resume, self.reviewer_model())
+    async fn run_agent(&self, role: &str, prompt: String) -> Result<AgentOutcome, String> {
+        self.run_agent_with_model(role, prompt, self.reviewer_model())
             .await
     }
 
     /// Run a one-shot validation agent on an explicit model and await its
-    /// structured result.
+    /// structured result. Every validation agent is a fresh session — no
+    /// validation role is ever resumed for a second pass (see `is_single_pass`).
     async fn run_agent_with_model(
         &self,
         role: &str,
         prompt: String,
-        resume: Option<String>,
         model: String,
     ) -> Result<AgentOutcome, String> {
         let sidecar = self.app.state::<Arc<SidecarManager>>();
@@ -635,10 +627,6 @@ impl RunCtx {
                         structured: v.get("structured").cloned().unwrap_or(serde_json::Value::Null),
                         transcript: v
                             .get("transcript")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s.to_string()),
-                        sdk_session_id: v
-                            .get("sdkSessionId")
                             .and_then(|t| t.as_str())
                             .map(|s| s.to_string()),
                     }),
@@ -697,7 +685,7 @@ impl RunCtx {
                     prompt,
                     model,
                     effort: self.run.options.reviewer_effort.clone(),
-                    resume_session_id: resume,
+                    resume_session_id: None,
                 },
             )
             .map_err(|e| format!("Failed to start validation agent: {}", e))?;
@@ -781,12 +769,30 @@ impl RunCtx {
         }
     }
 
+    /// Whether this step's findings come from a review agent rather than a
+    /// configured command. Such a step is **single-pass**: the producer runs
+    /// exactly once per run, so fixing findings never re-runs the agent (no
+    /// re-review, no `fix_review` diff gate). Command-backed test/lint keep
+    /// re-running — re-running the command is how you learn the fix worked, and
+    /// it costs nothing.
+    fn is_single_pass(&self, name: StepName) -> bool {
+        match name {
+            StepName::Review | StepName::Docs => true,
+            StepName::Test => self.repo_command(|c| c.test.clone()).is_none(),
+            StepName::Lint => self.repo_command(|c| c.lint.clone()).is_none(),
+            _ => false,
+        }
+    }
+
     /// The shared findings-step engine: initial run, auto-fix loop, gate cycle,
-    /// user-fix + fix_review gate.
+    /// user-fix + fix_review gate (command-backed steps only — see
+    /// `is_single_pass`).
     async fn run_findings_step(&mut self, name: StepName, resume: Option<GateState>) -> StepEnd {
+        let single_pass = self.is_single_pass(name);
         let limit = self.validation_cfg.auto_fix_limit(name.key());
         let mut auto_used = 0u32;
         let mut round: u32 = 1;
+        let mut fixed_total = 0usize;
         let mut fix_review_diff: Option<String> = None;
         let mut findings;
 
@@ -849,11 +855,18 @@ impl RunCtx {
                     FixResult::Done(_) => {
                         auto_used += 1;
                         round += 1;
-                        self.set_step_status(name, StepStatus::Running);
-                        findings = match self.produce_findings(name).await {
-                            Ok(f) => f,
-                            Err(e) => return StepEnd::Failed(format!("{}: {}", name.key(), e)),
-                        };
+                        if single_pass {
+                            // No second producer pass: the fixed findings are
+                            // simply retired and whatever is left decides the gate.
+                            findings.retain(|f| !auto_ids.contains(&f.id));
+                            auto_used = limit;
+                        } else {
+                            self.set_step_status(name, StepStatus::Running);
+                            findings = match self.produce_findings(name).await {
+                                Ok(f) => f,
+                                Err(e) => return StepEnd::Failed(format!("{}: {}", name.key(), e)),
+                            };
+                        }
                         self.record_round(name, "auto_fix", &findings, &auto_ids);
                         self.set_step_findings(name, findings.clone());
                         continue;
@@ -939,13 +952,49 @@ impl RunCtx {
                     let selected_for_round: Vec<String> =
                         to_fix.iter().map(|f| f.id.clone()).collect();
 
-                    let head = self.git_head().await;
+                    let head = if single_pass {
+                        String::new()
+                    } else {
+                        self.git_head().await
+                    };
                     match self
                         .request_fix(name, to_fix, instructions, round, "user_fix")
                         .await
                     {
                         FixResult::Done(summary) => {
                             round += 1;
+                            if single_pass {
+                                // One producer pass per run: the fixer is trusted,
+                                // the step is not re-reviewed and there is no
+                                // fix_review diff gate. Retire what was fixed; if
+                                // the user left other blocking findings on the
+                                // table the gate re-parks with just those (still
+                                // no agent re-run), otherwise the step passes.
+                                // (Clearing the diff also drops a `fix_review`
+                                // restored from a pre-change persisted run.)
+                                fix_review_diff = None;
+                                findings.retain(|f| !selected_for_round.contains(&f.id));
+                                self.record_round_with_summary(
+                                    name,
+                                    "user_fix",
+                                    &findings,
+                                    &selected_for_round,
+                                    summary,
+                                );
+                                self.set_step_findings(name, findings.clone());
+                                fixed_total += selected_for_round.len();
+                                if !findings.iter().any(|f| f.blocks()) {
+                                    self.append_step_note(
+                                        name,
+                                        format!(
+                                            "{} finding(s) sent to the fixer; not re-reviewed",
+                                            fixed_total
+                                        ),
+                                    );
+                                    return StepEnd::Passed;
+                                }
+                                continue;
+                            }
                             self.set_step_status(name, StepStatus::Running);
                             findings = match self.produce_findings(name).await {
                                 Ok(f) => f,
@@ -1013,7 +1062,7 @@ impl RunCtx {
         let model = self.simplify_model();
         self.log(format!("simplify: running headless agent ({})", model));
         let outcome = match self
-            .run_agent_with_model("simplify", prompt, None, model)
+            .run_agent_with_model("simplify", prompt, model)
             .await
         {
             Ok(o) => o,
@@ -1034,18 +1083,12 @@ impl RunCtx {
             .repo_cfg
             .as_ref()
             .and_then(|r| r.review_guidelines.clone());
-        let ignored = self.ignored_findings(StepName::Review);
-        let resume = self.reviewer_session_id.clone();
-        let prompt = if resume.is_some() {
-            prompts::re_review_prompt(&self.run.intent, &base, guidelines.as_deref(), &ignored)
-        } else {
-            prompts::review_prompt(&self.run.intent, &base, guidelines.as_deref())
-        };
+        // One review pass per run — the reviewer is never resumed for a second
+        // look after a fix (see `is_single_pass`), so there is no re-review
+        // prompt and no session to carry forward.
+        let prompt = prompts::review_prompt(&self.run.intent, &base, guidelines.as_deref());
 
-        let outcome = self.run_agent("review", prompt, resume).await?;
-        if let Some(sid) = &outcome.sdk_session_id {
-            self.reviewer_session_id = Some(sid.clone());
-        }
+        let outcome = self.run_agent("review", prompt).await?;
 
         let mut findings = parse_findings(&outcome.structured);
         assign_agent_finding_ids(StepName::Review, &mut findings);
@@ -1085,7 +1128,7 @@ impl RunCtx {
                 continue;
             }
             let prompt = prompts::verify_prompt(&f);
-            match self.run_agent("verify", prompt, None).await {
+            match self.run_agent("verify", prompt).await {
                 Ok(outcome) => {
                     let verdict = outcome
                         .structured
@@ -1110,7 +1153,7 @@ impl RunCtx {
 
     async fn produce_docs(&mut self) -> Result<Vec<ValidationFinding>, String> {
         let prompt = prompts::docs_prompt(&self.run.intent);
-        let outcome = self.run_agent("docs", prompt, None).await?;
+        let outcome = self.run_agent("docs", prompt).await?;
         let mut findings = parse_findings(&outcome.structured);
         assign_agent_finding_ids(StepName::Docs, &mut findings);
         if let Some(step) = self.run.step_mut(StepName::Docs) {
@@ -1139,7 +1182,7 @@ impl RunCtx {
         }
 
         let prompt = prompts::lint_prompt(&self.run.intent);
-        let outcome = self.run_agent("lint", prompt, None).await?;
+        let outcome = self.run_agent("lint", prompt).await?;
         let mut findings = parse_findings(&outcome.structured);
         assign_agent_finding_ids(StepName::Lint, &mut findings);
         if let Some(step) = self.run.step_mut(StepName::Lint) {
@@ -1172,7 +1215,7 @@ impl RunCtx {
         if self.validation_cfg.evidence_enabled {
             ran_something = true;
             let prompt = prompts::evidence_prompt(&self.run.intent);
-            match self.run_agent("evidence", prompt, None).await {
+            match self.run_agent("evidence", prompt).await {
                 Ok(outcome) => {
                     let mut evidence_findings = parse_findings(&outcome.structured);
                     findings.append(&mut evidence_findings);
@@ -1721,23 +1764,6 @@ impl RunCtx {
         }
     }
 
-    fn ignored_findings(&self, name: StepName) -> Vec<ValidationFinding> {
-        // Findings the user approved/skipped over in prior rounds of this step.
-        self.run
-            .steps
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| {
-                s.rounds
-                    .iter()
-                    .flat_map(|r| r.findings.iter())
-                    .filter(|f| !r_selected(s, f))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    }
-
     fn record_round(
         &mut self,
         name: StepName,
@@ -1782,6 +1808,18 @@ impl RunCtx {
         }
     }
 
+    /// Append to a step's note, keeping whatever the producer already wrote
+    /// there (e.g. the reviewer's summary).
+    fn append_step_note(&mut self, name: StepName, extra: impl Into<String>) {
+        let extra = extra.into();
+        if let Some(step) = self.run.step_mut(name) {
+            step.note = Some(match step.note.take() {
+                Some(n) if !n.trim().is_empty() => format!("{} — {}", n.trim(), extra),
+                _ => extra,
+            });
+        }
+    }
+
     /// A compact per-step outcome summary used in the ship draft/PR body.
     fn validation_summary(&self) -> String {
         let mut lines = Vec::new();
@@ -1809,13 +1847,6 @@ impl RunCtx {
 }
 
 // ── Free helpers ────────────────────────────────────────────────────────────
-
-/// Whether a finding was among the round's selected (fixed) ids.
-fn r_selected(step: &ValidationStep, finding: &ValidationFinding) -> bool {
-    step.rounds
-        .iter()
-        .any(|r| r.selected_ids.contains(&finding.id))
-}
 
 /// Parse the `findings` array from a submit-tool structured output.
 fn parse_findings(structured: &serde_json::Value) -> Vec<ValidationFinding> {

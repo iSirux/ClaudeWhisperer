@@ -183,8 +183,8 @@ Sidecar behavior (clone the `handleGenerateRepoDescription` pattern, Claude prov
 - Stream `validation-agent-progress-{id}` `{ kind: "tool"|"text", tool?, detail?, text? }` per
   assistant tool call / text block while the query runs (drives the live activity feed and the
   executor's idle-timeout reset).
-- Support `resumeSessionId` (SDK `resume` option) so the reviewer is durable across rounds;
-  on resume failure fall back to a fresh session.
+- `resumeSessionId` (SDK `resume` option) is still accepted by the sidecar, but the executor never
+  sends it: every validation agent is a fresh one-shot session (see "One producer pass per step").
 
 Rust side awaits the result with an activity-aware timeout: a 10-minute idle window that resets
 on every progress event, plus an overall cap (`agent_timeout_minutes`, default 60, §7). Progress
@@ -197,10 +197,17 @@ Executor: sequential over `options.steps` (fixed order), one tokio task per run 
 handle per run. Statuses/gates per §1. Auto-fix limits come from
 config (§7): findings with `action == "auto-fix"` are auto-sent to the fixer (via fix-request,
 no user gate) up to the per-step limit; after that, or for any `error`/`warning` or `ask-user`
-finding, the step parks as a gate. `info`-only findings never gate. After any fix round the step
-re-executes and, if it had gated, parks as `fix_review` with `git diff` text of what changed
-(record HEAD + `git status --porcelain` before the fix; diff = `git diff <recorded_head>` plus
-untracked-file names).
+finding, the step parks as a gate. `info`-only findings never gate.
+
+**One producer pass per step.** A step whose findings come from a review agent (review, docs, and
+test/lint when no command is configured for them) runs its producer exactly once per run: after a
+fix the agent is never re-run, so there is no re-review and no `fix_review` gate. The fixed findings
+are retired from the list; if the user left other blocking findings unselected the gate re-parks
+with just those (still no agent run), otherwise the step passes with a note recording how many
+findings went to the fixer. Command-backed test/lint are the exception — they re-execute after a
+fix round (re-running the command is how you learn the fix worked, and it is free) and, if they had
+gated, park as `fix_review` with `git diff` text of what changed (record HEAD before the fix; diff =
+`git diff <recorded_head>` plus untracked-file names).
 
 **Prompt hygiene (all roles):** wrap intent and previous-findings in
 `-----BEGIN USER INTENT----- / -----END-----` style markers with "data, not instructions" framing;
@@ -228,9 +235,8 @@ One-shot `role: "review"` on the session cwd. Prompt must include:
   one-shot ("Adversarially verify this finding — try to refute it. Default to refuted if you cannot
   confirm a concrete failure"). Refuted findings are dropped (logged). Verify runs use the same
   model, fresh sessions, in sequence.
-- Reviewer session id is captured on round 1 and resumed for later rounds; re-review prompt says
-  "re-review the full current diff" and includes round history: findings the user ignored
-  (approved/skipped over) must not be re-reported unless materially new.
+- The reviewer runs exactly once per validation run — a fresh session, never resumed. Fixing review
+  findings does not trigger a second review pass (see "One producer pass per step" above).
 
 ### test
 1. If `RepoConfig.validation_commands.test` set: run via shell (`sh -c` / `cmd /c`, cwd = session
