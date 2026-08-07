@@ -5,6 +5,7 @@
   import { navigation } from '$lib/stores/navigation';
   import { repos } from '$lib/stores/repos';
   import { settings } from '$lib/stores/settings';
+  import { modifierCombo } from '$lib/stores/ctrlHint';
   import { createAndActivateNewSession } from '$lib/utils/sessionCreation';
 
   interface Props {
@@ -170,8 +171,13 @@
         ondragend={handleDragEnd}
         onclick={(e) => handleRepoClick(e, repo)}
         onauxclick={(e) => handleRepoAuxClick(e, repo)}
-        title="{repo.name}&#10;Ctrl+Click or Middle-Click: new session&#10;Drag to reorder"
+        title="{repo.name}&#10;Ctrl+Click or Middle-Click: new session{index < 9
+          ? `\nCtrl+Shift+${index + 1}: new session`
+          : ''}&#10;Drag to reorder"
       >
+        {#if index < 9 && $modifierCombo === 'ctrl+shift'}
+          <span class="hotkey-number-badge" aria-hidden="true">{index + 1}</span>
+        {/if}
         <span class="icon-wrap">
           <RepoIcon {repo} size="lg" />
           {#if changedCounts[repo.path] > 0}
@@ -222,6 +228,7 @@
   }
 
   .rail-btn {
+    position: relative;
     width: 100%;
     height: 3.25rem;
     box-sizing: border-box;
@@ -281,6 +288,28 @@
     border: 1px solid var(--color-surface-elevated);
     border-radius: 999px;
     pointer-events: none;
+  }
+
+  /* Ctrl+Shift+number hint, mirrors SessionListItem's Ctrl+number badge. */
+  .hotkey-number-badge {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 1.5rem;
+    height: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    color: white;
+    border-radius: 0.375rem;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   }
 
   .add-wrap {

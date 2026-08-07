@@ -280,6 +280,21 @@
       }
     }
 
+    // Ctrl+Shift+1..9 — start a new session with the Nth repository of the repo
+    // rail preselected. Same order as RepositoryRail, which renders the matching
+    // number badges while Ctrl+Shift is held.
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey) {
+      const digitMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
+      if (digitMatch) {
+        const repo = ($repos.list ?? [])[Number(digitMatch[1]) - 1];
+        if (repo?.path) {
+          event.preventDefault();
+          void createAndActivateNewSession(repo.path);
+        }
+        return;
+      }
+    }
+
     // Ctrl/Cmd+W — close the currently active session, mirroring the browser
     // "close tab" convention. Fixed binding like Ctrl+1..9.
     // Confirms first when the session is actively working (matches SessionList).
