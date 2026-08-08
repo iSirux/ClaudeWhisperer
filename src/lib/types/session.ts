@@ -22,6 +22,10 @@ export interface DisplaySession {
   createdAt: number; // When the session was created
   lastActivityAt: number; // When the session last had activity (for sorting)
   branch?: string; // git branch name
+  // Existing worktree picked in a not-yet-launched setup session. Its `repoPath`
+  // is still the main checkout (the cwd only switches at launch), so the grouped
+  // sidebar uses this to file the draft under that worktree instead of "main".
+  setupWorktreePath?: string;
 
   // Timer-based duration tracking (SDK sessions)
   accumulatedDurationMs: number;

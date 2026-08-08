@@ -147,6 +147,18 @@ function worktreeInfo(
 }
 
 /**
+ * Subgroup key a not-yet-launched setup session *wants* (the existing worktree
+ * picked in its form), or null when it has none / it resolves to the repo's own
+ * checkout. Matches `worktreeInfo`'s key so it can find a live subgroup.
+ */
+function draftWorktreeKey(session: DisplaySession, repo: RepoConfig | null): string | null {
+  if (!repo || !session.setupWorktreePath) return null;
+  const cwd = normalizePath(session.setupWorktreePath);
+  if (!cwd || cwd === normalizePath(repo.path)) return null;
+  return cwd;
+}
+
+/**
  * Order sessions within a worktree group with a *stable* comparator: pinned
  * sessions lead (earlier pins first, matching the flat view), and everything
  * else is ordered by creation time (newest first). Deliberately independent of
@@ -171,6 +183,12 @@ function compareGroupedSessions(a: DisplaySession, b: DisplaySession): number {
  * group (sequences, unknown cwds) always trails. Sessions inside a group use a
  * stable order (pinned first, then by creation time) — grouped lists never
  * reorder by recency/status, so a session only moves when the user pins it.
+ *
+ * A setup session that picked an existing worktree is still cwd'd on the main
+ * checkout, so it's placed in a second pass: it joins that worktree's subgroup
+ * when one already exists, and otherwise stays under main. Drafts deliberately
+ * never create a subgroup of their own — the worktree dropdown would otherwise
+ * spawn and destroy subheaders as the user clicks through it.
  */
 export function groupDisplaySessions(
   sessions: DisplaySession[],
@@ -178,6 +196,7 @@ export function groupDisplaySessions(
 ): SessionRepoGroup[] {
   const groups = new Map<string, SessionRepoGroup>();
   let noRepo: SessionRepoGroup | null = null;
+  const deferredDrafts: { session: DisplaySession; repo: RepoConfig | null; group: SessionRepoGroup }[] = [];
 
   for (const session of sessions) {
     const repo = resolveRepo(session, repoList);
@@ -196,6 +215,14 @@ export function groupDisplaySessions(
       group = noRepo;
     }
 
+    group.sessionCount++;
+
+    const draftWorktree = draftWorktreeKey(session, repo);
+    if (draftWorktree) {
+      deferredDrafts.push({ session, repo, group });
+      continue;
+    }
+
     const info = worktreeInfo(session, repo);
     let worktree = group.worktrees.find((w) => w.key === info.key);
     if (!worktree) {
@@ -203,7 +230,22 @@ export function groupDisplaySessions(
       group.worktrees.push(worktree);
     }
     worktree.sessions.push(session);
-    group.sessionCount++;
+  }
+
+  // Second pass: drafts join an existing worktree subgroup, or fall back to the
+  // subgroup their cwd puts them in (main).
+  for (const { session, repo, group } of deferredDrafts) {
+    const key = draftWorktreeKey(session, repo);
+    let worktree = key ? group.worktrees.find((w) => w.key === key) : undefined;
+    if (!worktree) {
+      const info = worktreeInfo(session, repo);
+      worktree = group.worktrees.find((w) => w.key === info.key);
+      if (!worktree) {
+        worktree = { ...info, sessions: [] };
+        group.worktrees.push(worktree);
+      }
+    }
+    worktree.sessions.push(session);
   }
 
   const repoOrder = new Map(repoList.map((r, i) => [r.id || r.path, i]));

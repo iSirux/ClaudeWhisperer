@@ -359,6 +359,10 @@ export function transformToDisplaySessions(
         // Seed branch from session metadata (e.g. worktree branch set during setup)
         // so it displays immediately before the async git fetch fills it in.
         branch: showBranch ? (s.currentBranch || undefined) : undefined,
+        // A setup session's cwd stays on the main checkout until launch; carry the
+        // picked worktree so the grouped sidebar can file the draft under it.
+        setupWorktreePath:
+          !showBranch && s.setupWorktreeMode === 'existing' ? s.setupWorktreePath : undefined,
         model: s.model,
         createdAt: Math.floor(s.createdAt / 1000),
         lastActivityAt: Math.floor(s.lastActivityAt / 1000),
