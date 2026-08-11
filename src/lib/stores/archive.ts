@@ -108,6 +108,23 @@ function createArchiveStore() {
     },
 
     /**
+     * Newest restorable (sdk) entry in the archive, or null if there is none.
+     * Backs the reopen-last-closed hotkey once the in-memory recently-closed
+     * stack is exhausted (e.g. after an app restart). The backend index is
+     * already sorted newest-first, so this is just the head of the list.
+     */
+    async mostRecentRestorable(): Promise<ArchiveEntry | null> {
+      const result = await invoke<ArchiveSearchResult>('get_archive_entries', {
+        query: null,
+        sessionType: 'sdk',
+        repoPath: null,
+        offset: 0,
+        limit: 1,
+      });
+      return result.entries[0] ?? null;
+    },
+
+    /**
      * Get full session data for an archived entry
      */
     async getEntryData(id: string): Promise<unknown> {

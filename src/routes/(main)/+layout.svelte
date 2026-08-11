@@ -44,7 +44,7 @@
   import { sessionRepoFilter, filterDisplaySessions } from '$lib/stores/sessionRepoFilter';
   import { sessionListGrouped, applySessionGrouping } from '$lib/stores/sessionGrouping';
   import { ctrlHintKeydown, ctrlHintKeyup, ctrlHintReset } from '$lib/stores/ctrlHint';
-  import { popRecentlyClosed, recentlyClosedSessions } from '$lib/stores/recentlyClosed';
+  import { popRecentlyClosed } from '$lib/stores/recentlyClosed';
   import { archive } from '$lib/stores/archive';
   import { sessionNavHistory } from '$lib/stores/sessionNavHistory';
 
@@ -205,7 +205,10 @@
 
   // Ctrl+Shift+T — reopen the most recently closed session (browser-tab style).
   // Pops the recently-closed stack, unarchiving entries until one succeeds
-  // (skipping any that were meanwhile deleted from the archive).
+  // (skipping any that were meanwhile deleted from the archive). Once the stack
+  // is exhausted — including on a fresh launch, where it starts empty — falls
+  // back to the newest entry in the archive, so the hotkey keeps walking back
+  // through archived sessions across restarts.
   let reopeningClosed = false;
   async function reopenLastClosed() {
     if (reopeningClosed) return;
@@ -224,6 +227,16 @@
         }
         // Entry was not restorable (deleted/trimmed) — try the next one.
         entry = popRecentlyClosed();
+      }
+
+      try {
+        const newest = await archive.mostRecentRestorable();
+        if (newest) {
+          const result = await archive.unarchiveEntry(newest.id);
+          if (result) navigation.setView('sessions');
+        }
+      } catch (error) {
+        console.error('[layout] Failed to reopen most recent archived session:', error);
       }
     } finally {
       reopeningClosed = false;
@@ -327,10 +340,8 @@
       !event.altKey &&
       event.code === 'KeyT'
     ) {
-      if (get(recentlyClosedSessions).length > 0) {
-        event.preventDefault();
-        void reopenLastClosed();
-      }
+      event.preventDefault();
+      void reopenLastClosed();
       return;
     }
 
