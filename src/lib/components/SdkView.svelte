@@ -476,6 +476,11 @@
   onMount(() => {
     console.log(`[SdkView] Mount (session: ${sessionId})`);
 
+    if (messagesEl) {
+      messagesResizeObserver = new ResizeObserver(repinBottomAfterResize);
+      messagesResizeObserver.observe(messagesEl);
+    }
+
     listen("voice-command-triggered", async () => {
       // Only the pane that started the recording reacts (multiple SdkViews
       // can be mounted in split panes).
@@ -587,6 +592,8 @@
 
   onDestroy(() => {
     console.log(`[SdkView] Destroy (session: ${sessionId}, hasPlanApproval: ${hasPlanApproval})`);
+    messagesResizeObserver?.disconnect();
+    messagesResizeObserver = undefined;
     persistCurrentScrollState(sessionId);
     // A follow-up recording started from THIS view is still live when the view is
     // torn down (user switched session/pane/view mid-recording). Don't orphan it —
@@ -622,6 +629,21 @@
 
   function scrollToTop() {
     if (messagesEl) messagesEl.scrollTop = 0;
+  }
+
+  // The dock (PR / validation panel) opening takes height away from the
+  // transcript pane. A viewport resize never moves scrollTop, so a transcript
+  // that was pinned to the bottom suddenly reads as having scrolled up by the
+  // dock's height. Re-pin on any resize of the scroller while the user is
+  // sticking to the bottom (also covers the usage bar appearing, window
+  // resizes, and the horizontal dock reflowing the content).
+  let messagesResizeObserver: ResizeObserver | undefined;
+
+  function repinBottomAfterResize() {
+    if (!messagesEl) return;
+    const state = scrollStates.get(sessionId);
+    if (!(state?.stickToBottom ?? userIsNearBottom)) return;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   // Mark session as read when user interacts with the view
