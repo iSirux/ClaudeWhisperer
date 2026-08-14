@@ -99,11 +99,34 @@
    * committed or pushed is silently left out. Probe the session's working tree
    * first and make the user confirm when there is any.
    */
+  type MergeAction = 'merge' | 'finish';
   let checkingWorkingTree = $state(false);
-  let mergeConfirm = $state<{ show: boolean; message: string }>({ show: false, message: '' });
+  let mergeConfirm = $state<{ show: boolean; message: string; action: MergeAction }>({
+    show: false,
+    message: '',
+    action: 'merge',
+  });
+
+  let busy = $derived(entry.merging || entry.cleaning || entry.finishing);
 
   let canMerge = $derived(
-    !!pr && pr.state === 'open' && !pr.is_draft && !entry.merging && !checkingWorkingTree
+    !!pr && pr.state === 'open' && !pr.is_draft && !busy && !checkingWorkingTree
+  );
+
+  /** The combined action also deletes the worktree and archives its sessions —
+   *  never do that while an agent is still working in there. */
+  let canFinish = $derived(canMerge && !scopeBusy);
+
+  let finishLabel = $derived(
+    entry.merging
+      ? 'Merging…'
+      : entry.cleaning
+        ? 'Cleaning up…'
+        : entry.finishing
+          ? 'Archiving…'
+          : isWorktree
+            ? 'Merge, clean up & archive'
+            : 'Merge, delete branch & archive'
   );
 
   function dirtyMessage(uncommitted: number, unpushed: number, branch: string | null): string {
@@ -121,8 +144,13 @@
     );
   }
 
-  async function requestMerge() {
-    if (!canMerge) return;
+  function run(action: MergeAction) {
+    if (action === 'finish') void sessionPrs.mergeAndFinish(session, strategy);
+    else void sessionPrs.merge(session, strategy);
+  }
+
+  async function requestMerge(action: MergeAction = 'merge') {
+    if (action === 'finish' ? !canFinish : !canMerge) return;
     checkingWorkingTree = true;
     let state: Awaited<ReturnType<typeof fetchWorkingTreeState>> = null;
     try {
@@ -131,18 +159,21 @@
       checkingWorkingTree = false;
     }
     if (state && (state.uncommitted > 0 || state.unpushed > 0)) {
-      mergeConfirm = {
-        show: true,
-        message: dirtyMessage(state.uncommitted, state.unpushed, state.branch),
-      };
+      const message =
+        dirtyMessage(state.uncommitted, state.unpushed, state.branch) +
+        (action === 'finish'
+          ? ' Cleanup will also refuse to delete the branch while that work exists, so nothing will be archived.'
+          : '');
+      mergeConfirm = { show: true, message, action };
       return;
     }
-    void sessionPrs.merge(session, strategy);
+    run(action);
   }
 
   function confirmMerge() {
-    mergeConfirm = { show: false, message: '' };
-    void sessionPrs.merge(session, strategy);
+    const action = mergeConfirm.action;
+    mergeConfirm = { show: false, message: '', action: 'merge' };
+    run(action);
   }
 
   // Poll while the panel is open on an open PR (checks/reviews move on GitHub).
@@ -391,7 +422,7 @@
         {#if pr.is_draft}
           <span class="pr-muted">Draft PR — mark it ready for review on GitHub before merging.</span>
         {:else}
-          <select class="pr-strategy" bind:value={strategy} disabled={entry.merging} aria-label="Merge strategy">
+          <select class="pr-strategy" bind:value={strategy} disabled={busy} aria-label="Merge strategy">
             <option value="squash">Squash and merge</option>
             <option value="merge">Create a merge commit</option>
             <option value="rebase">Rebase and merge</option>
@@ -399,16 +430,35 @@
           <button
             class="pr-merge-btn"
             class:ready={pr.merge_state_status === 'clean'}
-            onclick={requestMerge}
+            onclick={() => requestMerge('merge')}
             disabled={!canMerge}
             title={pr.merge_state_status === 'clean'
               ? 'All checks green — ready to merge'
               : 'GitHub may reject the merge (pending checks, required reviews, or conflicts)'}
           >
-            {entry.merging ? 'Merging…' : checkingWorkingTree ? 'Checking…' : 'Merge'}
+            {entry.merging && !entry.finishing
+              ? 'Merging…'
+              : checkingWorkingTree
+                ? 'Checking…'
+                : 'Merge'}
+          </button>
+          <button
+            class="pr-merge-btn pr-finish-btn"
+            onclick={() => requestMerge('finish')}
+            disabled={!canFinish}
+            title={scopeBusy
+              ? 'An agent is still working in this worktree — wait for it to finish'
+              : isWorktree
+                ? 'Merge, then delete the branch and worktree and archive every session in it'
+                : 'Merge, then delete the branch and archive this session'}
+          >
+            {entry.finishing ? finishLabel : isWorktree ? 'Merge & clean up' : 'Merge & archive'}
           </button>
         {/if}
       </div>
+      {#if entry.cleanupError}
+        <div class="pr-error">{entry.cleanupError}</div>
+      {/if}
       {#if entry.mergeError}
         <div class="pr-error">{entry.mergeError}</div>
       {/if}
@@ -456,7 +506,7 @@
   cancelLabel="Cancel"
   variant="warning"
   onconfirm={confirmMerge}
-  oncancel={() => (mergeConfirm = { show: false, message: '' })}
+  oncancel={() => (mergeConfirm = { show: false, message: '', action: 'merge' })}
 />
 
 <style>
@@ -763,6 +813,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    flex-wrap: wrap;
   }
 
   .pr-strategy {
@@ -784,6 +835,13 @@
     border: 1px solid var(--color-border);
     cursor: pointer;
     transition: all 0.15s ease;
+  }
+
+  /* Merge + delete branch/worktree + archive: purple like the other
+     end-of-lifecycle actions in the merged footer. */
+  .pr-finish-btn {
+    color: rgb(192, 132, 252);
+    border-color: rgba(192, 132, 252, 0.35);
   }
 
   .pr-merge-btn.ready {

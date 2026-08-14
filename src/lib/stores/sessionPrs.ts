@@ -74,6 +74,8 @@ export interface SessionPrEntry {
   panelOpen: boolean;
   /** Post-merge cleanup (delete branch/worktree) in flight. */
   cleaning: boolean;
+  /** Combined merge → cleanup → archive action in flight (spans the two above). */
+  finishing: boolean;
   cleanupError: string | null;
   /** Set once cleanup succeeded — the branch/worktree are gone. */
   cleanupResult: BranchCleanupResult | null;
@@ -95,6 +97,7 @@ const EMPTY_ENTRY: SessionPrEntry = {
   lastFetched: null,
   panelOpen: false,
   cleaning: false,
+  finishing: false,
   cleanupError: null,
   cleanupResult: null,
   diff: null,
@@ -205,6 +208,20 @@ async function releaseAgentsInDirectory(dirPath: string): Promise<void> {
     (s) => s.cwd && normalizeScopePath(s.cwd) === target
   );
   await Promise.all(occupants.map((s) => sdkSessions.releaseAgentProcess(s.id)));
+}
+
+/**
+ * Archive every session working in this directory, sequentially (each archive
+ * rewrites the archive index, so concurrent closes would race).
+ */
+async function archiveSessionsInDirectory(dirPath: string): Promise<void> {
+  const target = normalizeScopePath(dirPath);
+  const occupants = get(sdkSessions).filter(
+    (s) => s.cwd && normalizeScopePath(s.cwd) === target
+  );
+  for (const s of occupants) {
+    await sdkSessions.closeSession(s.id);
+  }
 }
 
 /** Scopes for which we've already auto-opened the PR panel this app session, so
@@ -319,6 +336,101 @@ function createSessionPrsStore() {
     }
   }
 
+  /** Merge the session's PR. Remembers the strategy on the repo config. */
+  async function merge(session: SdkSession, strategy: MergeStrategy): Promise<void> {
+    const entry = entryFor(session.id);
+    const pr = entry.pr;
+    if (!pr || entry.merging) return;
+    const repo = resolveRepo(session);
+    patch(session.id, { merging: true, mergeError: null });
+    try {
+      await invoke('merge_github_pr', {
+        repoPath: session.cwd,
+        ghUser: repo?.gh_user || null,
+        number: pr.number,
+        strategy,
+      });
+      patch(session.id, { merging: false });
+      // Remember the strategy per repo (best-effort).
+      if (repo && repo.last_merge_strategy !== strategy) {
+        const index = get(repos).list.findIndex((r) => r.id === repo.id);
+        if (index >= 0) {
+          repos.updateRepo(index, { last_merge_strategy: strategy }).catch(() => {});
+        }
+      }
+      await refresh(session);
+    } catch (e) {
+      patch(session.id, { merging: false, mergeError: String(e) });
+    }
+  }
+
+  /** Post-merge cleanup: remove the session's worktree (when it runs in one),
+   *  delete the local branch, best-effort delete the remote branch. The
+   *  backend refuses when unsafe (uncommitted changes, unpushed commits). */
+  async function cleanup(session: SdkSession): Promise<void> {
+    const entry = entryFor(session.id);
+    if (entry.cleaning || entry.cleanupResult) return;
+    const branch = sessionBranch(session);
+    const repo = resolveRepo(session);
+    if (!branch || !repo?.path) {
+      patch(session.id, { cleanupError: 'Could not resolve the session branch or repository' });
+      return;
+    }
+    const isWorktree =
+      !!session.cwd && normalizeScopePath(session.cwd) !== normalizeScopePath(repo.path);
+    patch(session.id, { cleaning: true, cleanupError: null });
+    try {
+      // Nothing can delete the worktree while an agent process is still
+      // sitting in it (see releaseAgentsInDirectory).
+      if (isWorktree && session.cwd) {
+        await releaseAgentsInDirectory(session.cwd);
+      }
+      const result = await invoke<BranchCleanupResult>('cleanup_merged_branch', {
+        repoPath: repo.path,
+        branch,
+        worktreePath: isWorktree ? session.cwd : null,
+      });
+      // The branch/worktree is now gone for every session in the scope — stop
+      // them all from re-fetching a dead path.
+      for (const s of scopeSiblings(session)) {
+        patch(s.id, { cleaning: false, cleanupResult: result });
+      }
+    } catch (e) {
+      patch(session.id, { cleaning: false, cleanupError: String(e) });
+    }
+  }
+
+  /**
+   * One-click finish: merge → delete branch/worktree → archive the sessions that
+   * lived there. Each step is gated on the previous one actually succeeding — a
+   * refused cleanup (uncommitted or unpushed work) must not archive the sessions
+   * that still hold it. Only a worktree session archives its scope siblings; in
+   * the main checkout the directory is shared with every other session of the
+   * repo, so only this session is archived.
+   */
+  async function mergeAndFinish(session: SdkSession, strategy: MergeStrategy): Promise<void> {
+    const entry = entryFor(session.id);
+    if (!entry.pr || entry.merging || entry.cleaning || entry.finishing) return;
+    const repo = resolveRepo(session);
+    const isWorktree =
+      !!session.cwd && !!repo?.path &&
+      normalizeScopePath(session.cwd) !== normalizeScopePath(repo.path);
+    patch(session.id, { finishing: true });
+    try {
+      await merge(session, strategy);
+      if (entryFor(session.id).mergeError) return;
+      await cleanup(session);
+      if (entryFor(session.id).cleanupError) return;
+      if (isWorktree && session.cwd) {
+        await archiveSessionsInDirectory(session.cwd);
+      } else {
+        await sdkSessions.closeSession(session.id);
+      }
+    } finally {
+      patch(session.id, { finishing: false });
+    }
+  }
+
   return {
     subscribe,
 
@@ -379,69 +491,11 @@ function createSessionPrsStore() {
       }
     },
 
-    /** Merge the session's PR. Remembers the strategy on the repo config. */
-    async merge(session: SdkSession, strategy: MergeStrategy): Promise<void> {
-      const entry = entryFor(session.id);
-      const pr = entry.pr;
-      if (!pr || entry.merging) return;
-      const repo = resolveRepo(session);
-      patch(session.id, { merging: true, mergeError: null });
-      try {
-        await invoke('merge_github_pr', {
-          repoPath: session.cwd,
-          ghUser: repo?.gh_user || null,
-          number: pr.number,
-          strategy,
-        });
-        patch(session.id, { merging: false });
-        // Remember the strategy per repo (best-effort).
-        if (repo && repo.last_merge_strategy !== strategy) {
-          const index = get(repos).list.findIndex((r) => r.id === repo.id);
-          if (index >= 0) {
-            repos.updateRepo(index, { last_merge_strategy: strategy }).catch(() => {});
-          }
-        }
-        await refresh(session);
-      } catch (e) {
-        patch(session.id, { merging: false, mergeError: String(e) });
-      }
-    },
+    merge,
 
-    /** Post-merge cleanup: remove the session's worktree (when it runs in one),
-     *  delete the local branch, best-effort delete the remote branch. The
-     *  backend refuses when unsafe (uncommitted changes, unpushed commits). */
-    async cleanup(session: SdkSession): Promise<void> {
-      const entry = entryFor(session.id);
-      if (entry.cleaning || entry.cleanupResult) return;
-      const branch = sessionBranch(session);
-      const repo = resolveRepo(session);
-      if (!branch || !repo?.path) {
-        patch(session.id, { cleanupError: 'Could not resolve the session branch or repository' });
-        return;
-      }
-      const isWorktree =
-        !!session.cwd && normalizeScopePath(session.cwd) !== normalizeScopePath(repo.path);
-      patch(session.id, { cleaning: true, cleanupError: null });
-      try {
-        // Nothing can delete the worktree while an agent process is still
-        // sitting in it (see releaseAgentsInDirectory).
-        if (isWorktree && session.cwd) {
-          await releaseAgentsInDirectory(session.cwd);
-        }
-        const result = await invoke<BranchCleanupResult>('cleanup_merged_branch', {
-          repoPath: repo.path,
-          branch,
-          worktreePath: isWorktree ? session.cwd : null,
-        });
-        // The branch/worktree is now gone for every session in the scope — stop
-        // them all from re-fetching a dead path.
-        for (const s of scopeSiblings(session)) {
-          patch(s.id, { cleaning: false, cleanupResult: result });
-        }
-      } catch (e) {
-        patch(session.id, { cleaning: false, cleanupError: String(e) });
-      }
-    },
+    cleanup,
+
+    mergeAndFinish,
 
     rehydrateFromSessions,
 
