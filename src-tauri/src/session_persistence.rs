@@ -293,6 +293,11 @@ pub struct PersistedSdkSession {
     /// whole validation panel — not just the badge — survives restart (opaque JSON)
     #[serde(default)]
     pub validation_run: Option<serde_json::Value>,
+    /// Pending AskUserQuestion raised by the agent (opaque JSON, frontend-owned schema).
+    /// Persisted so the question — and any answers picked so far — survives a restart
+    /// instead of vanishing with the sidecar process that was waiting on it.
+    #[serde(default)]
+    pub ask_user_question: Option<serde_json::Value>,
     /// Whether the session is pinned in the sidebar
     #[serde(default)]
     pub pinned: bool,

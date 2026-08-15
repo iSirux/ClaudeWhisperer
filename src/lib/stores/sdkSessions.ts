@@ -277,6 +277,12 @@ export interface AskUserQuestionState {
   questions: PlanningQuestion[];
   answers: PlanningAnswer[];
   currentQuestionIndex: number;
+  /**
+   * True for a question restored from disk after an app restart. The sidecar's
+   * pending canUseTool promise died with the old process, so the answers can't be
+   * returned as a tool result — they're sent as a normal prompt instead.
+   */
+  stale?: boolean;
 }
 
 export interface PlanApprovalState {
@@ -1982,6 +1988,8 @@ function createSdkSessionsStore() {
         if (raisedQuestion && get(settings).audio.play_sound_on_question) {
           playQuestionSound();
         }
+        // Persist the question so it survives a restart (see AskUserQuestionState.stale).
+        debouncedSave(id);
       })
     );
 
@@ -4050,7 +4058,23 @@ function createSdkSessionsStore() {
         answers[question.question] = parts.join(', ');
       }
 
+      // A question restored after a restart has no live canUseTool promise to resolve —
+      // the sidecar that raised it is gone, and `answer_ask_user_question` would be a
+      // silent no-op. Resume the session with the answers as a normal prompt instead.
+      const isStale = session.askUserQuestion.stale === true;
       this.clearAskUserQuestion(id);
+
+      if (isStale) {
+        const body = Object.entries(answers)
+          .map(([question, answer]) => `Q: ${question}\nA: ${answer || '(no answer)'}`)
+          .join('\n\n');
+        await this.sendPrompt(
+          id,
+          `Answering the question you asked before the app restarted (the AskUserQuestion tool call was interrupted, so here are the answers as a message):\n\n${body}`
+        );
+        return;
+      }
+
       // Send answers to sidecar via Tauri command (resolves the pending canUseTool callback)
       await invoke('answer_ask_user_question', { id, answers });
     },
@@ -4062,6 +4086,8 @@ function createSdkSessionsStore() {
           return { ...s, askUserQuestion: undefined };
         })
       );
+      // Persist the clear so a dismissed/answered question doesn't come back on restart.
+      debouncedSave(id);
     },
 
     // --- Plan Approval (ExitPlanMode interception) ---

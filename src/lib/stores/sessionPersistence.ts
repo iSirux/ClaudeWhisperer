@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
 import { settings } from './settings';
-import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo } from './sdkSessions';
+import { sdkSessions, activeSdkSessionId, type SdkSession, type SdkMessage, type SdkImageContent, type EffortLevel, type SessionAiMetadata, type PendingRepoSelection, type SdkSessionUsage, type PendingTranscriptionInfo, type AskUserQuestionState } from './sdkSessions';
 import { getProviderForModel, type SdkProvider } from '$lib/utils/models';
 import { repos } from './repos';
 import { panes } from './panes';
@@ -273,6 +273,7 @@ export interface PersistedSdkSession {
   draftPrompt?: string;
   draftImages?: SdkImageContent[];
   sdkSessionId?: string;
+  askUserQuestion?: AskUserQuestionState;
   pinned?: boolean;
   pinnedAt?: number | null;
 }
@@ -350,6 +351,23 @@ export function persistedToSdkSession(persisted: PersistedSdkSession): SdkSessio
 
   if (!Array.isArray(session.draftImages)) {
     session.draftImages = undefined;
+  }
+
+  // A pending AskUserQuestion outlives the process that raised it: the sidecar's
+  // canUseTool promise died with the old process, so the answer can no longer be
+  // handed back as a tool result. Keep the question (and any options already picked)
+  // so it isn't silently lost, but flag it `stale` — submitting now resumes the
+  // session with the answers as a normal prompt instead.
+  const restoredQuestion = persisted.askUserQuestion;
+  if (restoredQuestion?.questions?.length) {
+    session.askUserQuestion = {
+      questions: restoredQuestion.questions,
+      answers: Array.isArray(restoredQuestion.answers) ? restoredQuestion.answers : [],
+      currentQuestionIndex: restoredQuestion.currentQuestionIndex ?? 0,
+      stale: true,
+    };
+  } else {
+    session.askUserQuestion = undefined;
   }
 
   // Migrate old sessions without lastActivityAt

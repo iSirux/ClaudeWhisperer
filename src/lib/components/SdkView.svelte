@@ -2169,6 +2169,7 @@
           questions={askUserQuestion.questions}
           answers={askUserQuestion.answers}
           currentQuestionIndex={askUserQuestion.currentQuestionIndex}
+          stale={askUserQuestion.stale ?? false}
           onAnswerChange={handleAskUserAnswerChange}
           onNavigate={handleAskUserNavigate}
           onSubmit={handleAskUserSubmit}

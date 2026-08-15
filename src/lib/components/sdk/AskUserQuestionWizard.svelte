@@ -5,6 +5,7 @@
     questions,
     answers,
     currentQuestionIndex,
+    stale = false,
     onAnswerChange,
     onNavigate,
     onSubmit,
@@ -13,6 +14,8 @@
     questions: PlanningQuestion[];
     answers: PlanningAnswer[];
     currentQuestionIndex: number;
+    /** Restored after an app restart — answering sends a new message instead of a tool result. */
+    stale?: boolean;
     onAnswerChange: (answer: PlanningAnswer) => void;
     onNavigate: (index: number) => void;
     onSubmit: () => void;
@@ -120,6 +123,12 @@
     </button>
   </div>
 
+  {#if stale}
+    <p class="stale-note">
+      Asked before the app restarted — your answers will be sent as a new message.
+    </p>
+  {/if}
+
   {#if questions.length === 0}
     <div class="waiting">
       <div class="animate-pulse">Waiting for questions...</div>
@@ -211,7 +220,7 @@
           onclick={onSubmit}
           title={allAnswered ? 'Submit answers (Ctrl+Enter)' : 'Please answer all questions'}
         >
-          Submit
+          {stale ? 'Send answers' : 'Submit'}
         </button>
       {/if}
     </div>
@@ -268,6 +277,16 @@
   .dismiss-btn svg {
     width: 0.875rem;
     height: 0.875rem;
+  }
+
+  /* Restored-after-restart note */
+  .stale-note {
+    margin-bottom: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    font-size: 0.6875rem;
+    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    border-radius: 0.25rem;
   }
 
   /* Waiting state */
