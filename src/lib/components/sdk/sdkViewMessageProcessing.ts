@@ -29,6 +29,36 @@ export type RenderItem =
       taskModel?: string;
     };
 
+// Identity-stable merge of a tool_result with its tool_start's input.
+//
+// This whole pipeline re-runs from scratch on every store tick (a streaming turn
+// emits one event per text delta / tool call). A fresh `{...resultMsg, input}`
+// each time gives every completed tool call a NEW object identity, which
+// invalidates the props of every rendered message component even though nothing
+// about it changed — re-running markdown, re-formatting tool input, and touching
+// the DOM for the entire visible window. Cache the merged object per source
+// message so a re-run returns the *same* object when the inputs are unchanged,
+// which lets the render layer skip untouched items entirely.
+//
+// Keyed by the raw tool_result object (identity-stable: the store never mutates
+// a message in place, it appends), and only reused when the paired `input`
+// reference also matches — a running tool's input can land after its result.
+const mergedToolCache = new WeakMap<
+  SdkMessage,
+  { input: Record<string, unknown> | undefined; merged: SdkMessage }
+>();
+
+function mergeToolResult(
+  resultMsg: SdkMessage,
+  input: Record<string, unknown> | undefined
+): SdkMessage {
+  const cached = mergedToolCache.get(resultMsg);
+  if (cached && cached.input === input) return cached.merged;
+  const merged = { ...resultMsg, input };
+  mergedToolCache.set(resultMsg, { input, merged });
+  return merged;
+}
+
 // Process messages to merge tool_start/tool_result pairs
 // - Skip tool_start if there's a matching tool_result
 // - Copy input from tool_start to tool_result for display
@@ -69,7 +99,7 @@ export function processSdkMessages(messages: SdkMessage[]): SdkMessage[] {
           // Tool completed - output the result at the START position (preserving start order)
           const resultMsg = toolResults.get(msg.toolUseId)!;
           const input = toolInputs.get(msg.toolUseId);
-          result.push({ ...resultMsg, input });
+          result.push(mergeToolResult(resultMsg, input));
           outputToolIds.add(msg.toolUseId);
         } else {
           // Tool still running - show tool_start
@@ -80,7 +110,7 @@ export function processSdkMessages(messages: SdkMessage[]): SdkMessage[] {
         // (Unless it wasn't matched, which shouldn't happen but handle gracefully)
         if (!msg.toolUseId || !outputToolIds.has(msg.toolUseId)) {
           const input = msg.toolUseId ? toolInputs.get(msg.toolUseId) : undefined;
-          result.push({ ...msg, input });
+          result.push(mergeToolResult(msg, input));
         }
       } else {
         result.push(msg);
@@ -120,7 +150,7 @@ export function processSdkMessages(messages: SdkMessage[]): SdkMessage[] {
             break;
           }
         }
-        result.push({ ...msg, input: toolInput });
+        result.push(mergeToolResult(msg, toolInput));
       } else {
         result.push(msg);
       }
@@ -513,4 +543,98 @@ export function buildRenderItems(messages: SdkMessage[], isGridMode: boolean): R
   }
 
   return items;
+}
+
+function sameMessageList(a: SdkMessage[], b: SdkMessage[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameNestedSummaries(
+  a: Map<string, NestedTaskSummary> | undefined,
+  b: Map<string, NestedTaskSummary> | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.size !== b.size) return false;
+  for (const [id, sa] of a) {
+    const sb = b.get(id);
+    if (
+      !sb ||
+      sb.status !== sa.status ||
+      sb.toolCallCount !== sa.toolCallCount ||
+      // Usually immutable (they come from the tool input), but a late-arriving
+      // task_started can fill in a description without moving the count.
+      sb.label !== sa.label ||
+      sb.description !== sa.description
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Would these two render items produce identical output?
+ *
+ * `buildRenderItems` runs from scratch on every store tick and allocates fresh
+ * wrapper objects (tool groups, task blocks, synthesized `task_started`
+ * messages) even when the underlying messages are untouched. Comparing an item
+ * against the previous tick's item at the same key lets the view reuse the old
+ * object, so Svelte's keyed each never invalidates that row's props — which is
+ * what keeps per-tick cost proportional to what actually changed rather than to
+ * the size of the render window.
+ *
+ * Messages themselves are compared by reference: the store appends, it never
+ * mutates a message in place, and `processSdkMessages` now returns identity-
+ * stable merged tool results.
+ */
+export function renderItemsEquivalent(a: RenderItem, b: RenderItem): boolean {
+  if (a === b) return true;
+  if (a.type !== b.type) return false;
+
+  if (a.type === 'message' && b.type === 'message') {
+    return a.message === b.message;
+  }
+
+  if (a.type === 'tool_group' && b.type === 'tool_group') {
+    return sameMessageList(a.tools, b.tools);
+  }
+
+  if (a.type === 'task' && b.type === 'task') {
+    if (a.taskCompleted !== b.taskCompleted) {
+      // Synthesized completions (legacy sync Task, forced stops) are rebuilt each
+      // run, so fall back to comparing the fields the task block actually reads.
+      if (!a.taskCompleted || !b.taskCompleted) return false;
+      if (
+        a.taskCompleted.taskStatus !== b.taskCompleted.taskStatus ||
+        a.taskCompleted.summary !== b.taskCompleted.summary ||
+        a.taskCompleted.taskUsage !== b.taskCompleted.taskUsage
+      ) {
+        return false;
+      }
+    }
+    if (a.taskModel !== b.taskModel) return false;
+    // `taskStarted` is synthesized/merged per run — compare by value.
+    const sa = a.taskStarted;
+    const sb = b.taskStarted;
+    if (
+      sa !== sb &&
+      (sa.toolUseId !== sb.toolUseId ||
+        sa.taskId !== sb.taskId ||
+        sa.timestamp !== sb.timestamp ||
+        sa.description !== sb.description ||
+        sa.taskType !== sb.taskType)
+    ) {
+      return false;
+    }
+    if (!sameMessageList(a.children, b.children)) return false;
+    return sameNestedSummaries(a.nestedSummaries, b.nestedSummaries);
+  }
+
+  return false;
 }

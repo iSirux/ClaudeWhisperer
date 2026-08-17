@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { SdkMessage, SdkImageContent, EffortLevel, SdkSession } from "$lib/stores/sdkSessions";
+  import type { SdkMessage, SdkImageContent, EffortLevel } from "$lib/stores/sdkSessions";
+  import type { SdkProvider } from "$lib/utils/models";
   import { renderMarkdown } from "$lib/utils/markdown";
   import { formatToolCallInput, getToolCallSummary } from "$lib/utils/toolCallFormatting";
   import { getModelType } from "$lib/utils/modelColors";
@@ -15,7 +16,8 @@
     sessionEffortLevel = null,
     sessionId = "",
     messageIndex = -1,
-    session = undefined,
+    sdkSessionId = undefined,
+    provider = undefined,
   }: {
     message: SdkMessage;
     copiedMessageId?: number | null;
@@ -25,7 +27,10 @@
     sessionEffortLevel?: EffortLevel;
     sessionId?: string;
     messageIndex?: number;
-    session?: SdkSession;
+    /** Forwarded to ForkButton. Scalars, not the session object — see ForkButton's
+     *  props for why (session identity churns on every store tick). */
+    sdkSessionId?: string;
+    provider?: SdkProvider;
   } = $props();
 
   function createImagePreviewUrl(img: SdkImageContent): string {
@@ -74,6 +79,16 @@
       ? getToolCallSummary(message.tool || "", message.input, 80)
       : ""
   );
+  // Collapsed <details> bodies are mounted lazily. Tool output and thinking text are by
+  // far the heaviest thing in the transcript — a 200-item window on a long session
+  // carries ~2MB of text this way — and all of it used to sit in the DOM permanently
+  // even though it's invisible until the user expands the card. Mount on first open and
+  // keep it after that, so toggling stays instant.
+  let hasExpanded = $state(false);
+  function handleToggle(event: Event & { currentTarget: HTMLDetailsElement }): void {
+    if (event.currentTarget.open) hasExpanded = true;
+  }
+
   let thinkingDuration = $derived(formatDuration(message.thinkingDurationMs));
   let isThinkingComplete = $derived(message.type === "thinking" && message.thinkingDurationMs !== undefined);
   let isPlanApprovalTool = $derived(message.tool === "ExitPlanMode");
@@ -114,7 +129,7 @@
       </div>
       <div class="message-actions">
         {#if sessionId && messageIndex >= 0}
-          <ForkButton {sessionId} {messageIndex} {message} {session} />
+          <ForkButton {sessionId} {messageIndex} {message} {sdkSessionId} {provider} />
         {/if}
         {#if sessionCwd && sessionModel && message.content}
           <RerunDropdown
@@ -157,7 +172,7 @@
       </div>
       <div class="text-message-actions">
         {#if sessionId && messageIndex >= 0}
-          <ForkButton {sessionId} {messageIndex} {message} {session} />
+          <ForkButton {sessionId} {messageIndex} {message} {sdkSessionId} {provider} />
         {/if}
         <button
           class="copy-message-button"
@@ -185,7 +200,7 @@
       </div>
     </div>
   {:else if message.type === "tool_start"}
-    <details class="tool-call" class:tool-running={!isPlanApprovalTool} class:tool-plan-complete={isPlanApprovalTool}>
+    <details class="tool-call" class:tool-running={!isPlanApprovalTool} class:tool-plan-complete={isPlanApprovalTool} ontoggle={handleToggle}>
       <summary class="tool-header">
         <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
@@ -214,7 +229,7 @@
           </span>
         {/if}
       </summary>
-      {#if !isPlanApprovalTool && message.input && Object.keys(message.input).length > 0}
+      {#if hasExpanded && !isPlanApprovalTool && message.input && Object.keys(message.input).length > 0}
         <pre
           class="tool-params"
           data-quote-source={message.tool ? `${message.tool} input` : "tool input"}
@@ -222,7 +237,7 @@
       {/if}
     </details>
   {:else if message.type === "tool_result"}
-    <details class="tool-call tool-completed">
+    <details class="tool-call tool-completed" ontoggle={handleToggle}>
       <summary class="tool-header">
         <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
@@ -249,7 +264,7 @@
           Done
         </span>
       </summary>
-      {#if !isPlanApprovalTool && message.output}
+      {#if hasExpanded && !isPlanApprovalTool && message.output}
         <pre
           class="tool-output-content"
           data-quote-source={message.tool ? `${message.tool} output` : "tool output"}
@@ -303,7 +318,7 @@
       </div>
     </div>
   {:else if message.type === "thinking"}
-    <details class="tool-call" class:tool-running={!isThinkingComplete} class:tool-completed={isThinkingComplete}>
+    <details class="tool-call" class:tool-running={!isThinkingComplete} class:tool-completed={isThinkingComplete} ontoggle={handleToggle}>
       <summary class="tool-header">
         <svg class="chevron" viewBox="0 0 16 16" fill="currentColor">
           <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
@@ -328,7 +343,7 @@
           </span>
         {/if}
       </summary>
-      {#if message.content}
+      {#if hasExpanded && message.content}
         <pre class="tool-output-content thinking-content">{message.content}</pre>
       {/if}
     </details>

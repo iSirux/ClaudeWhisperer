@@ -56,6 +56,7 @@
   import {
     processSdkMessages,
     buildRenderItems,
+    renderItemsEquivalent,
     type RenderItem,
   } from "./sdk/sdkViewMessageProcessing";
   import {
@@ -148,9 +149,20 @@
   // reconciliation — observed as a whole-app freeze on any session containing a
   // continued agent. The occurrence counter is deterministic because item order
   // is stable across recomputes.
+  //
+  // The wrappers are also memoized across recomputes: `buildRenderItems` runs
+  // from scratch on every store tick and hands back brand-new objects even for
+  // rows nothing touched, which would invalidate the props of every mounted
+  // message component (re-running markdown, tool formatting and DOM work for the
+  // whole window) on each streaming delta. Reusing the previous tick's wrapper
+  // when the item is equivalent keeps per-tick work proportional to what
+  // actually changed — the difference between "scales" and "freezes" on a
+  // thousand-message session.
+  let prevKeyedItems = new Map<string, { item: RenderItem; key: string }>();
   let keyedVisibleItems = $derived.by(() => {
     const seen = new Map<string, number>();
-    return visibleRenderItems.map((item) => {
+    const next = new Map<string, { item: RenderItem; key: string }>();
+    const result = visibleRenderItems.map((item) => {
       let base: string;
       if (item.type === "message") {
         base = `msg-${item.message.timestamp}`;
@@ -161,8 +173,40 @@
       }
       const n = seen.get(base) ?? 0;
       seen.set(base, n + 1);
-      return { item, key: n === 0 ? base : `${base}#${n}` };
+      const key = n === 0 ? base : `${base}#${n}`;
+
+      const prev = prevKeyedItems.get(key);
+      const entry =
+        prev && renderItemsEquivalent(prev.item, item) ? prev : { item, key };
+      next.set(key, entry);
+      return entry;
     });
+    prevKeyedItems = next;
+    return result;
+  });
+
+  // Original-index lookup for the raw messages array, built once per messages
+  // change instead of scanning per rendered row. The template asks for this for
+  // every visible message (fork support), so the naive findIndex made each
+  // store tick cost O(window x total messages) — ~500k comparisons on a
+  // 6000-message session, every single streaming delta.
+  //
+  // First-match-wins, matching the findIndex semantics it replaces.
+  const messageIndexKey = (type: string, discriminator: string | number) =>
+    `${type}|${discriminator}`;
+  let messageIndexLookup = $derived.by(() => {
+    const byToolUse = new Map<string, number>();
+    const byTimestamp = new Map<string, number>();
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.toolUseId) {
+        const key = messageIndexKey(m.type, m.toolUseId);
+        if (!byToolUse.has(key)) byToolUse.set(key, i);
+      }
+      const tsKey = messageIndexKey(m.type, m.timestamp);
+      if (!byTimestamp.has(tsKey)) byTimestamp.set(tsKey, i);
+    }
+    return { byToolUse, byTimestamp };
   });
 
   let status = $derived(session?.status ?? "idle");
@@ -830,12 +874,13 @@
     // Use timestamp + type as a key to find the original message
     // The processedMessages step merges tool_start into tool_result, so for merged messages
     // we search by toolUseId first, then fall back to timestamp matching
+    const { byToolUse, byTimestamp } = messageIndexLookup;
     if (msg.toolUseId) {
-      const idx = messages.findIndex(m => m.toolUseId === msg.toolUseId && m.type === msg.type);
-      if (idx >= 0) return idx;
+      const idx = byToolUse.get(messageIndexKey(msg.type, msg.toolUseId));
+      if (idx !== undefined) return idx;
     }
     // Fall back to timestamp matching (works for user, text, thinking, etc.)
-    return messages.findIndex(m => m.timestamp === msg.timestamp && m.type === msg.type);
+    return byTimestamp.get(messageIndexKey(msg.type, msg.timestamp)) ?? -1;
   }
 
   function getMessageText(msg: SdkMessage): string {
@@ -2075,7 +2120,8 @@
               {sessionEffortLevel}
               {sessionId}
               messageIndex={getOriginalMessageIndex(item.message)}
-              session={session ?? undefined}
+              sdkSessionId={session?.sdkSessionId}
+              provider={session?.provider}
             />
           </div>
           {/if}

@@ -58,6 +58,42 @@ const FIELD_TRANSFORMERS: Record<string, TransformFn> = {
 };
 
 /**
+ * Type names whose subtrees are pure JSON data with nothing to strip, so they can
+ * be handed to the serializer by reference instead of deep-cloned.
+ *
+ * This is the difference between a save costing ~17ms of pure garbage (a 6000-message
+ * session is ~11MB of messages, and every save walked and reallocated all of it)
+ * and costing nothing. The result only ever gets read — `sdkSessionToPersisted`'s
+ * callers hand it straight to `invoke`, which JSON-serializes it — so sharing the
+ * live message objects is safe.
+ *
+ * A type may only be listed here when it carries NO non-persistable fields (asserted
+ * below) and no `Uint8Array`/`Date` values anywhere in its subtree. Both would
+ * otherwise be silently persisted in the wrong shape rather than stripped/converted.
+ * `PendingTranscriptionInfo.audioData` is exactly that case, which is why it is
+ * excluded by name and its type is NOT listed here.
+ */
+const PASSTHROUGH_TYPES = new Set(
+  ['SdkMessage', 'SdkSessionUsage'].filter((typeName) => {
+    // Self-healing guard: adding a non-persistable field to a passthrough type would
+    // otherwise silently persist it. Drop the type back to the cloning path (correct,
+    // just slower) and say so loudly rather than shipping the wrong data.
+    const excluded = NON_PERSISTABLE_FIELDS[typeName];
+    if (excluded && excluded.size > 0) {
+      console.error(
+        `[sessionPersistence] ${typeName} is listed as a passthrough type but declares ` +
+          `non-persistable fields (${[...excluded].join(', ')}); falling back to deep copy. ` +
+          `Remove it from PASSTHROUGH_TYPES.`
+      );
+      return false;
+    }
+    return true;
+  })
+);
+
+const hasFieldTransformers = Object.keys(FIELD_TRANSFORMERS).length > 0;
+
+/**
  * Deep clone an object, excluding non-persistable fields and applying transformers.
  * This is the core of the auto-persistence system.
  */
@@ -75,10 +111,18 @@ function serializeForPersistence<T>(
     return obj;
   }
 
+  // Nothing to strip or transform in this subtree — share it instead of copying it.
+  if (!hasFieldTransformers && PASSTHROUGH_TYPES.has(typeName)) {
+    return obj;
+  }
+
   // Handle arrays
   if (Array.isArray(obj)) {
+    // Path tracking exists solely to look up FIELD_TRANSFORMERS; building index
+    // paths for every element of a multi-thousand-entry array when there are no
+    // transformers is pure overhead.
     return obj.map((item, index) =>
-      serializeForPersistence(item, typeName, `${parentPath}[${index}]`)
+      serializeForPersistence(item, typeName, hasFieldTransformers ? `${parentPath}[${index}]` : '')
     ) as T;
   }
 
@@ -101,13 +145,15 @@ function serializeForPersistence<T>(
       continue;
     }
 
-    const fullPath = parentPath ? `${parentPath}.${key}` : key;
+    const fullPath = !hasFieldTransformers ? '' : parentPath ? `${parentPath}.${key}` : key;
     let value = (obj as Record<string, unknown>)[key];
 
     // Apply transformer if defined
-    const transformer = FIELD_TRANSFORMERS[fullPath];
-    if (transformer) {
-      value = transformer(value);
+    if (hasFieldTransformers) {
+      const transformer = FIELD_TRANSFORMERS[fullPath];
+      if (transformer) {
+        value = transformer(value);
+      }
     }
 
     // Skip undefined values
@@ -288,19 +334,31 @@ export interface PersistedSessions {
 // CONVERSION FUNCTIONS
 // ============================================================================
 
+// Serialized form cached by session object identity. The store is immutable — every
+// mutation spreads into a new session object — so an unchanged identity guarantees an
+// unchanged serialization. This is what keeps a full save (which walks every session,
+// not just the dirty ones) from re-serializing megabytes of untouched history.
+const persistedCache = new WeakMap<SdkSession, PersistedSdkSession>();
+
 /**
  * Convert frontend SDK session to persisted format.
  * Uses auto-serialization - all fields are preserved except those in NON_PERSISTABLE_FIELDS.
  */
 export function sdkSessionToPersisted(session: SdkSession): PersistedSdkSession {
-  // Calculate final accumulated duration including current work period
+  // Calculate final accumulated duration including current work period.
+  // Recomputed on every call (never cached) — it's clock-dependent, so a live
+  // session's duration must not be frozen at whenever we first serialized it.
   let accumulatedDurationMs = session.accumulatedDurationMs || 0;
   if (session.currentWorkStartedAt) {
     accumulatedDurationMs += Date.now() - session.currentWorkStartedAt;
   }
 
   // Use auto-serialization
-  const persisted = serializeForPersistence(session, 'SdkSession');
+  let persisted = persistedCache.get(session);
+  if (!persisted) {
+    persisted = serializeForPersistence(session, 'SdkSession');
+    persistedCache.set(session, persisted);
+  }
 
   // Override accumulated duration with calculated value
   return {

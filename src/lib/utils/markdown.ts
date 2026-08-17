@@ -86,18 +86,73 @@ marked.use({
   },
 });
 
+// Render cache. Markdown + highlight.js is the single most expensive thing the
+// transcript does (~40µs/KB), and a long session re-renders the same immutable
+// message content over and over: every store tick re-evaluates the {@html} in
+// SdkMessage, and every session switch / "show earlier messages" remounts
+// hundreds of them. Message content never changes once emitted, so the source
+// string is a perfect cache key.
+//
+// Bounded by BOTH entry count and total cached HTML size so a session full of
+// huge outputs can't grow this without limit. Insertion-ordered Map ⇒ the first
+// key is the least recently inserted; re-inserting on hit makes it a true LRU.
+const RENDER_CACHE_MAX_ENTRIES = 600;
+const RENDER_CACHE_MAX_CHARS = 4_000_000;
+// Don't cache one enormous blob — it would evict everything else for no reuse.
+const RENDER_CACHE_MAX_ITEM_CHARS = 200_000;
+
+const renderCache = new Map<string, string>();
+let renderCacheChars = 0;
+
+function evictRenderCache(): void {
+  while (
+    renderCache.size > RENDER_CACHE_MAX_ENTRIES ||
+    renderCacheChars > RENDER_CACHE_MAX_CHARS
+  ) {
+    const oldest = renderCache.keys().next();
+    if (oldest.done) break;
+    const value = renderCache.get(oldest.value);
+    renderCache.delete(oldest.value);
+    renderCacheChars -= (oldest.value.length + (value?.length ?? 0));
+  }
+}
+
 /**
- * Renders markdown text to HTML
+ * Renders markdown text to HTML.
+ *
+ * Memoized on the input string — see the cache notes above. Output is a pure
+ * function of the input (the renderer and highlight config are module-level and
+ * immutable), so returning a cached string is always correct.
+ *
  * @param markdown - The markdown string to render
  * @returns HTML string
  */
 export function renderMarkdown(markdown: string): string {
+  if (!markdown) return '';
+
+  const cached = renderCache.get(markdown);
+  if (cached !== undefined) {
+    // Refresh recency.
+    renderCache.delete(markdown);
+    renderCache.set(markdown, cached);
+    return cached;
+  }
+
+  let html: string;
   try {
-    return marked.parse(markdown) as string;
+    html = marked.parse(markdown) as string;
   } catch (error) {
     console.error('Error parsing markdown:', error);
     return markdown; // Return original text if parsing fails
   }
+
+  if (markdown.length <= RENDER_CACHE_MAX_ITEM_CHARS) {
+    renderCache.set(markdown, html);
+    renderCacheChars += markdown.length + html.length;
+    evictRenderCache();
+  }
+
+  return html;
 }
 
 /**

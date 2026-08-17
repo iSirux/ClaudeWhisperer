@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { sdkSessions, activeSdkSessionId, type SdkMessage, type SdkSession } from '$lib/stores/sdkSessions';
+  import { sdkSessions, activeSdkSessionId, type SdkMessage } from '$lib/stores/sdkSessions';
+  import type { SdkProvider } from '$lib/utils/models';
 
   interface Props {
     /** The source session ID */
@@ -8,11 +9,16 @@
     messageIndex: number;
     /** The message being forked from (used to determine fork availability) */
     message: SdkMessage;
-    /** The source session (used to check sdkSessionId availability) */
-    session?: SdkSession;
+    /** The source session's SDK session id — set once it has sent a query.
+     *  Deliberately a scalar rather than the whole session: the session object gets a
+     *  new identity on every store tick, so passing it invalidated this button (and
+     *  its parent message row) on every streaming delta. */
+    sdkSessionId?: string;
+    /** The source session's provider (Codex can't fork yet) */
+    provider?: SdkProvider;
   }
 
-  let { sessionId, messageIndex, message, session }: Props = $props();
+  let { sessionId, messageIndex, message, sdkSessionId, provider }: Props = $props();
   let forking = $state(false);
 
   // Fork is available when:
@@ -23,8 +29,8 @@
   let canFork = $derived(
     messageIndex > 0 &&
     (!!message.turnUuid || message.type === 'user') &&
-    !!session?.sdkSessionId &&
-    session?.provider !== 'openai'
+    !!sdkSessionId &&
+    provider !== 'openai'
   );
 
   async function handleFork() {

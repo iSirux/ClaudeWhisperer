@@ -2461,7 +2461,7 @@ function createSdkSessionsStore() {
       update(sessions =>
         sessions.map(s => (s.id === id ? { ...s, contextOverflow: false } : s))
       );
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /**
@@ -2764,7 +2764,7 @@ function createSdkSessionsStore() {
               : s
           )
         );
-        debouncedSave();
+        debouncedSave(id);
         return;
       }
 
@@ -2856,7 +2856,7 @@ function createSdkSessionsStore() {
             messages: [...closedThinkingMessages, { type: 'stopped' as const, timestamp: now }],
           };
         }));
-        debouncedSave();
+        debouncedSave(id);
         return;
       }
 
@@ -3106,20 +3106,20 @@ function createSdkSessionsStore() {
         if (config.provider !== undefined) updated.provider = normalizeSdkProvider(config.provider, updated.model);
         return updated;
       }));
-      debouncedSave();
+      debouncedSave(id);
     },
 
     updateDraft(id: string, draftPrompt?: string, draftImages?: SdkImageContent[]): void {
       const normalizedPrompt = normalizeDraftPrompt(draftPrompt);
       const normalizedImages = normalizeDraftImages(draftImages);
       update(sessions => sessions.map(s => s.id === id ? { ...s, draftPrompt: normalizedPrompt, draftImages: normalizedImages } : s));
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /** Set the PR summary detected for a session's branch (drives header/list badges). */
     setSessionPr(id: string, pr: SessionPrSummary | null): void {
       update(sessions => sessions.map(s => s.id === id ? { ...s, pr } : s));
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /** Persist whether the PR dock panel is open for a session (survives restart). */
@@ -3730,7 +3730,7 @@ function createSdkSessionsStore() {
             : s
         )
       );
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /**
@@ -3774,7 +3774,7 @@ function createSdkSessionsStore() {
             : s
         )
       );
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /**
@@ -3826,7 +3826,7 @@ function createSdkSessionsStore() {
             : s
         )
       );
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /**
@@ -3963,7 +3963,7 @@ function createSdkSessionsStore() {
           return { ...s, rateLimited: null, messages };
         })
       );
-      debouncedSave();
+      debouncedSave(id);
     },
 
     /**
@@ -3988,7 +3988,7 @@ function createSdkSessionsStore() {
           };
         })
       );
-      debouncedSave();
+      debouncedSave(id);
     },
 
     updateStatus(id: string, status: SdkSession['status']): void {
