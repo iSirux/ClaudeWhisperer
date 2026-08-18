@@ -16,6 +16,8 @@ mod usage_stats;
 mod util;
 mod validation;
 mod whisper;
+#[cfg(windows)]
+mod win_env;
 
 use commands::{
     account_cmds, archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
@@ -242,6 +244,15 @@ pub fn run() {
         eprintln!("failed to inherit shell PATH: {err}");
     }
 
+    // Windows counterpart. A GUI launch hands us a clean PATH, but launching the
+    // app from an MSYS shell (Git Bash, or a terminal defaulting to bash — the
+    // usual `npm run tauri:dev` path) can hand us one that is already mangled,
+    // and every agent process we spawn inherits the damage. Repair it here,
+    // before anything spawns; the outcome is logged from `setup` because the log
+    // plugin does not exist yet.
+    #[cfg(windows)]
+    let path_repair = win_env::repair_process_env();
+
     let context = tauri::generate_context!();
 
     // Windows requires the AppUserModelID to be set before the process shows any UI;
@@ -345,6 +356,11 @@ pub fn run() {
                     log::warn!("[config.load] {}", warning);
                 }
             }
+
+            // Same story for the PATH repair, which has to run before any child
+            // process exists — i.e. before logging is initialised.
+            #[cfg(windows)]
+            path_repair.log();
 
             // Move stored API keys from the pre-rename keyring service name.
             migrate_legacy_keyring(app.handle());

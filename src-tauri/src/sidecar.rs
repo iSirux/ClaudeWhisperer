@@ -1001,6 +1001,22 @@ impl SidecarManager {
         {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
             cmd.creation_flags(CREATE_NO_WINDOW);
+
+            // Agent processes must not inherit MSYS shell markers: `MSYSTEM`
+            // makes the MSYS runtime skip its Windows->POSIX PATH conversion, so
+            // a Git Bash spawned by an agent's Bash tool splits a `;`-separated
+            // PATH on `:` and ends up without `/usr/bin`.
+            let removed = crate::win_env::scrub_child_env(&mut cmd);
+            if !removed.is_empty() {
+                log::warn!(
+                    "[sidecar] Scrubbed MSYS environment leakage from the agent env: {}",
+                    removed.join(", ")
+                );
+            }
+            log::info!(
+                "[sidecar] Agent PATH: {}",
+                crate::win_env::path_health(&std::env::var("PATH").unwrap_or_default())
+            );
         }
 
         let mut child = cmd.spawn().map_err(|e| {

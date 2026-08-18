@@ -51,3 +51,8 @@ windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }
 xcap = "0.9.6"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+
+[target.'cfg(windows)'.dependencies]
+# Reads the persisted (machine + user) PATH when the inherited one arrives
+# MSYS-mangled — see src/win_env.rs.
+winreg = "0.55"

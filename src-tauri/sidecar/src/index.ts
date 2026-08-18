@@ -1803,6 +1803,7 @@ async function ensureCodexAppServer(
   if (session.extraEnv?.CODEX_HOME && !session.extraEnv.OPENAI_API_KEY) {
     delete spawnEnv.OPENAI_API_KEY;
   }
+  send({ type: "debug", id, message: `codex app-server env: ${describeEnvHealth(spawnEnv)}` });
   let child: ChildProcessWithoutNullStreams;
   if (globalThis.process.platform === "win32") {
     // On Windows, .cmd shims require launching via cmd.exe.
@@ -3774,6 +3775,35 @@ async function handleValidationAgent(msg: ValidationAgentMessage): Promise<void>
   }
 }
 
+/**
+ * One-line health summary of the PATH an agent process is about to inherit,
+ * logged per session so a "works in my terminal, not in the app" report is
+ * answerable from the log alone.
+ *
+ * Only Windows has a real problem here: MSYS PATH mangling leaves entries no
+ * valid Windows PATH contains — a bare drive letter (`C`, from a POSIX split of
+ * `C:\...`), a POSIX-form entry, or a `:` outside the drive separator. Note the
+ * `PATH`/`Path` lookup: `{...process.env}` is a plain object, so key access is
+ * case-sensitive even though Windows itself is not.
+ */
+function describeEnvHealth(env: Record<string, string | undefined>): string {
+  const isWin = globalThis.process.platform === "win32";
+  const path = env.PATH ?? env.Path ?? "";
+  const entries = path.split(isWin ? ";" : ":").filter((e) => e.trim() !== "");
+  if (!isWin) return `PATH ${entries.length} entries`;
+
+  const corrupt = entries.filter((entry) => {
+    const e = entry.trim().replace(/^"|"$/g, "");
+    return /^[A-Za-z]$/.test(e) || e.startsWith("/") || e.slice(2).includes(":");
+  });
+  const msys = ["MSYSTEM", "MSYS", "MINGW_PREFIX", "ORIGINAL_PATH"].filter(
+    (v) => env[v]
+  );
+  const leak = msys.length ? `, MSYS leakage: ${msys.join(",")}` : "";
+  if (!corrupt.length) return `PATH ${entries.length} entries, ok${leak}`;
+  return `PATH ${entries.length} entries, ${corrupt.length} CORRUPT: ${corrupt.join(" | ")}${leak} — full value: ${path}`;
+}
+
 async function handleCreate(msg: CreateMessage): Promise<void> {
   // Interactive permission mode (Claude only). "auto" opts into the SDK's
   // AI-classified permission preview; anything else keeps the "acceptEdits"
@@ -3904,6 +3934,12 @@ async function handleCreate(msg: CreateMessage): Promise<void> {
     }
     options.env = nextEnv;
   }
+
+  send({
+    type: "debug",
+    id: msg.id,
+    message: `agent env: ${describeEnvHealth(options.env as Record<string, string | undefined>)}`,
+  });
 
   // Preserve Claude Code's built-in prompt and tool setup so repo/global Skills
   // can load, while still appending session-specific instructions from the app.
