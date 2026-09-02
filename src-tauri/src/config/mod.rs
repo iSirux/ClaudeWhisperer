@@ -348,6 +348,7 @@ fn default_autocompact_enabled() -> bool {
 
 fn default_enabled_models() -> Vec<String> {
     vec![
+        "claude-fable-5-1".to_string(),
         "claude-fable-5".to_string(),
         "claude-opus-5".to_string(),
         "claude-opus-4-8".to_string(),
@@ -957,6 +958,46 @@ mod tests {
         assert_eq!(p.model_priority, LlmModelPriority::Accuracy);
         assert_eq!(config.llm.fast_chain, vec!["default".to_string()]);
         assert_eq!(config.llm.quality_chain, vec!["default".to_string()]);
+    }
+
+    #[test]
+    fn migration_surfaces_fable_5_1() {
+        // A pre-v8 config gains Fable 5.1 at the front of the model selector
+        // without losing (or reordering) the rest of the user's selection.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(7));
+        obj.insert(
+            "enabled_models".to_string(),
+            serde_json::json!(["claude-opus-5", "claude-sonnet-5"]),
+        );
+
+        migration::run_migrations(&mut value, 7);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_models,
+            vec!["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5"]
+        );
+    }
+
+    #[test]
+    fn migration_fable_5_1_is_not_duplicated() {
+        // Re-running the migration over a config that already lists Fable 5.1
+        // must not add a second entry.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(7));
+        obj.insert(
+            "enabled_models".to_string(),
+            serde_json::json!(["claude-opus-5", "claude-fable-5-1"]),
+        );
+
+        migration::run_migrations(&mut value, 7);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_models,
+            vec!["claude-fable-5-1", "claude-opus-5"]
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v4_to_v5,
     migrate_v5_to_v6,
     migrate_v6_to_v7,
+    migrate_v7_to_v8,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -267,6 +268,26 @@ fn migrate_v6_to_v7(value: &mut Value) {
     llm.remove("endpoint");
     llm.remove("auto_model");
     llm.remove("model_priority");
+}
+
+// ============================================================================
+// v7 -> v8: Claude Fable 5.1 rollout — surface the new model in existing
+// configs without disturbing the rest of the user's selection
+// ============================================================================
+
+fn migrate_v7_to_v8(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_models") {
+        enabled_models.insert(0, Value::String("claude-fable-5-1".to_string()));
+        let mut seen = std::collections::HashSet::new();
+        enabled_models.retain(|v| match v {
+            Value::String(s) => seen.insert(s.clone()),
+            _ => true,
+        });
+    }
 }
 
 /// Remap deprecated Groq/Gemini LLM model IDs on the raw config value.
