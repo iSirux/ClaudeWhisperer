@@ -76,6 +76,9 @@ export interface LaunchSessionOptions {
   accountId?: string;
   /** Create a fresh git worktree for the session (branch name generated from `branchNameHint`). */
   useWorktree?: boolean;
+  /** Run in this existing worktree (absolute path) instead of the main checkout. Ignored when
+   *  `useWorktree` is set. The caller is responsible for checking that the directory exists. */
+  worktreePath?: string;
   /** Hint used to generate the worktree branch name (defaults to the prompt). */
   branchNameHint?: string;
   systemPrompt?: string;
@@ -113,7 +116,7 @@ export async function launchSession(opts: LaunchSessionOptions): Promise<string>
     );
   }
 
-  let cwd = repo.path;
+  let cwd = (!opts.useWorktree && opts.worktreePath) || repo.path;
   let createdBranch: string | undefined;
   let worktreePostSetup:
     | { repoPath: string; copyFiles: string[]; postCreateCommands: string[] }

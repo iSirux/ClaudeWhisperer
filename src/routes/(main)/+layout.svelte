@@ -11,6 +11,7 @@
   import { sdkSessions, activeSdkSessionId, activeSdkSession } from '$lib/stores/sdkSessions';
   import { startSmartQueue } from '$lib/stores/smartQueue';
   import { schedules, startSchedules } from '$lib/stores/schedules';
+  import { startCliInbox } from '$lib/stores/cliInbox';
   import { spareTokens, startSpareTokens } from '$lib/stores/spareTokens';
   import { updater } from '$lib/stores/updater';
   import { isRecording } from '$lib/stores/recording';
@@ -90,6 +91,7 @@
   let cleanupPeriodicSave: (() => void) | null = null;
   let cleanupSmartQueue: (() => void) | null = null;
   let cleanupSchedules: (() => void) | null = null;
+  let cleanupCliInbox: (() => void) | null = null;
   let cleanupSpareTokens: (() => void) | null = null;
   let cleanupUpdateChecks: (() => void) | null = null;
 
@@ -440,6 +442,9 @@
     // (it catches up on anything missed while the app was closed on first pass).
     await schedules.load();
     cleanupSchedules = startSchedules();
+    // `ow` CLI inbox: requests written by agents (needs the schedules loaded first,
+    // since a schedule request becomes a Schedule entity).
+    cleanupCliInbox = startCliInbox();
 
     // Spare Tokens: load persisted auto state, then start the auto driver
     // (enabled gating happens inside each evaluation).
@@ -531,6 +536,7 @@
     if (cleanupPeriodicSave) cleanupPeriodicSave();
     if (cleanupSmartQueue) cleanupSmartQueue();
     if (cleanupSchedules) cleanupSchedules();
+    if (cleanupCliInbox) cleanupCliInbox();
     if (cleanupSpareTokens) cleanupSpareTokens();
     if (cleanupUpdateChecks) cleanupUpdateChecks();
     cleanupSequenceExecutionListeners();

@@ -58,6 +58,10 @@ export interface ScheduleSessionTarget {
   provider: 'claude' | 'openai';
   accountId?: string;
   useWorktree: boolean;
+  /** Run in this existing worktree (absolute path) instead of the main checkout. Ignored
+   *  when `useWorktree` is set. If the directory is gone at fire time the run falls back
+   *  to the main repo path (deliberate — see docs/cli-scheduling-spec.md). */
+  worktreePath?: string;
   systemPrompt?: string;
 }
 
@@ -66,7 +70,14 @@ export interface ScheduleMessageTarget {
   sessionId: string;
   ifSessionGone: 'skip' | 'launch_new';
   /** Snapshot taken at creation so 'launch_new' can fall back when the session is gone. */
-  fallback?: { repoId: string; model: string; effortLevel: EffortLevel; provider: 'claude' | 'openai'; accountId?: string };
+  fallback?: {
+    repoId: string;
+    model: string;
+    effortLevel: EffortLevel;
+    provider: 'claude' | 'openai';
+    accountId?: string;
+    worktreePath?: string;
+  };
   action?: 'compact';             // reuse the existing parked-turn compact action
 }
 
@@ -75,6 +86,8 @@ export interface ScheduleRun {
   status: 'ok' | 'failed' | 'skipped' | 'deferred'; // deferred = launched but parked (rate limit)
   sessionId?: string;
   error?: string;
+  /** Non-fatal remark, e.g. "worktree gone, ran in main repo". */
+  note?: string;
 }
 
 export interface Schedule {
@@ -94,6 +107,8 @@ export interface Schedule {
   lastRunAt?: number;
   runCount: number;
   history: ScheduleRun[];         // newest first, capped at 20
+  /** Who created it: the `ow` CLI (an agent) or the app UI (absent). */
+  source?: 'cli';
 }
 
 /** The fields a caller must supply when creating a schedule; the rest are derived. */
@@ -339,7 +354,7 @@ const PATTERN_KINDS = ['daily', 'weekly', 'monthly', 'interval'];
  * Everything *inside* the pattern is already tolerated (missing time, out-of-range
  * day, NaN interval all clamp to sane defaults).
  */
-function isValidSpec(when: ScheduleSpec | undefined): when is ScheduleSpec {
+export function isValidScheduleSpec(when: ScheduleSpec | undefined): when is ScheduleSpec {
   if (!when || typeof when !== 'object') return false;
   if (when.kind === 'at') return Number.isFinite(when.at);
   if (when.kind !== 'recurring') return false;
@@ -353,9 +368,10 @@ function isValidSpec(when: ScheduleSpec | undefined): when is ScheduleSpec {
  * files). Mirrors the tolerant `normalizeItemState` pattern in `spareTokens.ts`.
  */
 function normalizeSchedule(raw: Partial<Schedule>): Schedule | null {
-  if (!raw || typeof raw !== 'object' || !raw.target || !isValidSpec(raw.when)) return null;
+  if (!raw || typeof raw !== 'object' || !raw.target || !isValidScheduleSpec(raw.when)) return null;
   const prompt = typeof raw.prompt === 'string' ? raw.prompt : '';
   return {
+    ...(raw.source === 'cli' ? { source: 'cli' as const } : {}),
     id: raw.id ?? crypto.randomUUID(),
     label: (typeof raw.label === 'string' ? raw.label.trim() : '') || deriveLabel(prompt),
     enabled: raw.enabled ?? true,
@@ -446,6 +462,7 @@ function createSchedulesStore() {
     // callers can't backdate a schedule into a different everyNWeeks phase.
     const createdAt = Date.now();
     const item: Schedule = {
+      ...(partial.source ? { source: partial.source } : {}),
       id: crypto.randomUUID(),
       label: partial.label?.trim() || deriveLabel(partial.prompt),
       enabled: partial.enabled ?? true,
@@ -703,6 +720,7 @@ async function launchForSchedule(
     provider: 'claude' | 'openai';
     accountId?: string;
     useWorktree?: boolean;
+    worktreePath?: string;
     systemPrompt?: string;
   }
 ): Promise<string | null> {
@@ -715,6 +733,19 @@ async function launchForSchedule(
       error: 'Repository no longer exists',
     });
     return null;
+  }
+
+  // An existing-worktree target whose directory vanished falls back to the main
+  // checkout (user decision for CLI-created schedules — the alternative is a run
+  // that silently never happens). The fallback is recorded on the run.
+  let worktreePath = config.useWorktree ? undefined : config.worktreePath;
+  let note: string | undefined;
+  if (worktreePath) {
+    const exists = await invoke<boolean>('path_is_dir', { path: worktreePath }).catch(() => false);
+    if (!exists) {
+      note = `Worktree ${worktreePath} is gone; ran in the main repository instead`;
+      worktreePath = undefined;
+    }
   }
 
   // Snapshot exhaustion at fire time: the launch still goes ahead (the
@@ -731,6 +762,7 @@ async function launchForSchedule(
       provider: config.provider,
       accountId: config.accountId,
       useWorktree: config.useWorktree,
+      worktreePath,
       branchNameHint: schedule.label,
       systemPrompt: config.systemPrompt,
       tag: { schedule: { id: schedule.id, label: schedule.label } },
@@ -742,6 +774,7 @@ async function launchForSchedule(
       at,
       status: exhausted || parked ? 'deferred' : 'ok',
       sessionId,
+      ...(note ? { note } : {}),
     });
     return sessionId;
   } catch (error) {
@@ -820,7 +853,9 @@ function isHeld(schedule: Schedule, sessions: SdkSession[]): boolean {
   if (!schedule.waitForIdle) return false;
   const repo = findRepoById(get(repos).list, schedule.target.repoId);
   if (!repo) return false; // missing repo — let it fire and fail with a clear reason
-  return hasBusySessionsInScope(sessions, repo.path);
+  // Scope = the cwd the run will use: the target's existing worktree, else the main checkout.
+  const scope = (!schedule.target.useWorktree && schedule.target.worktreePath) || repo.path;
+  return hasBusySessionsInScope(sessions, scope);
 }
 
 /** Re-entrancy guard: the tick and the startup pass can overlap. */
@@ -881,6 +916,15 @@ function catchUpMissed(): void {
     if (schedule.nextFireAt >= now) continue;
     if (schedule.catchUp === 'skip') schedules.markMissed(schedule.id, now);
   }
+}
+
+/**
+ * Evaluate due schedules right away instead of waiting for the next 30 s tick.
+ * Used after adding a schedule that is already due (e.g. `ow run --same-session`,
+ * which parks a follow-up that should go out as soon as the session is idle).
+ */
+export function evaluateSchedulesNow(): Promise<void> {
+  return evaluateSchedules();
 }
 
 let started = false;

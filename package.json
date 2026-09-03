@@ -12,8 +12,10 @@
         "tauri": "tauri",
         "sidecar:install": "cd src-tauri/sidecar && npm install",
         "sidecar:build": "cd src-tauri/sidecar && npm run build",
-        "tauri:dev": "npm run sidecar:build && tauri dev --config src-tauri/tauri.dev.conf.json",
-        "tauri:build": "npm run sidecar:build && tauri build"
+        "tauri:dev": "npm run sidecar:build && npm run cli:build && tauri dev --config src-tauri/tauri.dev.conf.json",
+        "tauri:build": "npm run sidecar:build && tauri build",
+        "cli:build": "node scripts/build-cli.mjs",
+        "cli:install": "node scripts/install-cli.mjs"
     },
     "license": "SEE LICENSE IN LICENSE",
     "dependencies": {

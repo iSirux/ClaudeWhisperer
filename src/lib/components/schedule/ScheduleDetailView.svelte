@@ -348,6 +348,23 @@
             Run in a new worktree
           </label>
 
+          {#if sessionTarget.worktreePath}
+            <span class="text-xs text-text-muted truncate" title={sessionTarget.worktreePath}>
+              {#if sessionTarget.useWorktree}
+                Existing worktree ignored while "new worktree" is on
+              {:else}
+                Runs in worktree {sessionTarget.worktreePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop()}
+                (falls back to the main checkout if it is gone)
+              {/if}
+              <button
+                class="ml-1 underline hover:text-text-primary transition-colors"
+                onclick={() => patchSessionTarget({ worktreePath: undefined })}
+              >
+                use main checkout
+              </button>
+            </span>
+          {/if}
+
           {#if availableAccounts.length > 1}
             <label class="flex items-center gap-1.5 text-xs text-text-secondary">
               Account

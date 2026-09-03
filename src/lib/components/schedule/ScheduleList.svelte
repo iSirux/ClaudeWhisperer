@@ -284,6 +284,22 @@
                   ? boundSessionLabel(schedule.target.sessionId)
                   : repoLabel(schedule.target.repoId)}
               </span>
+              {#if schedule.target.kind === 'session' && !schedule.target.useWorktree && schedule.target.worktreePath}
+                <span
+                  class="text-[10px] px-1.5 py-px rounded bg-surface text-text-secondary truncate max-w-[110px]"
+                  title="Runs in worktree {schedule.target.worktreePath}"
+                >
+                  ⑂ {schedule.target.worktreePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop()}
+                </span>
+              {/if}
+              {#if schedule.source === 'cli'}
+                <span
+                  class="text-[10px] px-1 py-px rounded border border-border text-text-muted shrink-0"
+                  title="Created by an agent via the ow CLI"
+                >
+                  CLI
+                </span>
+              {/if}
               {#if schedule.enabled && schedule.nextFireAt != null}
                 <span
                   class="text-[10px] text-accent shrink-0"

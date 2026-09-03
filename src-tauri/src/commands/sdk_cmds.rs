@@ -48,6 +48,9 @@ pub async fn create_sdk_session(
     };
     let mut env_pairs = gh_env;
     env_pairs.extend(account_env);
+    // Let the `ow` CLI (run by the agent inside this session) find this app instance
+    // and the session it was invoked from; also puts the CLI bin dir on PATH.
+    env_pairs.extend(crate::commands::cli_cmds::cli_session_env(&id));
     let env = if env_pairs.is_empty() {
         None
     } else {

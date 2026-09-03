@@ -20,7 +20,7 @@ mod whisper;
 mod win_env;
 
 use commands::{
-    account_cmds, archive_cmds, audio_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
+    account_cmds, archive_cmds, audio_cmds, cli_cmds, debug_recordings_cmds, docker_cmds, git_cmds, github_cmds, image_cmds, input_cmds,
     launch_cmds, llm_cmds, log_cmds,
     mcp_cmds, notion_cmds, pile_cmds, realtime_cmds, schedule_cmds, screenshot_cmds, sdk_cmds,
     sequence_cmds, session_cmds, settings_cmds, spare_tokens_cmds, usage_cmds, validation_cmds,
@@ -509,6 +509,12 @@ pub fn run() {
             // --- Schedules ---
             schedule_cmds::get_schedules,
             schedule_cmds::save_schedules,
+            // --- `ow` CLI inbox ---
+            cli_cmds::take_cli_requests,
+            cli_cmds::write_cli_ack,
+            cli_cmds::path_is_dir,
+            cli_cmds::get_cli_status,
+            cli_cmds::install_cli,
             debug_recordings_cmds::get_debug_recordings,
             debug_recordings_cmds::save_debug_recordings,
             debug_recordings_cmds::save_debug_audio,

@@ -1,6 +1,7 @@
 pub mod account_cmds;
 pub mod archive_cmds;
 pub mod audio_cmds;
+pub mod cli_cmds;
 pub mod debug_recordings_cmds;
 pub mod docker_cmds;
 pub mod git_cmds;

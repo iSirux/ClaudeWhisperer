@@ -11,6 +11,10 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
+# CLI (ow) — build output + the staged external binary (built by scripts/build-cli.mjs)
+cli/target/
+src-tauri/binaries/
+
 # IDE
 .vscode/
 .idea/
