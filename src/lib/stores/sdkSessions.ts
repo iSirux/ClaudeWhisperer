@@ -2628,7 +2628,12 @@ function createSdkSessionsStore() {
       debouncedSave(sessionId);
     },
 
-    async sendPrompt(id: string, prompt: string, images?: SdkImageContent[]): Promise<void> {
+    /**
+     * @param opts.systemNotice - Framing prepended to the sent prompt but NOT to the
+     *   transcript message (same send-time-only treatment as SCREENSHOT_PROMPT_NOTICE).
+     *   Used by native scheduling to tell the agent the turn came from a schedule.
+     */
+    async sendPrompt(id: string, prompt: string, images?: SdkImageContent[], opts?: { systemNotice?: string }): Promise<void> {
       update(sessions =>
         sessions.map(s =>
           s.id === id
@@ -2731,6 +2736,12 @@ function createSdkSessionsStore() {
             s.id === id ? { ...s, pendingSystemNotifications: undefined } : s
           )
         );
+      }
+
+      // Caller-supplied framing (native scheduling) goes outermost, ahead of any queued
+      // notifications (send-time only, not shown in UI).
+      if (opts?.systemNotice?.trim()) {
+        finalPrompt = opts.systemNotice.trim() + '\n\n' + finalPrompt;
       }
 
       // Label auto-captured screenshots as potentially irrelevant (send-time only, not shown in UI)

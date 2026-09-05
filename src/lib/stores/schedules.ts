@@ -686,6 +686,59 @@ export const selectedSchedule = derived(
 );
 
 // ---------------------------------------------------------------------------
+// Schedule context notice
+// ---------------------------------------------------------------------------
+
+/**
+ * `<system-message>` block telling the agent that the turn was started by a
+ * schedule rather than typed by a user just now: the recurrence pattern, which run
+ * this is, and when the neighbouring runs are/were.
+ *
+ * Always attached — it is factual provenance, not a preference, so there is no
+ * setting for it. Deliberately descriptive ONLY: it carries no behavioural
+ * instructions, so an agent on a scheduled run behaves exactly like an interactive
+ * one.
+ *
+ * Must be called with the schedule as it looked BEFORE the fire was booked (both
+ * `markFired` and `runNow` clone via `update`, so the object the driver captured is
+ * pre-advance): `runCount` is the number of completed runs and `history[0]` is the
+ * previous one. The *upcoming* fire time is re-read from the store, where it has
+ * already rolled forward past this occurrence.
+ */
+function buildScheduleNotice(schedule: Schedule): string {
+  const now = Date.now();
+  const recurring = schedule.when.kind === 'recurring';
+  const lines: string[] = [
+    `This prompt was started automatically by a ${recurring ? 'recurring ' : ''}scheduled task in OpenWhisperer. No user typed it just now.`,
+    '',
+    `Schedule: "${schedule.label}"`,
+  ];
+
+  if (recurring) {
+    lines.push(
+      `Pattern: ${describeScheduleSpec(schedule.when, now)} — this is run #${schedule.runCount + 1}`
+    );
+
+    // Skipped occurrences never ran, so the newest non-skipped entry is the last
+    // run that actually happened.
+    const previous = schedule.history.find((r) => r.status !== 'skipped');
+    if (previous) {
+      const failed = previous.status === 'failed';
+      lines.push(
+        `Previous run: ${formatScheduleTarget(previous.at, now)}${failed ? ' (failed to start)' : ''}`
+      );
+    }
+
+    const nextFireAt = schedules.getSchedule(schedule.id)?.nextFireAt;
+    if (nextFireAt != null && nextFireAt > now) {
+      lines.push(`Next run: ${formatScheduleTarget(nextFireAt, now)}`);
+    }
+  }
+
+  return `<system-message>\n${lines.join('\n')}\n</system-message>`;
+}
+
+// ---------------------------------------------------------------------------
 // Firing pipeline
 // ---------------------------------------------------------------------------
 
@@ -753,6 +806,12 @@ async function launchForSchedule(
   // Smart Queue drains it at reset), but the run is recorded as `deferred`.
   const exhausted = providerExhaustion(config.provider, config.accountId).exhausted;
 
+  // A fresh session per fire, so the schedule context rides the (invisible) system
+  // prompt rail: appended to Claude's preset, prepended to the first Codex turn.
+  const systemPrompt = [buildScheduleNotice(schedule), config.systemPrompt?.trim()]
+    .filter(Boolean)
+    .join('\n\n');
+
   try {
     const sessionId = await launchSession({
       prompt: schedule.prompt,
@@ -764,7 +823,7 @@ async function launchForSchedule(
       useWorktree: config.useWorktree,
       worktreePath,
       branchNameHint: schedule.label,
-      systemPrompt: config.systemPrompt,
+      systemPrompt,
       tag: { schedule: { id: schedule.id, label: schedule.label } },
       // Unattended runs must never silently fall back to editing the main repo.
       onWorktreeError: 'fail',
@@ -804,9 +863,14 @@ async function runMessageTarget(schedule: Schedule): Promise<string | null> {
   const at = Date.now();
   try {
     if (target.action === 'compact') {
+      // A compaction turn carries no prompt of its own — nothing to frame.
       await sdkSessions.compactSession(target.sessionId);
     } else {
-      await sdkSessions.sendPrompt(target.sessionId, schedule.prompt);
+      // Mid-session: no system-prompt rail exists, so the notice rides the sent
+      // prompt (send-time only — the transcript keeps the user's prompt verbatim).
+      await sdkSessions.sendPrompt(target.sessionId, schedule.prompt, undefined, {
+        systemNotice: buildScheduleNotice(schedule),
+      });
     }
     schedules.recordRun(schedule.id, { at, status: 'ok', sessionId: target.sessionId });
     return target.sessionId;
