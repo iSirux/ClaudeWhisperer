@@ -131,6 +131,7 @@ pub struct ModelUsageStats {
     pub opus_sessions: u64,
     pub sonnet_sessions: u64,
     pub haiku_sessions: u64,
+    pub codex_6_astra_sessions: u64,
     pub codex_56_sol_sessions: u64,
     pub codex_56_terra_sessions: u64,
     pub codex_56_luna_sessions: u64,
@@ -164,6 +165,7 @@ pub enum ModelFamily {
     Opus,
     Sonnet,
     Haiku,
+    Codex6Astra,
     Codex56Sol,
     Codex56Terra,
     Codex56Luna,
@@ -185,6 +187,8 @@ pub fn classify_model(model: &str) -> ModelFamily {
         ModelFamily::Sonnet
     } else if m.contains("haiku") {
         ModelFamily::Haiku
+    } else if m == "gpt-6-astra" {
+        ModelFamily::Codex6Astra
     } else if m == "gpt-5.6-sol" {
         ModelFamily::Codex56Sol
     } else if m == "gpt-5.6-terra" {
@@ -335,6 +339,7 @@ impl UsageStats {
             ModelFamily::Opus => self.model_usage.opus_sessions += 1,
             ModelFamily::Sonnet => self.model_usage.sonnet_sessions += 1,
             ModelFamily::Haiku => self.model_usage.haiku_sessions += 1,
+            ModelFamily::Codex6Astra => self.model_usage.codex_6_astra_sessions += 1,
             ModelFamily::Codex56Sol => self.model_usage.codex_56_sol_sessions += 1,
             ModelFamily::Codex56Terra => self.model_usage.codex_56_terra_sessions += 1,
             ModelFamily::Codex56Luna => self.model_usage.codex_56_luna_sessions += 1,

@@ -24,6 +24,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_v5_to_v6,
     migrate_v6_to_v7,
     migrate_v7_to_v8,
+    migrate_v8_to_v9,
 ];
 
 /// The schema version the current build writes. Derived from the table length so
@@ -282,6 +283,28 @@ fn migrate_v7_to_v8(value: &mut Value) {
 
     if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_models") {
         enabled_models.insert(0, Value::String("claude-fable-5-1".to_string()));
+        let mut seen = std::collections::HashSet::new();
+        enabled_models.retain(|v| match v {
+            Value::String(s) => seen.insert(s.clone()),
+            _ => true,
+        });
+    }
+}
+
+// ============================================================================
+// v8 -> v9: GPT-6 Astra rollout — surface the new Codex model in existing
+// configs without disturbing the rest of the user's selection. Nothing is
+// deprecated by it, so the GPT-5.6 family stays as-is (and `openai_model`
+// keeps pointing at whatever the user picked).
+// ============================================================================
+
+fn migrate_v8_to_v9(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(Value::Array(enabled_models)) = obj.get_mut("enabled_openai_models") {
+        enabled_models.insert(0, Value::String("gpt-6-astra".to_string()));
         let mut seen = std::collections::HashSet::new();
         enabled_models.retain(|v| match v {
             Value::String(s) => seen.insert(s.clone()),

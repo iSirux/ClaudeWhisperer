@@ -363,6 +363,7 @@ pub(crate) fn default_openai_model() -> String {
 
 fn default_enabled_openai_models() -> Vec<String> {
     vec![
+        "gpt-6-astra".to_string(),
         "gpt-5.6-sol".to_string(),
         "gpt-5.6-terra".to_string(),
         "gpt-5.6-luna".to_string(),
@@ -997,6 +998,49 @@ mod tests {
         assert_eq!(
             config.enabled_models,
             vec!["claude-fable-5-1", "claude-opus-5"]
+        );
+    }
+
+    #[test]
+    fn migration_surfaces_gpt_6_astra() {
+        // A pre-v9 config gains GPT-6 Astra at the front of the Codex model
+        // selector, keeps the rest of the selection, and does not have its
+        // chosen default model swapped out (Astra deprecates nothing).
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(8));
+        obj.insert("openai_model".to_string(), serde_json::json!("gpt-5.6-luna"));
+        obj.insert(
+            "enabled_openai_models".to_string(),
+            serde_json::json!(["gpt-5.6-terra", "gpt-5.6-luna"]),
+        );
+
+        migration::run_migrations(&mut value, 8);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_openai_models,
+            vec!["gpt-6-astra", "gpt-5.6-terra", "gpt-5.6-luna"]
+        );
+        assert_eq!(config.openai_model, "gpt-5.6-luna");
+    }
+
+    #[test]
+    fn migration_gpt_6_astra_is_not_duplicated() {
+        // Re-running the migration over a config that already lists Astra must
+        // not add a second entry.
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.insert("config_version".to_string(), serde_json::json!(8));
+        obj.insert(
+            "enabled_openai_models".to_string(),
+            serde_json::json!(["gpt-5.6-terra", "gpt-6-astra"]),
+        );
+
+        migration::run_migrations(&mut value, 8);
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            config.enabled_openai_models,
+            vec!["gpt-6-astra", "gpt-5.6-terra"]
         );
     }
 

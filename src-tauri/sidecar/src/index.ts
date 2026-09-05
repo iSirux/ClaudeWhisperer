@@ -27,6 +27,10 @@ const OPENAI_MODEL_FALLBACK = "gpt-5.6-terra";
 
 function inferOpenAiContextWindow(model: string | undefined): number {
   const normalized = model?.toLowerCase() ?? "";
+  // GPT-6 Astra has a 1.05M context window.
+  if (normalized.includes("gpt-6")) {
+    return 1050000;
+  }
   // GPT-5.6 family (Sol/Terra/Luna) has a 1M context window.
   if (normalized.includes("gpt-5.6")) {
     return 1000000;
@@ -272,7 +276,7 @@ interface UpdateEffortMessage {
   id: string;
   // Effort level: null, 'low', 'medium', 'high', 'xhigh', 'max'.
   // The Claude SDK accepts the full range natively; OpenAI clamps per model
-  // (GPT-5.6 caps at 'xhigh', older Codex models at 'high').
+  // (GPT-6 Astra accepts 'max', GPT-5.6 caps at 'xhigh', older Codex models at 'high').
   effortLevel: string | null;
 }
 
@@ -282,9 +286,10 @@ interface UpdateEffortMessage {
  * - Claude Agent SDK natively supports: 'low' | 'medium' | 'high' | 'xhigh' |
  *   'max' (EffortLevel), and it handles its own fallback for models that don't
  *   support a given level ('xhigh' -> 'high'). So every level passes through.
- * - Codex / OpenAI: ModelReasoningEffort caps at 'xhigh'. The GPT-5.6 family
- *   accepts up to 'xhigh' ('max' is clamped to 'xhigh'); older models only
- *   accept 'low' | 'medium' | 'high' ('xhigh'/'max' clamped to 'high').
+ * - Codex / OpenAI: GPT-6 Astra accepts the full range through 'max' (Codex's
+ *   ModelReasoningEffort gained 'max' in 0.153). The GPT-5.6 family accepts up
+ *   to 'xhigh' ('max' is clamped to 'xhigh'); older models only accept
+ *   'low' | 'medium' | 'high' ('xhigh'/'max' clamped to 'high').
  * - `null` / `undefined` are passed through unchanged (effort off).
  */
 function mapEffortForProvider(
@@ -294,8 +299,10 @@ function mapEffortForProvider(
 ): string | undefined {
   if (!effort) return undefined;
   if (provider === "openai") {
-    const supportsXhigh = (model ?? "").toLowerCase().includes("gpt-5.6");
-    if (effort === "max") return supportsXhigh ? "xhigh" : "high";
+    const normalized = (model ?? "").toLowerCase();
+    const supportsMax = normalized.includes("gpt-6");
+    const supportsXhigh = supportsMax || normalized.includes("gpt-5.6");
+    if (effort === "max") return supportsMax ? "max" : supportsXhigh ? "xhigh" : "high";
     if (effort === "xhigh" && !supportsXhigh) return "high";
     return effort;
   }
