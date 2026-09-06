@@ -92,12 +92,12 @@ export function providerExhaustion(
   // queue once that allowance is exhausted too.
   if (hasUsableExtraUsage(provider, accountId)) return { exhausted: false };
 
-  const fiveHourExhausted = data.five_hour.utilization >= EXHAUSTION_THRESHOLD;
-  const sevenDayExhausted = data.seven_day.utilization >= EXHAUSTION_THRESHOLD;
+  const fiveHourExhausted = (data.five_hour?.utilization ?? 0) >= EXHAUSTION_THRESHOLD;
+  const sevenDayExhausted = (data.seven_day?.utilization ?? 0) >= EXHAUSTION_THRESHOLD;
 
   if (fiveHourExhausted && sevenDayExhausted) {
-    const fiveReset = parseResetMs(data.five_hour.resets_at);
-    const sevenReset = parseResetMs(data.seven_day.resets_at);
+    const fiveReset = parseResetMs(data.five_hour?.resets_at);
+    const sevenReset = parseResetMs(data.seven_day?.resets_at);
     // Pick the window that resets LATER (blocks us for longer).
     if ((sevenReset ?? -Infinity) >= (fiveReset ?? -Infinity)) {
       return { exhausted: true, window: '7d', resetsAt: sevenReset };
@@ -106,10 +106,10 @@ export function providerExhaustion(
   }
 
   if (fiveHourExhausted) {
-    return { exhausted: true, window: '5h', resetsAt: parseResetMs(data.five_hour.resets_at) };
+    return { exhausted: true, window: '5h', resetsAt: parseResetMs(data.five_hour?.resets_at) };
   }
   if (sevenDayExhausted) {
-    return { exhausted: true, window: '7d', resetsAt: parseResetMs(data.seven_day.resets_at) };
+    return { exhausted: true, window: '7d', resetsAt: parseResetMs(data.seven_day?.resets_at) };
   }
 
   return { exhausted: false };
@@ -133,6 +133,6 @@ export function nextWindowResetAt(
   const data = storeForProvider(provider, accountId);
   if (!data) return undefined;
   return window === '5h'
-    ? parseResetMs(data.five_hour.resets_at)
-    : parseResetMs(data.seven_day.resets_at);
+    ? parseResetMs(data.five_hour?.resets_at)
+    : parseResetMs(data.seven_day?.resets_at);
 }

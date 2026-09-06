@@ -229,22 +229,26 @@
             {/if}
             {#if usage}
               <div class="mt-2 space-y-1">
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] text-text-muted w-5">5h</span>
-                  <div class="flex-1 h-1.5 bg-surface-elevated rounded-full overflow-hidden">
-                    <div class="h-full rounded-full" style="width: {Math.min(100, usage.five_hour.utilization)}%; background: {account.color};"></div>
+                {#if usage.five_hour}
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] text-text-muted w-5">5h</span>
+                    <div class="flex-1 h-1.5 bg-surface-elevated rounded-full overflow-hidden">
+                      <div class="h-full rounded-full" style="width: {Math.min(100, usage.five_hour.utilization)}%; background: {account.color};"></div>
+                    </div>
+                    <span class="text-[10px] text-text-muted tabular-nums w-8 text-right">{Math.round(usage.five_hour.utilization)}%</span>
+                    <span class="text-[10px] text-text-muted whitespace-nowrap">resets in {formatTimeRemaining(usage.five_hour.resets_at)}</span>
                   </div>
-                  <span class="text-[10px] text-text-muted tabular-nums w-8 text-right">{Math.round(usage.five_hour.utilization)}%</span>
-                  <span class="text-[10px] text-text-muted whitespace-nowrap">resets in {formatTimeRemaining(usage.five_hour.resets_at)}</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] text-text-muted w-5">7d</span>
-                  <div class="flex-1 h-1.5 bg-surface-elevated rounded-full overflow-hidden">
-                    <div class="h-full rounded-full" style="width: {Math.min(100, usage.seven_day.utilization)}%; background: {account.color};"></div>
+                {/if}
+                {#if usage.seven_day}
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] text-text-muted w-5">7d</span>
+                    <div class="flex-1 h-1.5 bg-surface-elevated rounded-full overflow-hidden">
+                      <div class="h-full rounded-full" style="width: {Math.min(100, usage.seven_day.utilization)}%; background: {account.color};"></div>
+                    </div>
+                    <span class="text-[10px] text-text-muted tabular-nums w-8 text-right">{Math.round(usage.seven_day.utilization)}%</span>
+                    <span class="text-[10px] text-text-muted whitespace-nowrap">resets in {formatTimeRemaining(usage.seven_day.resets_at)}</span>
                   </div>
-                  <span class="text-[10px] text-text-muted tabular-nums w-8 text-right">{Math.round(usage.seven_day.utilization)}%</span>
-                  <span class="text-[10px] text-text-muted whitespace-nowrap">resets in {formatTimeRemaining(usage.seven_day.resets_at)}</span>
-                </div>
+                {/if}
               </div>
             {:else if usageAuthExpired}
               <p class="text-[11px] text-text-muted mt-2">Usage unavailable — re-login required</p>

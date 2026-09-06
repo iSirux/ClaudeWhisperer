@@ -26,8 +26,8 @@ export interface ScopedLimit {
 
 /** Unified rate limit data shape used by both Claude and Codex */
 export interface ProviderRateLimits {
-	five_hour: RateLimitWindow;
-	seven_day: RateLimitWindow;
+	five_hour: RateLimitWindow | null;
+	seven_day: RateLimitWindow | null;
 	extra_usage: ExtraUsage;
 	scoped_windows?: ScopedLimit[]; // per-model weekly caps; Claude only
 }

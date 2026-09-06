@@ -370,8 +370,8 @@ pub struct ScopedLimit {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClaudeRateLimits {
-    pub five_hour: RateLimitWindow,
-    pub seven_day: RateLimitWindow,
+    pub five_hour: Option<RateLimitWindow>,
+    pub seven_day: Option<RateLimitWindow>,
     pub extra_usage: ExtraUsage,
     /// Per-model weekly windows (e.g. Fable). Empty for Codex.
     #[serde(default)]
@@ -684,20 +684,20 @@ pub async fn fetch_claude_rate_limits(
     };
 
     Ok(ClaudeRateLimits {
-        five_hour: RateLimitWindow {
+        five_hour: Some(RateLimitWindow {
             utilization: data["five_hour"]["utilization"].as_f64().unwrap_or(0.0),
             resets_at: data["five_hour"]["resets_at"]
                 .as_str()
                 .unwrap_or("")
                 .to_string(),
-        },
-        seven_day: RateLimitWindow {
+        }),
+        seven_day: Some(RateLimitWindow {
             utilization: data["seven_day"]["utilization"].as_f64().unwrap_or(0.0),
             resets_at: data["seven_day"]["resets_at"]
                 .as_str()
                 .unwrap_or("")
                 .to_string(),
-        },
+        }),
         extra_usage: ExtraUsage {
             is_enabled: data["extra_usage"]["is_enabled"].as_bool().unwrap_or(false),
             monthly_limit: data["extra_usage"]["monthly_limit"].as_u64(),
@@ -784,27 +784,15 @@ pub async fn fetch_codex_rate_limits(
     )
     .await?;
 
-    // Normalize Codex response to the same shape as Claude
-    // Codex: rate_limit.primary_window / secondary_window with used_percent + reset_at (epoch)
-    let primary = &data["rate_limit"]["primary_window"];
-    let secondary = &data["rate_limit"]["secondary_window"];
+    // A Codex account may expose only one window, and `primary_window` is not
+    // guaranteed to mean five hours. Classify both slots by their reported
+    // duration so a weekly-only account is never presented as having a 5h cap.
+    let rate_limit = &data["rate_limit"];
     let credits = &data["credits"];
 
     Ok(ClaudeRateLimits {
-        five_hour: RateLimitWindow {
-            utilization: primary["used_percent"].as_f64().unwrap_or(0.0),
-            resets_at: primary["reset_at"]
-                .as_f64()
-                .map(epoch_to_iso)
-                .unwrap_or_default(),
-        },
-        seven_day: RateLimitWindow {
-            utilization: secondary["used_percent"].as_f64().unwrap_or(0.0),
-            resets_at: secondary["reset_at"]
-                .as_f64()
-                .map(epoch_to_iso)
-                .unwrap_or_default(),
-        },
+        five_hour: codex_window_by_duration(rate_limit, 5 * 60 * 60),
+        seven_day: codex_window_by_duration(rate_limit, 7 * 24 * 60 * 60),
         extra_usage: ExtraUsage {
             is_enabled: credits["is_enabled"].as_bool().unwrap_or(false),
             monthly_limit: credits["monthly_limit"].as_u64(),
@@ -814,4 +802,85 @@ pub async fn fetch_codex_rate_limits(
         // Codex has no per-model scoped windows.
         scoped_windows: Vec::new(),
     })
+}
+
+/// Find a Codex quota window by its actual duration. The wham endpoint reports
+/// seconds; the minute variants keep this compatible with App Server-shaped
+/// fixtures and future response normalization.
+fn codex_window_by_duration(
+    rate_limit: &serde_json::Value,
+    wanted_seconds: u64,
+) -> Option<RateLimitWindow> {
+    ["primary_window", "secondary_window"]
+        .iter()
+        .filter_map(|key| rate_limit.get(*key))
+        .find(|window| {
+            window["limit_window_seconds"]
+                .as_u64()
+                .or_else(|| window["window_minutes"].as_u64().map(|mins| mins * 60))
+                .or_else(|| window["windowDurationMins"].as_u64().map(|mins| mins * 60))
+                == Some(wanted_seconds)
+        })
+        .map(|window| RateLimitWindow {
+            utilization: window["used_percent"]
+                .as_f64()
+                .or_else(|| window["usedPercent"].as_f64())
+                .unwrap_or(0.0),
+            resets_at: window["reset_at"]
+                .as_f64()
+                .or_else(|| window["resetsAt"].as_f64())
+                .map(epoch_to_iso)
+                .unwrap_or_default(),
+        })
+}
+
+#[cfg(test)]
+mod codex_rate_limit_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn does_not_mistake_a_weekly_primary_window_for_five_hours() {
+        let rate_limit = json!({
+            "primary_window": {
+                "used_percent": 17.0,
+                "reset_at": 1_800_000_000.0,
+                "limit_window_seconds": 604_800
+            },
+            "secondary_window": null
+        });
+
+        assert!(codex_window_by_duration(&rate_limit, 5 * 60 * 60).is_none());
+        let weekly = codex_window_by_duration(&rate_limit, 7 * 24 * 60 * 60).unwrap();
+        assert_eq!(weekly.utilization, 17.0);
+    }
+
+    #[test]
+    fn finds_windows_by_duration_regardless_of_slot() {
+        let rate_limit = json!({
+            "primary_window": {
+                "used_percent": 40.0,
+                "reset_at": 1_800_000_000.0,
+                "limit_window_seconds": 604_800
+            },
+            "secondary_window": {
+                "used_percent": 25.0,
+                "reset_at": 1_700_000_000.0,
+                "limit_window_seconds": 18_000
+            }
+        });
+
+        assert_eq!(
+            codex_window_by_duration(&rate_limit, 5 * 60 * 60)
+                .unwrap()
+                .utilization,
+            25.0
+        );
+        assert_eq!(
+            codex_window_by_duration(&rate_limit, 7 * 24 * 60 * 60)
+                .unwrap()
+                .utilization,
+            40.0
+        );
+    }
 }

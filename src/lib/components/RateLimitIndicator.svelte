@@ -19,10 +19,10 @@
   );
 
   // Calculate paces per provider
-  let claudePace5h = $derived(claude ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
-  let claudePace7d = $derived(claude ? calculatePace(claude.seven_day.utilization, claude.seven_day.resets_at, 168) : null);
-  let codexPace5h = $derived(codex ? calculatePace(codex.five_hour.utilization, codex.five_hour.resets_at, 5) : null);
-  let codexPace7d = $derived(codex ? calculatePace(codex.seven_day.utilization, codex.seven_day.resets_at, 168) : null);
+  let claudePace5h = $derived(claude?.five_hour ? calculatePace(claude.five_hour.utilization, claude.five_hour.resets_at, 5) : null);
+  let claudePace7d = $derived(claude?.seven_day ? calculatePace(claude.seven_day.utilization, claude.seven_day.resets_at, 168) : null);
+  let codexPace5h = $derived(codex?.five_hour ? calculatePace(codex.five_hour.utilization, codex.five_hour.resets_at, 5) : null);
+  let codexPace7d = $derived(codex?.seven_day ? calculatePace(codex.seven_day.utilization, codex.seven_day.resets_at, 168) : null);
 
   function paceLabel(paceRatio: number, utilization: number): string {
     if (utilization < 1) return 'idle';
@@ -64,12 +64,16 @@
       lines.push(error);
       lines.push('');
     }
-    lines.push(
-      `5h window: ${data.five_hour.utilization.toFixed(1)}% used, resets in ${formatTimeRemaining(data.five_hour.resets_at)}${pace5hData ? ` (${paceLabel(pace5hData.paceRatio, data.five_hour.utilization)})` : ''}`
-    );
-    lines.push(
-      `7d window: ${data.seven_day.utilization.toFixed(1)}% used, resets ${formatResetAt(data.seven_day.resets_at)}${pace7dData ? ` (${paceLabel(pace7dData.paceRatio, data.seven_day.utilization)})` : ''}`
-    );
+    if (data.five_hour) {
+      lines.push(
+        `5h window: ${data.five_hour.utilization.toFixed(1)}% used, resets in ${formatTimeRemaining(data.five_hour.resets_at)}${pace5hData ? ` (${paceLabel(pace5hData.paceRatio, data.five_hour.utilization)})` : ''}`
+      );
+    }
+    if (data.seven_day) {
+      lines.push(
+        `7d window: ${data.seven_day.utilization.toFixed(1)}% used, resets ${formatResetAt(data.seven_day.resets_at)}${pace7dData ? ` (${paceLabel(pace7dData.paceRatio, data.seven_day.utilization)})` : ''}`
+      );
+    }
     // Per-model weekly caps (e.g. Fable) — separate buckets that don't count
     // against the all-model 7d window. Active ones first, then by utilization.
     const scoped = [...(data.scoped_windows ?? [])].sort(
@@ -127,19 +131,27 @@
       title={buildTooltip(data, p5h, p7d, name, error)}
     >
       <div class="row">
-        <span class="val" style="color: {data && p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">
-          {#if data}{Math.round(data.five_hour.utilization)}%{:else}N/A{/if}
-        </span>
-        <span class="sep">·</span>
-        <span class="val" style="color: {data && p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
-          {#if data}{Math.round(data.seven_day.utilization)}%{:else}N/A{/if}
-        </span>
+        {#if data?.five_hour}
+          {#if !data.seven_day}<span class="window-label">5h</span>{/if}
+          <span class="val" style="color: {p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">
+            {Math.round(data.five_hour.utilization)}%
+          </span>
+        {/if}
+        {#if data?.five_hour && data.seven_day}<span class="sep">·</span>{/if}
+        {#if data?.seven_day}
+          {#if !data.five_hour}<span class="window-label">7d</span>{/if}
+          <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
+            {Math.round(data.seven_day.utilization)}%
+          </span>
+        {:else if !data?.five_hour}
+          <span class="val">N/A</span>
+        {/if}
       </div>
       <div class="row sub">
         {#if error}
           <span class="stale-label">stale</span>
         {:else if data}
-          <span>{formatTimeRemaining(data.five_hour.resets_at)}</span>
+          <span>{formatTimeRemaining((data.five_hour ?? data.seven_day)?.resets_at ?? '')}</span>
         {:else}
           <span>no data</span>
         {/if}
@@ -152,8 +164,8 @@
   {@const state = $accountRateLimits[account.id]}
   {@const data = state?.data ?? null}
   {@const authExpired = state?.authExpired ?? false}
-  {@const p5h = data ? calculatePace(data.five_hour.utilization, data.five_hour.resets_at, 5) : null}
-  {@const p7d = data ? calculatePace(data.seven_day.utilization, data.seven_day.resets_at, 168) : null}
+  {@const p5h = data?.five_hour ? calculatePace(data.five_hour.utilization, data.five_hour.resets_at, 5) : null}
+  {@const p7d = data?.seven_day ? calculatePace(data.seven_day.utilization, data.seven_day.resets_at, 168) : null}
   {@const isCodex = account.provider === 'OpenAI'}
   <!-- Only accounts with usage data earn a header pill; a never-logged-in
        account's status lives in Settings → Accounts, not the header. -->
@@ -168,13 +180,21 @@
       title={buildTooltip(data, p5h, p7d, `${account.label} — ${isCodex ? 'Codex' : 'Claude'}`, state?.error ?? null)}
     >
       <div class="row">
-        <span class="val" style="color: {p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">
-          {Math.round(data.five_hour.utilization)}%
-        </span>
-        <span class="sep">·</span>
-        <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
-          {Math.round(data.seven_day.utilization)}%
-        </span>
+        {#if data.five_hour}
+          {#if !data.seven_day}<span class="window-label">5h</span>{/if}
+          <span class="val" style="color: {p5h ? getPaceColor(p5h.paceRatio, data.five_hour.utilization) : 'var(--color-text-secondary)'}">
+            {Math.round(data.five_hour.utilization)}%
+          </span>
+        {/if}
+        {#if data.five_hour && data.seven_day}<span class="sep">·</span>{/if}
+        {#if data.seven_day}
+          {#if !data.five_hour}<span class="window-label">7d</span>{/if}
+          <span class="val" style="color: {p7d ? getPaceColor(p7d.paceRatio, data.seven_day.utilization) : 'var(--color-text-secondary)'}">
+            {Math.round(data.seven_day.utilization)}%
+          </span>
+        {:else if !data.five_hour}
+          <span class="val">N/A</span>
+        {/if}
       </div>
       <div class="row sub">
         {#if authExpired}
@@ -182,7 +202,7 @@
         {:else if state?.error}
           <span class="stale-label">stale</span>
         {:else}
-          <span>{formatTimeRemaining(data.five_hour.resets_at)}</span>
+          <span>{formatTimeRemaining((data.five_hour ?? data.seven_day)?.resets_at ?? '')}</span>
         {/if}
       </div>
     </button>
@@ -257,6 +277,11 @@
 
   .val {
     font-weight: 600;
+  }
+
+  .window-label {
+    color: var(--color-text-muted);
+    font-size: 8px;
   }
 
   .sep {

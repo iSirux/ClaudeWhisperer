@@ -31,14 +31,14 @@
   let rl = $derived($rateLimitData);
   let rlLoading = $derived($isRateLimitLoading);
   let claude7dPace = $derived(
-    rl ? calculatePace(rl.seven_day.utilization, rl.seven_day.resets_at, 168) : null
+    rl?.seven_day ? calculatePace(rl.seven_day.utilization, rl.seven_day.resets_at, 168) : null
   );
 
   // Codex API rate limit data
   let cx = $derived($codexRateLimitData);
   let cxLoading = $derived($isCodexRateLimitLoading);
   let codex7dPace = $derived(
-    cx ? calculatePace(cx.seven_day.utilization, cx.seven_day.resets_at, 168) : null
+    cx?.seven_day ? calculatePace(cx.seven_day.utilization, cx.seven_day.resets_at, 168) : null
   );
 
   function getPaceDiff(utilization: number, expectedPercent: number): string {
@@ -120,37 +120,39 @@
           </div>
           <div class="p-4 bg-surface-elevated rounded-lg border border-border space-y-5">
             {#if rl}
-              {@const claude5hPace = calculatePace(rl.five_hour.utilization, rl.five_hour.resets_at, 5)}
               <div class="space-y-4">
                 <div class="text-xs font-medium text-text-secondary">Claude</div>
                 <!-- 5-Hour Window -->
-                <div>
-                  <div class="flex items-center justify-between mb-1.5">
-                    <span class="text-sm text-text-secondary">5-Hour Window</span>
+                {#if rl.five_hour}
+                  {@const claude5hPace = calculatePace(rl.five_hour.utilization, rl.five_hour.resets_at, 5)}
+                  <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                      <span class="text-sm text-text-secondary">5-Hour Window</span>
+                      <div class="flex items-center gap-3">
+                        {#if claude5hPace && claude5hPace.paceLabel !== 'idle'}
+                          <span class="text-[10px] px-1.5 py-0.5 rounded {getPaceColorClasses(claude5hPace.paceRatio)}">{claude5hPace.paceLabel}</span>
+                        {/if}
+                        <span class="text-xs text-text-muted">resets in {formatTimeRemaining(rl.five_hour.resets_at)}</span>
+                      </div>
+                    </div>
                     <div class="flex items-center gap-3">
-                      {#if claude5hPace && claude5hPace.paceLabel !== 'idle'}
-                        <span class="text-[10px] px-1.5 py-0.5 rounded {getPaceColorClasses(claude5hPace.paceRatio)}">{claude5hPace.paceLabel}</span>
-                      {/if}
-                      <span class="text-xs text-text-muted">resets in {formatTimeRemaining(rl.five_hour.resets_at)}</span>
+                      <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                        <div
+                          class="h-full rounded-full transition-all duration-500"
+                          class:bg-accent={rl.five_hour.utilization <= 70}
+                          class:bg-warning={rl.five_hour.utilization > 70 && rl.five_hour.utilization <= 90}
+                          class:bg-error={rl.five_hour.utilization > 90}
+                          style="width: {Math.min(100, rl.five_hour.utilization)}%"
+                        ></div>
+                      </div>
+                      <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
+                        {rl.five_hour.utilization.toFixed(1)}%
+                      </span>
                     </div>
                   </div>
-                  <div class="flex items-center gap-3">
-                    <div class="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
-                      <div
-                        class="h-full rounded-full transition-all duration-500"
-                        class:bg-accent={rl.five_hour.utilization <= 70}
-                        class:bg-warning={rl.five_hour.utilization > 70 && rl.five_hour.utilization <= 90}
-                        class:bg-error={rl.five_hour.utilization > 90}
-                        style="width: {Math.min(100, rl.five_hour.utilization)}%"
-                      ></div>
-                    </div>
-                    <span class="text-sm font-medium text-text-primary min-w-[3rem] text-right" style="font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;">
-                      {rl.five_hour.utilization.toFixed(1)}%
-                    </span>
-                  </div>
-                </div>
+                {/if}
                 <!-- 7-Day Window -->
-                <div>
+                {#if rl.seven_day}<div>
                   <div class="flex items-center justify-between mb-1.5">
                     <span class="text-sm text-text-secondary">7-Day Window</span>
                     <div class="flex items-center gap-3">
@@ -180,7 +182,7 @@
                       <span>Actual: {rl.seven_day.utilization.toFixed(1)}%</span>
                     </div>
                   {/if}
-                </div>
+                </div>{/if}
                 <!-- Extra Usage -->
                 {#if rl.extra_usage.is_enabled}
                   <div class="pt-3 border-t border-border">
@@ -213,10 +215,11 @@
             {/if}
 
             {#if cx}
-              {@const codex5hPace = calculatePace(cx.five_hour.utilization, cx.five_hour.resets_at, 5)}
               <div class="space-y-4" class:pt-5={rl} class:border-t={rl} class:border-border={rl}>
                 <div class="text-xs font-medium text-text-secondary">Codex</div>
                 <!-- 5-Hour Window -->
+                {#if cx.five_hour}
+                {@const codex5hPace = calculatePace(cx.five_hour.utilization, cx.five_hour.resets_at, 5)}
                 <div>
                   <div class="flex items-center justify-between mb-1.5">
                     <span class="text-sm text-text-secondary">5-Hour Window</span>
@@ -242,8 +245,9 @@
                     </span>
                   </div>
                 </div>
+                {/if}
                 <!-- 7-Day Window -->
-                <div>
+                {#if cx.seven_day}<div>
                   <div class="flex items-center justify-between mb-1.5">
                     <span class="text-sm text-text-secondary">7-Day Window</span>
                     <div class="flex items-center gap-3">
@@ -273,7 +277,7 @@
                       <span>Actual: {cx.seven_day.utilization.toFixed(1)}%</span>
                     </div>
                   {/if}
-                </div>
+                </div>{/if}
                 <!-- Extra Usage / Credits -->
                 {#if cx.extra_usage.is_enabled}
                   <div class="pt-3 border-t border-border">

@@ -212,7 +212,7 @@
         ? $codexRateLimitData
         : $rateLimitData
       : $accountRateLimits[acct.id]?.data ?? null;
-    if (!data) return '';
+    if (!data?.five_hour) return '';
     return `· ${Math.round(data.five_hour.utilization)}% 5h`;
   }
   // Concrete select value for the machine default: the virtual default's id (not undefined).

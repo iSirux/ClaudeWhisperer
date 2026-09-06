@@ -193,24 +193,26 @@
             { label: '7d', w: card.limits.seven_day },
           ]}
           {#each windows as win}
-            <div class="window-row">
-              <div class="window-top">
-                <span class="window-label">{win.label}</span>
-                <span class="window-meta">
-                  {Math.round(win.w.utilization)}% · resets in {formatTimeRemaining(win.w.resets_at)}
-                  {#if win.label === '7d'}
-                    · {paceLabelFor(card.limits)}
-                  {/if}
-                </span>
+            {#if win.w}
+              <div class="window-row">
+                <div class="window-top">
+                  <span class="window-label">{win.label}</span>
+                  <span class="window-meta">
+                    {Math.round(win.w.utilization)}% · resets in {formatTimeRemaining(win.w.resets_at)}
+                    {#if win.label === '7d'}
+                      · {paceLabelFor(card.limits)}
+                    {/if}
+                  </span>
+                </div>
+                <div class="bar">
+                  <div
+                    class="bar-fill"
+                    class:bar-warn={win.w.utilization >= 85}
+                    style="width: {Math.min(100, Math.max(0, win.w.utilization))}%"
+                  ></div>
+                </div>
               </div>
-              <div class="bar">
-                <div
-                  class="bar-fill"
-                  class:bar-warn={win.w.utilization >= 85}
-                  style="width: {Math.min(100, Math.max(0, win.w.utilization))}%"
-                ></div>
-              </div>
-            </div>
+            {/if}
           {/each}
         {:else}
           <p class="muted">Rate-limit data not loaded yet.</p>

@@ -166,7 +166,7 @@ export function evaluateBurn(
     : 1;
 
   // prime — expiring 7d capacity
-  if (min7 != null && min7 > 0 && min7 <= t.w7Minutes && sevenDay.utilization <= t.u7) {
+  if (sevenDay && min7 != null && min7 > 0 && min7 <= t.w7Minutes && sevenDay.utilization <= t.u7) {
     return {
       tier: 'prime',
       window: '7d',
@@ -177,6 +177,8 @@ export function evaluateBurn(
   // okay — leftover 5h capacity while the week is under-used
   if (
     min5 != null &&
+    fiveHour != null &&
+    sevenDay != null &&
     min5 > 0 &&
     min5 <= t.w5Minutes &&
     fiveHour.utilization <= t.u5 &&
@@ -192,7 +194,7 @@ export function evaluateBurn(
 
   // Not a burn window — explain the closest miss.
   let reason: string;
-  if (min7 != null && min7 > 0 && min7 <= t.w7Minutes && sevenDay.utilization > t.u7) {
+  if (sevenDay && min7 != null && min7 > 0 && min7 <= t.w7Minutes && sevenDay.utilization > t.u7) {
     reason = `7d window resets soon but ${Math.round(sevenDay.utilization)}% is already used — not enough expiring headroom`;
   } else if (paceRatio > t.p) {
     reason = `Week is ahead of pace (${paceRatio.toFixed(2)}×) — holding auto runs to protect daytime capacity`;
@@ -391,7 +393,7 @@ async function evaluateAutoInner(): Promise<void> {
       if (burn.tier === null || burn.window === null) continue;
 
       const windowResetsAt =
-        burn.window === '7d' ? limits?.seven_day.resets_at : limits?.five_hour.resets_at;
+        burn.window === '7d' ? limits?.seven_day?.resets_at : limits?.five_hour?.resets_at;
       // Already ran this repo for this exact window — wait until it resets.
       if (windowResetsAt && itemState.lastRunWindows[repoId] === windowResetsAt) continue;
 
