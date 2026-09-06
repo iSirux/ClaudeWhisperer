@@ -7,13 +7,6 @@ export type ModelType =
   | 'sonnet'
   | 'haiku'
   | 'auto'
-  | 'astra'
-  | 'sol'
-  | 'terra'
-  | 'luna'
-  | 'codex'
-  | 'spark'
-  | 'mini'
   | 'unknown';
 
 export function getModelType(modelId: string): ModelType {
@@ -22,15 +15,15 @@ export function getModelType(modelId: string): ModelType {
   if (modelId.includes('opus')) return 'opus';
   if (modelId.includes('sonnet')) return 'sonnet';
   if (modelId.includes('haiku')) return 'haiku';
-  // OpenAI/Codex models. Keep the order from most specific to most general so
-  // variants such as Spark and Mini retain their own colors.
-  if (modelId.startsWith('gpt-6-astra')) return 'astra';
-  if (modelId.startsWith('gpt-5.6-sol')) return 'sol';
-  if (modelId.startsWith('gpt-5.6-terra')) return 'terra';
-  if (modelId.startsWith('gpt-5.6-luna')) return 'luna';
-  if (modelId.includes('spark')) return 'spark';
-  if (modelId.includes('mini')) return 'mini';
-  if (modelId.startsWith('codex') || modelId.startsWith('gpt-')) return 'codex';
+  // OpenAI/Codex models share colors with the equivalent Claude capability
+  // class rather than receiving a separate color for every model name.
+  if (modelId.startsWith('gpt-6-astra')) return 'fable';
+  if (modelId.startsWith('gpt-5.6-sol')) return 'opus';
+  if (modelId.startsWith('gpt-5.6-terra')) return 'sonnet';
+  if (modelId.startsWith('gpt-5.6-luna')) return 'haiku';
+  if (modelId.includes('spark') || modelId.includes('mini')) return 'haiku';
+  if (modelId === 'gpt-5.4' || modelId === 'gpt-5.4-codex') return 'opus';
+  if (modelId.startsWith('codex') || modelId.startsWith('gpt-')) return 'sonnet';
   return 'unknown';
 }
 
@@ -80,13 +73,6 @@ export function getModelBgColor(modelId: string): string {
     case 'opus': return 'bg-model-opus';
     case 'sonnet': return 'bg-model-sonnet';
     case 'haiku': return 'bg-model-haiku';
-    case 'astra': return 'bg-model-astra';
-    case 'sol': return 'bg-model-sol';
-    case 'terra': return 'bg-model-terra';
-    case 'luna': return 'bg-model-luna';
-    case 'codex': return 'bg-model-codex';
-    case 'spark': return 'bg-model-spark';
-    case 'mini': return 'bg-model-mini';
     default: return 'bg-accent';
   }
 }
@@ -100,13 +86,6 @@ export function getModelBadgeBgColor(modelId: string): string {
     case 'opus': return 'bg-model-opus/20';
     case 'sonnet': return 'bg-model-sonnet/20';
     case 'haiku': return 'bg-model-haiku/20';
-    case 'astra': return 'bg-model-astra/20';
-    case 'sol': return 'bg-model-sol/20';
-    case 'terra': return 'bg-model-terra/20';
-    case 'luna': return 'bg-model-luna/20';
-    case 'codex': return 'bg-model-codex/20';
-    case 'spark': return 'bg-model-spark/20';
-    case 'mini': return 'bg-model-mini/20';
     default: return 'bg-accent/20';
   }
 }
@@ -120,13 +99,6 @@ export function getModelTextColor(modelId: string): string {
     case 'opus': return 'text-model-opus';
     case 'sonnet': return 'text-model-sonnet';
     case 'haiku': return 'text-model-haiku';
-    case 'astra': return 'text-model-astra';
-    case 'sol': return 'text-model-sol';
-    case 'terra': return 'text-model-terra';
-    case 'luna': return 'text-model-luna';
-    case 'codex': return 'text-model-codex';
-    case 'spark': return 'text-model-spark';
-    case 'mini': return 'text-model-mini';
     default: return 'text-accent';
   }
 }
@@ -140,13 +112,6 @@ export function getModelRingColor(modelId: string): string {
     case 'opus': return 'ring-model-opus';
     case 'sonnet': return 'ring-model-sonnet';
     case 'haiku': return 'ring-model-haiku';
-    case 'astra': return 'ring-model-astra';
-    case 'sol': return 'ring-model-sol';
-    case 'terra': return 'ring-model-terra';
-    case 'luna': return 'ring-model-luna';
-    case 'codex': return 'ring-model-codex';
-    case 'spark': return 'ring-model-spark';
-    case 'mini': return 'ring-model-mini';
     default: return 'ring-accent';
   }
 }
@@ -160,13 +125,6 @@ export function getModelHoverBgColor(modelId: string): string {
     case 'opus': return 'hover:bg-model-opus/10';
     case 'sonnet': return 'hover:bg-model-sonnet/10';
     case 'haiku': return 'hover:bg-model-haiku/10';
-    case 'astra': return 'hover:bg-model-astra/10';
-    case 'sol': return 'hover:bg-model-sol/10';
-    case 'terra': return 'hover:bg-model-terra/10';
-    case 'luna': return 'hover:bg-model-luna/10';
-    case 'codex': return 'hover:bg-model-codex/10';
-    case 'spark': return 'hover:bg-model-spark/10';
-    case 'mini': return 'hover:bg-model-mini/10';
     default: return 'hover:bg-accent/10';
   }
 }
