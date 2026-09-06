@@ -74,8 +74,7 @@
     <div class="flex items-center gap-2 min-w-0 flex-1">
       {#if entry.model}
         <span
-          class="px-1.5 py-0.5 text-[10px] font-medium rounded shrink-0"
-          style="background-color: {getModelBadgeBgColor(entry.model)}; color: {getModelTextColor(entry.model)};"
+          class="px-1.5 py-0.5 text-[10px] font-medium rounded shrink-0 {getModelBadgeBgColor(entry.model)} {getModelTextColor(entry.model)}"
         >
           {getShortModelName(entry.model)}
         </span>
