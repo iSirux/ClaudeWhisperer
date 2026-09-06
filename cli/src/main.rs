@@ -219,17 +219,15 @@ struct TargetArgs {
     #[arg(long, value_name = "NAME|PATH")]
     repo: Option<String>,
 
-    /// Model id (default: the invoking session's model)
-    #[arg(long, value_name = "ID")]
+    /// Model name or short alias: opus, sonnet, haiku, fable, astra, sol,
+    /// terra, luna (default: the invoking session's model). The agent provider
+    /// follows from the model — Claude names run on Claude, GPT names on Codex.
+    #[arg(long, value_name = "NAME")]
     model: Option<String>,
 
     /// Effort level (default: the invoking session's effort)
     #[arg(long, value_enum, value_name = "LEVEL")]
     effort: Option<Effort>,
-
-    /// Agent provider (default: the invoking session's provider)
-    #[arg(long, value_enum, value_name = "NAME")]
-    provider: Option<Provider>,
 
     /// Create a fresh worktree for the run instead of using the current one
     #[arg(long = "new-worktree")]
@@ -308,20 +306,6 @@ impl Effort {
     }
 }
 
-#[derive(Copy, Clone, ValueEnum)]
-enum Provider {
-    Claude,
-    Openai,
-}
-
-impl Provider {
-    fn as_json(self) -> &'static str {
-        match self {
-            Provider::Claude => "claude",
-            Provider::Openai => "openai",
-        }
-    }
-}
 
 #[derive(Copy, Clone, ValueEnum)]
 enum CatchUp {
@@ -389,7 +373,6 @@ struct Target {
     repo: Option<String>,
     model: Option<String>,
     effort: Option<&'static str>,
-    provider: Option<&'static str>,
     new_worktree: bool,
 }
 
@@ -453,7 +436,6 @@ fn build_target(args: &TargetArgs) -> (String, Target) {
         repo: args.repo.clone(),
         model: args.model.clone(),
         effort: args.effort.map(Effort::as_json),
-        provider: args.provider.map(Provider::as_json),
         new_worktree: args.new_worktree,
     };
     (cwd, target)

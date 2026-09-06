@@ -75,9 +75,9 @@ If no ack arrives in time:
     "worktreePath": "F:/Repos/Foo-worktrees/feature-x" | null,  // toplevel of cwd; null when it IS the main root
     "branch": "feature-x" | null,
     "repo": "<--repo name-or-path override>" | null,
-    "model": "…" | null,
+    "model": "…" | null,                   // name or short alias ("opus", "astra"); provider follows from it
     "effort": "off" | "low" | "medium" | "high" | "xhigh" | "max" | null,
-    "provider": "claude" | "openai" | null,
+    "provider": "claude" | "openai" | null, // deprecated (no --provider flag); honored only when "model" is null
     "newWorktree": false                   // --new-worktree: create a fresh worktree instead
   },
 
@@ -119,9 +119,14 @@ If no ack arrives in time:
   OpenWhisperer repository: <path>. Add it in the app or pass --repo <name>.`
 - Worktree: `target.worktreePath` is kept only when it differs from the repo
   path. `newWorktree` wins over it.
-- Model/effort/provider/account: explicit request values → else the invoking
-  session's (when `sessionId` resolves to a live session) → else the app
-  defaults for that repo (`snapshotLaunchConfigForRepo`).
+- Model/effort/account: explicit request values → else the invoking session's
+  (when `sessionId` resolves to a live session) → else the app defaults for that
+  repo (`snapshotLaunchConfigForRepo`). **The provider is derived from the
+  resolved model** (`getProviderForModel`), never requested separately: a
+  `target.model` is expanded through `resolveModelAlias` and must land on a
+  catalog model whose provider is enabled, otherwise the request is refused with
+  the list of available models. Effort inherits across providers too (clamped via
+  `clampEffortForModel`); an account only inherits within its own provider.
 - `same_session` requires `sessionId` to resolve to a live session; the fallback
   snapshot carries the resolved repo/model/… and `worktreePath`.
 - `schedule` → `schedules.add({...})` with `source: 'cli'`; if `nextFireAt` is
@@ -160,8 +165,8 @@ ow list [--json]        ow cancel <id>        ow ping        ow install-skills  
 
 Prompt: positional, or `--prompt-file <path>`, or `-` for stdin.
 
-Common options: `--label`, `--repo <name|path>`, `--model`, `--effort`,
-`--provider`, `--new-worktree`, `--same-session`, `--wait-idle`,
+Common options: `--label`, `--repo <name|path>`, `--model <name|alias>`,
+`--effort`, `--new-worktree`, `--same-session`, `--wait-idle`,
 `--catch-up run-once|skip` (default run-once), `--json`, `--timeout <s>`,
 `--dev`, `--no-wait`.
 

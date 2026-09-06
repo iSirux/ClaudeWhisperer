@@ -41,12 +41,13 @@ Prompt goes as the positional argument, via `--prompt-file <path>`, or `-` to re
 
 ## Targets and options
 
-- **Default: a new session in the current worktree**, same model/effort/provider as the session you are in. This is right for "schedule a follow-up on this feature": the new agent gets a clean context and your prompt must carry the details.
+- **Default: a new session in the current worktree**, same model and effort as the session you are in. This is right for "schedule a follow-up on this feature": the new agent gets a clean context and your prompt must carry the details.
 - `--same-session`: continue this conversation instead. Only when the user explicitly wants the follow-up *here* ("come back to this chat", "continue here"). If the session is gone by then, a new session is launched in the same worktree.
 - `--new-worktree`: create a fresh worktree for the run (independent branch).
 - If the worktree no longer exists when the schedule fires, the run happens in the main repository checkout instead.
 - `--repo <name>`: only when the user asks for a different repository, or you are not inside a git repo.
-- `--model <id>`, `--effort off|low|medium|high|xhigh|max`, `--provider claude|openai`: only when the user asks.
+- `--model <name>`: only when the user names a model. Short names work — `opus`, `sonnet`, `haiku`, `fable` (Claude) and `astra`, `sol`, `terra`, `luna` (Codex/GPT); a full id like `claude-opus-5` works too. **The provider follows from the model**, so `--model astra` runs the session on Codex — there is no separate provider flag. An unknown name is refused with the list of available models.
+- `--effort off|low|medium|high|xhigh|max`: only when the user asks. Defaults to the effort of the session you are in, clamped to what the model supports.
 - `--wait-idle`: hold the run until nothing else is working in that worktree. Good for "after the current work is done".
 - `--label "<short title>"`: optional; defaults to the first line of the prompt.
 

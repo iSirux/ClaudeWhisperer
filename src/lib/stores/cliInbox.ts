@@ -27,6 +27,12 @@ import {
 } from './schedules';
 import { launchSession, snapshotLaunchConfigForRepo } from '$lib/utils/sessionLaunch';
 import { defaultAccountIdForRepo } from '$lib/utils/accounts';
+import {
+  clampEffortForModel,
+  getModelById,
+  getProviderForModel,
+  resolveModelAlias,
+} from '$lib/utils/models';
 
 const POLL_MS = 2000;
 /** Non-`schedule` requests older than this are refused: a stale `run` must never fire later. */
@@ -44,6 +50,11 @@ interface CliTarget {
   repo: string | null;
   model: string | null;
   effort: CliEffort | null;
+  /**
+   * Deprecated: the provider follows from `model` since the `--provider` flag was
+   * removed. Still honored when no model was requested, so an older installed `ow`
+   * binary keeps working until it is updated.
+   */
   provider: Provider | null;
   newWorktree: boolean;
 }
@@ -163,33 +174,74 @@ function resolveWorktree(target: CliTarget, repo: RepoConfig): string | undefine
 }
 
 /**
- * Model/effort/provider/account: explicit request values → the invoking session's
- * (when the CLI ran inside one and the provider matches) → the app defaults for the repo.
+ * Turn a requested model name into a concrete catalog id. Short aliases are the
+ * documented way to ask for a model from the CLI ("opus", "astra", "5.6-terra"),
+ * so an unmatched name is a typo, not a new model: refuse it here rather than
+ * letting session creation fail later where nothing surfaces the reason.
+ */
+function resolveModelName(requested: string): string {
+  const resolved = resolveModelAlias(requested);
+  if (getModelById(resolved)) return resolved;
+  const s = get(settings);
+  const known = [
+    ...(s.enabled_providers.claude ? s.enabled_models : []),
+    ...(s.enabled_providers.openai ? s.enabled_openai_models : []),
+  ]
+    .map((id) => getModelById(id)?.id)
+    .filter((id): id is string => !!id);
+  throw new CliError(`Unknown model "${requested}". Available: ${known.join(', ') || '(none enabled)'}`);
+}
+
+/**
+ * Model/effort/account: explicit request values → the invoking session's (when the
+ * CLI ran inside one) → the app defaults for the repo. **The provider follows from
+ * the model** — there is no separate provider choice.
  */
 function resolveLaunch(target: CliTarget, repo: RepoConfig, invoking?: SdkSession): ResolvedLaunch {
   const s = get(settings);
   const base = snapshotLaunchConfigForRepo(repo);
-  const provider: Provider = target.provider ?? invoking?.provider ?? base.provider;
-  const inherit = !!invoking && (invoking.provider ?? 'claude') === provider;
+  const requested = target.model?.trim();
 
-  const model =
-    target.model?.trim() ||
-    (inherit ? invoking!.model : undefined) ||
-    (provider === base.provider ? base.model : provider === 'openai' ? s.openai_model : s.default_model);
+  // `target.provider` only survives for older `ow` binaries that still send it;
+  // a requested model always wins over it.
+  const legacyProvider = requested ? undefined : (target.provider ?? undefined);
 
-  const effortLevel: EffortLevel = target.effort
-    ? target.effort === 'off'
-      ? null
-      : target.effort
-    : inherit
-      ? invoking!.effortLevel
-      : base.effortLevel;
+  const model = requested
+    ? resolveModelName(requested)
+    : legacyProvider
+      ? legacyProvider === (invoking?.provider ?? base.provider)
+        ? (invoking?.model ?? base.model)
+        : legacyProvider === 'openai'
+          ? s.openai_model
+          : s.default_model
+      : (invoking?.model ?? base.model);
 
-  const accountId = inherit
-    ? invoking!.accountId
-    : provider === base.provider
-      ? base.accountId
-      : defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
+  const provider = getProviderForModel(model);
+  if (!(provider === 'openai' ? s.enabled_providers.openai : s.enabled_providers.claude)) {
+    throw new CliError(
+      `Model "${model}" needs the ${provider === 'openai' ? 'Codex' : 'Claude'} provider, which is disabled in Settings → General`
+    );
+  }
+
+  // Effort follows the invoking session even across providers (the model may have
+  // moved the run to Codex; the requested thinking depth still applies), clamped to
+  // what the chosen model actually accepts.
+  const effortLevel: EffortLevel = clampEffortForModel(
+    target.effort
+      ? target.effort === 'off'
+        ? null
+        : target.effort
+      : (invoking?.effortLevel ?? base.effortLevel),
+    model
+  );
+
+  // An account belongs to one provider, so it is only inheritable within it.
+  const accountId =
+    invoking && (invoking.provider ?? 'claude') === provider
+      ? invoking.accountId
+      : provider === base.provider
+        ? base.accountId
+        : defaultAccountIdForRepo(s.accounts, repo, provider === 'openai' ? 'OpenAI' : 'Claude');
 
   return { model, effortLevel, provider, accountId };
 }
